@@ -57,13 +57,18 @@ on first deploy.
    - `APP_SECRET_KEY` → your generated key
    - `METER_APP_DB_PASSWORD` → your chosen app DB password
 4. Deploy. Render builds the Docker image (web + API), runs migrations on start,
-   and gives you a URL like `https://meter.onrender.com`. Open it — you should
-   see the login page. 🎉
+   and gives you a URL like `https://meter-a1b2.onrender.com`. Open it — you
+   should see the login page. 🎉
+
+> That `onrender.com` hostname is fixed when the service is created and does
+> **not** change if you later rename the service — only recreating it would. It
+> stays reachable alongside your custom domain, so pick a service name you are
+> happy to keep.
 
 ## Step 3 — Your subdomain (Render + Cloudflare)
 
 1. In Render: **Settings → Custom Domains → Add** `meter.costlyinfra.com`.
-   Render shows you a target (a `CNAME` value like `meter.onrender.com`).
+   Render shows you a target (the `CNAME` value for your service).
 2. In **Cloudflare** → your `costlyinfra.com` zone → **DNS → Add record**:
    - **Type:** `CNAME`
    - **Name:** `meter`
@@ -144,23 +149,23 @@ using the ingest token from **POST `/api/hook/token`** (offered in onboarding).
 | `ALERT_EMAIL_FROM` | GitHub secrets (optional) | Verified Resend sender address for alert emails |
 | `APP_BASE_URL` | GitHub secrets (optional) | App base URL for deep links in alert notifications |
 
-## Internal Admin Portal (`admin.meter.costlyinfra.com`)
+## Internal Admin Portal
 
-The admin portal (onboard/support customers without touching the database) is served
-by the **same** Render service — no extra infra. Two steps:
+The admin portal (onboard and support customers without touching the database) is
+served by the **same** Render service — no extra infra and no extra hostname.
 
-1. **Grant access.** Set `METER_ADMIN_EMAILS` on the Render service to your
-   admin accounts, comma-separated (e.g. `you@costlyinfra.com`). Those users log in
-   with their normal account; the portal (and the `/api/admin/*` routes) unlock for
-   them and stay hidden/403 for everyone else. No schema change, no self-service.
-2. **Point the subdomain.** In Cloudflare → `costlyinfra.com` → **DNS → Add record**:
-   a `CNAME` named `admin.meter` targeting the same Render host as Step 3
-   (`meter.onrender.com`), **DNS only (grey cloud)**. Add
-   `admin.meter.costlyinfra.com` as a custom domain on the Render service too.
+Set **`METER_ADMIN_EMAILS`** on the Render service to your admin accounts,
+comma-separated. Those people sign in with their normal account and the portal
+unlocks for them; for everyone else the API returns 403 and the entry point is
+not rendered. No schema change, no self-service, nothing to grant in the app.
 
-Then visit `admin.meter.costlyinfra.com/admin` (or the "Admin portal →" link in
-the customer sidebar). Access is gated by the allowlist, not the hostname, so the
-subdomain is purely where admins go.
+> **The allowlist is the control, not the URL.** The portal is part of the same
+> single-page app, so its routes are in the JavaScript bundle every visitor
+> downloads — they are discoverable by anyone who looks, and treating the path as
+> a secret would be a false sense of safety. What actually gates it is the
+> server-side check on every `/api/admin/*` route: no session is 401, a session
+> that is not on the allowlist is 403. Keep the allowlist short, and remove people
+> from it when they no longer need access.
 
 ## When you outgrow free
 - **No more cold starts:** upgrade the Render service to a paid instance (~$7/mo).
