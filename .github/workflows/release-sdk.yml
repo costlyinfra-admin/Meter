@@ -13,9 +13,14 @@ name: Release SDK
 #   The name is CLAIMED on the first successful publish — it can't be reserved.
 #
 # npm currently uses a token (npm trusted publishing can replace it later):
-#   3. Add repo secret NPM_TOKEN (npm -> Access Tokens -> Automation). The
-#      package is unscoped (`costlyinfra-meter`), so no npm org or scope is
-#      needed. Without the token the Node job just tests and skips publishing.
+#   3. Add repo secret NPM_TOKEN — a granular access token (npm removed the
+#      classic Automation/Publish tokens in November 2025). A granular token
+#      cannot be scoped to a package that does not exist yet, so the FIRST
+#      publish of a new name needs "All packages / Read and write"; narrow it to
+#      the package afterwards. The package is unscoped, so no npm org is needed.
+#      Without the token the Node job just tests and skips publishing.
+#      npm trusted publishing (OIDC) can replace the token entirely — the job
+#      already requests id-token: write for provenance.
 
 on:
   push:
