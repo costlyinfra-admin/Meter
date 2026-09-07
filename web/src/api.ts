@@ -219,6 +219,47 @@ export interface DiscoveryScope {
   repos: string[];
 }
 
+/** One discovery run: the window of merge dates it asked GitHub for, and how it
+ *  ended. Failed runs are recorded too — an attempt that failed is a fact about
+ *  coverage, not an absence of one. */
+export interface DiscoveryRun {
+  id: string;
+  owner: string | null;
+  repos: string[];
+  covered_from: string;
+  covered_to: string;
+  prs: number;
+  proposals: number;
+  trigger: "manual" | "scheduled";
+  status: "success" | "error";
+  error_message: string | null;
+  started_at: string;
+  finished_at: string | null;
+  started_by: string | null;
+}
+
+/** What discovery has covered, from the runs themselves rather than inferred
+ *  from whichever pull requests happened to turn up. */
+export interface DiscoveryCoverage {
+  runs: number;
+  covered_from: string | null;
+  covered_to: string | null;
+  last_run_at: string | null;
+  last_run_status: "success" | "error" | null;
+  last_run_trigger: "manual" | "scheduled" | null;
+}
+
+export interface DiscoverySchedule {
+  /** False until discovery has run once: a scheduled run needs an owner and a
+   *  repo selection, and there is nowhere to put a schedule without them. */
+  configurable: boolean;
+  enabled: boolean;
+  lookback_days: number;
+  next_run_at: string | null;
+  owner: string | null;
+  repos: string[];
+}
+
 export interface SplitGroup {
   name: string;
   signal_ids: string[];
@@ -708,6 +749,14 @@ export interface ProviderSpend {
     undated_prs: number;
     first_merged: string | null;
     last_merged: string | null;
+    /** Recorded coverage: successful runs, and the window they reached. Zero
+     *  runs means discovery has never completed for this tenant. */
+    runs: number;
+    covered_from: string | null;
+    covered_to: string | null;
+    last_run_at: string | null;
+    last_run_status: "success" | "error" | null;
+    last_run_trigger: "manual" | "scheduled" | null;
   };
   build_by_developer: {
     developer_id: string;
@@ -1093,10 +1142,23 @@ export const api = {
 
   discoveryScope: () => request<DiscoveryScope>("/discovery/scope"),
 
-  runDiscovery: (owner: string, repos: string[] = [], days = 90) =>
+  runDiscovery: (owner: string, repos: string[] = [], days = 90, since?: string) =>
     request<DiscoverySummary>("/discovery/run", {
       method: "POST",
-      body: JSON.stringify({ owner, repos, days }),
+      // `since` names the earliest merge date to fetch and wins over `days`, so
+      // "cover March and April" travels as the window itself.
+      body: JSON.stringify({ owner, repos, days, since: since ?? null }),
+    }),
+
+  discoveryRuns: () =>
+    request<{ runs: DiscoveryRun[]; coverage: DiscoveryCoverage }>("/discovery/runs"),
+
+  discoverySchedule: () => request<DiscoverySchedule>("/discovery/schedule"),
+
+  setDiscoverySchedule: (enabled: boolean, lookbackDays?: number) =>
+    request<DiscoverySchedule>("/discovery/schedule", {
+      method: "PUT",
+      body: JSON.stringify({ enabled, lookback_days: lookbackDays ?? null }),
     }),
 
   listFeatures: (status?: string) =>

@@ -232,3 +232,59 @@ def test_discovery_llm_requires_a_session(client):
         lambda: client.delete("/api/settings/discovery-llm"),
     ):
         assert call().status_code == 401
+
+
+def test_the_run_endpoint_accepts_a_window_and_records_it(client):
+    resp = client.post(
+        "/api/discovery/run",
+        json={"owner": "acme", "since": "2026-03-01", "repos": ["acme/core"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["covered_from"] == "2026-03-01"
+
+    runs = client.get("/api/discovery/runs").json()
+    assert runs["coverage"]["covered_from"] == "2026-03-01"
+    assert runs["coverage"]["runs"] == 1
+    assert runs["runs"][0]["trigger"] == "manual"
+    # Recorded against whoever asked for it.
+    assert runs["runs"][0]["started_by"] == "cto@acme.com"
+
+
+def test_the_schedule_endpoints_refuse_before_discovery_has_a_scope(client):
+    assert client.get("/api/discovery/schedule").json() == {
+        "configurable": False,
+        "enabled": False,
+        "lookback_days": 14,
+        "next_run_at": None,
+        "owner": None,
+        "repos": [],
+    }
+    resp = client.put("/api/discovery/schedule", json={"enabled": True})
+    assert resp.status_code == 400
+    assert "Run discovery once" in resp.json()["detail"]
+
+
+def test_the_schedule_can_be_turned_on_and_off(client):
+    client.post("/api/discovery/run", json={"owner": "acme"})
+
+    # Off until asked for, even after a run.
+    assert client.get("/api/discovery/schedule").json()["enabled"] is False
+
+    on = client.put("/api/discovery/schedule", json={"enabled": True, "lookback_days": 21}).json()
+    assert on["enabled"] is True and on["lookback_days"] == 21
+    assert on["next_run_at"] is not None
+
+    off = client.put("/api/discovery/schedule", json={"enabled": False}).json()
+    assert off["enabled"] is False and off["next_run_at"] is None
+    # The lookback is remembered, so turning it back on does not reset the choice.
+    assert off["lookback_days"] == 21
+
+
+def test_discovery_run_and_schedule_endpoints_require_a_session(client):
+    client.post("/api/auth/logout")
+    for call in (
+        lambda: client.get("/api/discovery/runs"),
+        lambda: client.get("/api/discovery/schedule"),
+        lambda: client.put("/api/discovery/schedule", json={"enabled": True}),
+    ):
+        assert call().status_code == 401

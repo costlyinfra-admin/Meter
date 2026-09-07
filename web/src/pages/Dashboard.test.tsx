@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, type BudgetForecast } from "../api";
+import { api, ApiError, type BudgetForecast, type ProviderSpend } from "../api";
 import { AuthProvider } from "../auth/AuthContext";
 import { Dashboard } from "./Dashboard";
 
@@ -15,6 +15,8 @@ vi.mock("../api", async (importActual) => {
       dashboard: vi.fn(),
       providerSpend: vi.fn(),
       budgetForecast: vi.fn(),
+      discoveryScope: vi.fn(),
+      runDiscovery: vi.fn(),
       customerSpend: vi.fn(),
       refreshInference: vi.fn(),
     },
@@ -35,8 +37,10 @@ const TRIAGE = {
   confidence: "med",
 };
 
-/** An empty ProviderSpend — spread it and override only what a test cares about. */
-const EMPTY_SPEND = {
+/** An empty ProviderSpend — spread it and override only what a test cares about.
+ *  Typed, so a field added to the payload shows up here rather than silently
+ *  widening every literal in it. */
+const EMPTY_SPEND: ProviderSpend = {
   start: "2026-05-01",
   end: "2026-05-01",
   total: 0,
@@ -52,6 +56,12 @@ const EMPTY_SPEND = {
     undated_prs: 0,
     first_merged: "2026-04-02",
     last_merged: "2026-05-21",
+    runs: 1,
+    covered_from: "2026-04-01",
+    covered_to: "2026-05-21",
+    last_run_at: "2026-05-21T09:00:00Z",
+    last_run_status: "success",
+    last_run_trigger: "manual",
   },
   build_by_developer: [],
   build_trend: [],
@@ -186,6 +196,9 @@ describe("Dashboard (Overview)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.budgetForecast).mockResolvedValue({ ...FORECAST });
+    // The activity empty state asks for the discovery scope; default to none,
+    // which is the state where it points at Features rather than offering a run.
+    vi.mocked(api.discoveryScope).mockResolvedValue({ owner: null, repos: [] });
     vi.mocked(api.me).mockResolvedValue({
       id: "u1",
       tenant_id: "t1",
@@ -670,13 +683,7 @@ describe("Dashboard (Overview)", () => {
         { tool: "cursor", amount: 89, pct: 32.96 },
       ],
       developer_activity: [],
-      activity_coverage: {
-        github_connected: true,
-        dated_prs: 12,
-        undated_prs: 0,
-        first_merged: "2026-04-02",
-        last_merged: "2026-05-21",
-      },
+      activity_coverage: { ...EMPTY_SPEND.activity_coverage },
       build_by_developer: [
         {
           developer_id: "erin",
@@ -790,13 +797,7 @@ describe("Dashboard (Overview)", () => {
       build_total: 270,
       build_by_tool: [],
       developer_activity: [],
-      activity_coverage: {
-        github_connected: true,
-        dated_prs: 12,
-        undated_prs: 0,
-        first_merged: "2026-04-02",
-        last_merged: "2026-05-21",
-      },
+      activity_coverage: { ...EMPTY_SPEND.activity_coverage },
       build_by_developer: [
         {
           developer_id: "Muzaffar-ni",
@@ -863,6 +864,12 @@ describe("Dashboard (Overview)", () => {
         undated_prs: 0,
         first_merged: null,
         last_merged: null,
+        runs: 0,
+        covered_from: null,
+        covered_to: null,
+        last_run_at: null,
+        last_run_status: null,
+        last_run_trigger: null,
       },
     });
     const first = renderDashboard();
@@ -883,6 +890,12 @@ describe("Dashboard (Overview)", () => {
         undated_prs: 0,
         first_merged: null,
         last_merged: null,
+        runs: 0,
+        covered_from: null,
+        covered_to: null,
+        last_run_at: null,
+        last_run_status: null,
+        last_run_trigger: null,
       },
     });
     const second = renderDashboard();
@@ -908,21 +921,28 @@ describe("Dashboard (Overview)", () => {
         },
       ],
       developer_activity: [],
+      // No runs recorded: this tenant's evidence predates run history, so all
+      // that can honestly be said is which merge dates are held.
       activity_coverage: {
+        ...EMPTY_SPEND.activity_coverage,
         github_connected: true,
         dated_prs: 40,
         undated_prs: 3,
         first_merged: "2026-01-04",
         last_merged: "2026-03-28",
+        runs: 0,
+        covered_from: null,
+        covered_to: null,
       },
     });
     renderDashboard();
     fireEvent.click(await screen.findByRole("tab", { name: "By Developer" }));
 
     expect(await screen.findByText("No pull requests merged in May 2026")).toBeInTheDocument();
-    // Naming the covered range is what tells a quiet month from an uncovered one.
-    expect(screen.getByText(/Jan 2026 – Mar 2026/)).toBeInTheDocument();
-    expect(screen.getByText(/longer lookback/)).toBeInTheDocument();
+    // Without run history all that can honestly be said is which merge dates are
+    // held — and that nothing records which windows were looked at.
+    expect(screen.getByText(/Jan 4, 2026 – Mar 28, 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/no record of which windows/)).toBeInTheDocument();
     // Undated PRs are counted, never quietly dropped.
     expect(screen.getByText(/3 pull requests discovered before merge dates/)).toBeInTheDocument();
   });
@@ -1074,13 +1094,7 @@ describe("Dashboard (Overview)", () => {
       build_total: 0,
       build_by_tool: [],
       developer_activity: [],
-      activity_coverage: {
-        github_connected: true,
-        dated_prs: 12,
-        undated_prs: 0,
-        first_merged: "2026-04-02",
-        last_merged: "2026-05-21",
-      },
+      activity_coverage: { ...EMPTY_SPEND.activity_coverage },
       build_by_developer: [],
       build_trend: [],
       customer_total: 0,

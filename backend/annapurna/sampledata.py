@@ -14,6 +14,7 @@ test build their data through here.
 from __future__ import annotations
 
 import datetime as _dt
+import json as _json
 from typing import Optional
 
 import psycopg
@@ -598,8 +599,57 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         )
         _add_alert_demo(conn, tenant_id, {"triage": triage, "report": report})
         _add_budget_demo(conn, tenant_id)
+        _add_discovery_demo(conn, tenant_id)
 
     return {"features": feature_count, "tenant_id": tenant_id}
+
+
+def _add_discovery_demo(conn, tenant_id) -> None:
+    """DEMO ONLY. The discovery scope and run history behind the seeded PRs.
+
+    The demo writes pull-request evidence directly rather than fetching it, so
+    without this there would be evidence with no record of where it came from —
+    and the product would honestly report that it does not know which months
+    discovery has looked at. These rows say what a real tenant's would: the org
+    and repos it runs against, and runs covering the months the evidence spans.
+
+    Automatic discovery is left OFF, as it is for everyone.
+    """
+    conn.execute(
+        """
+        INSERT INTO discovery_scope (tenant_id, owner, repos, auto_enabled, auto_lookback_days)
+        VALUES (%s, 'acme-security', %s, false, 14)
+        ON CONFLICT (tenant_id) DO NOTHING
+        """,
+        (tenant_id, _json.dumps(["acme-security/platform", "acme-security/detections"])),
+    )
+    # Two runs: an initial sweep, then a recent top-up — which is what the run
+    # history looks like once someone has been using the product for a while.
+    # Each run's timestamp is its own coverage end, which is when it would have
+    # been run.
+    for covered_from, covered_to, prs, proposals in (
+        (_dt.date(2025, 6, 1), _dt.date(2026, 3, 1), 320, 9),
+        (_dt.date(2026, 2, 1), DEMO_AS_OF, 76, 2),
+    ):
+        conn.execute(
+            """
+            INSERT INTO discovery_run (tenant_id, owner, repos, covered_from, covered_to,
+                                       prs, proposals, trigger, status, started_at, finished_at,
+                                       started_by)
+            VALUES (%s, 'acme-security', %s, %s, %s, %s, %s, 'manual', 'success',
+                    %s, %s, 'demo@annapurna.com')
+            """,
+            (
+                tenant_id,
+                _json.dumps(["acme-security/platform", "acme-security/detections"]),
+                covered_from,
+                covered_to,
+                prs,
+                proposals,
+                _dt.datetime.combine(covered_to, _dt.time(9, 0), _dt.timezone.utc),
+                _dt.datetime.combine(covered_to, _dt.time(9, 4), _dt.timezone.utc),
+            ),
+        )
 
 
 def _add_budget_demo(conn, tenant_id) -> None:

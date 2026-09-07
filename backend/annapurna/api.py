@@ -225,8 +225,17 @@ class CredentialRequest(BaseModel):
 class DiscoveryRequest(BaseModel):
     owner: str = Field(min_length=1, max_length=200)  # GitHub org or user
     days: int = Field(default=90, ge=1, le=365)
+    # Earliest merge date to fetch. Wins over `days` when given, so a caller can
+    # say "cover March" without converting a window into a lookback against a
+    # clock it cannot see. YYYY-MM-DD.
+    since: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     # Selected "owner/name" repos to analyze; empty = the whole org (legacy behavior).
     repos: list[str] = Field(default_factory=list, max_length=200)
+
+
+class DiscoveryScheduleRequest(BaseModel):
+    enabled: bool
+    lookback_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
 class AddFeatureRequest(BaseModel):
@@ -687,10 +696,37 @@ def create_app() -> FastAPI:
         token = credentials.get_secret(user["tenant_id"], "github")
         try:
             return discovery.run_discovery(
-                user["tenant_id"], body.owner, token, days=body.days, repos=body.repos
+                user["tenant_id"],
+                body.owner,
+                token,
+                days=body.days,
+                since=dt.date.fromisoformat(body.since) if body.since else None,
+                repos=body.repos,
+                started_by=user.get("email"),
             )
         except GitHubError as exc:
             _raise_github(exc)
+
+    @app.get("/api/discovery/runs")
+    def discovery_runs(user: CurrentUser) -> dict:
+        """What discovery has done, and therefore what it has covered."""
+        return {
+            "runs": discovery.run_history(user["tenant_id"]),
+            "coverage": discovery.coverage(user["tenant_id"]),
+        }
+
+    @app.get("/api/discovery/schedule")
+    def get_discovery_schedule(user: CurrentUser) -> dict:
+        return discovery.get_schedule(user["tenant_id"])
+
+    @app.put("/api/discovery/schedule")
+    def put_discovery_schedule(body: DiscoveryScheduleRequest, user: CurrentUser) -> dict:
+        try:
+            return discovery.set_schedule(
+                user["tenant_id"], enabled=body.enabled, lookback_days=body.lookback_days
+            )
+        except discovery.ScheduleError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @app.get("/api/features")
     def list_features(

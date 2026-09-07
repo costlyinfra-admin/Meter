@@ -5238,6 +5238,28 @@ button.kpi-note-link:active {
   opacity: 0.75;
 }
 
+/* The "run discovery for this window" action inside an empty activity table. */
+.activity-gap-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.discovery-schedule .settings-lead {
+  margin-top: -0.25rem;
+}
+
+/* Stating the cost is the point of this note, so it is not shrunk away. */
+.discovery-cost-note {
+  margin-top: 1.1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  max-width: 62ch;
+  line-height: 1.5;
+}
+
 /* The footnote about undated PRs sits under the main explanation. */
 .activity-gap-note {
   margin-top: 0.6rem;

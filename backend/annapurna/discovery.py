@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import re
 from collections import Counter, defaultdict
@@ -21,14 +22,16 @@ from typing import Callable, Optional
 
 import httpx
 
-from . import build, discovery_llm
-from .db import app_dsn, connect, tenant_tx
+from . import build, credentials, discovery_llm
+from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .discovery_llm import (
     DEFAULT_DISCOVERY_MODEL,
     LlmConfig,
     env_llm_config,
 )
 from .github import GitHubClient, PullRequest
+
+logger = logging.getLogger("annapurna.discovery")
 
 _BRANCH_PREFIXES = (
     "feature/",
@@ -664,29 +667,73 @@ def list_repos(owner: str, token: Optional[str]) -> list[str]:
         return sorted(gh.list_repos(owner))
 
 
+#: How far back a run looks when the caller names neither a window nor a lookback.
+DEFAULT_LOOKBACK_DAYS = 90
+
+#: Days of overlap a scheduled run adds behind the previous run's coverage. A PR
+#: merged while the last run was mid-flight would otherwise fall through the gap.
+SCHEDULE_OVERLAP_DAYS = 2
+
+
 def run_discovery(
     tenant_id: str,
     owner: str,
     token: Optional[str],
     *,
-    days: int = 90,
+    days: int = DEFAULT_LOOKBACK_DAYS,
+    since: Optional[dt.date] = None,
     repos: Optional[list[str]] = None,
+    trigger: str = "manual",
+    started_by: Optional[str] = None,
 ) -> dict:
     """Fetch PRs for the SELECTED repos (or the whole org if none given), cluster into
-    features, persist them, and remember the repo scope. Returns a summary."""
-    since = dt.date.today() - dt.timedelta(days=days)
+    features, persist them, and remember the repo scope. Returns a summary.
+
+    ``since`` names the earliest merge date to fetch, and wins over ``days`` —
+    that is what lets a caller say "cover March and April" rather than having to
+    convert a window into a lookback against a clock it cannot see.
+
+    Every run is recorded in ``discovery_run``, successful or not, so the product
+    can later say what has been covered instead of inferring it from whichever
+    pull requests happened to turn up.
+    """
+    today = dt.date.today()
+    covered_from = since or (today - dt.timedelta(days=days))
+    started_at = dt.datetime.now(dt.timezone.utc)
     selected = [r for r in (repos or []) if r]
-    with _make_github_client(token) as gh:
-        accessible = gh.list_repos(owner)  # repos the token can actually see
-        if selected:
-            scope = [r for r in selected if r in accessible]
-            prs = gh.fetch_merged_prs(owner, since, repos=scope)
-        else:
-            scope = accessible  # no selection -> whole org (legacy behavior)
-            prs = gh.fetch_merged_prs(owner, since)
-    # A tenant's own LLM configuration (Settings -> BYOK) wins; without one this
-    # is None and clustering behaves exactly as before.
-    proposals = cluster_prs(prs, config=discovery_llm.active_config(tenant_id))
+
+    try:
+        with _make_github_client(token) as gh:
+            accessible = gh.list_repos(owner)  # repos the token can actually see
+            if selected:
+                scope = [r for r in selected if r in accessible]
+                prs = gh.fetch_merged_prs(owner, covered_from, repos=scope)
+            else:
+                scope = accessible  # no selection -> whole org (legacy behavior)
+                prs = gh.fetch_merged_prs(owner, covered_from)
+        # A tenant's own LLM configuration (Settings -> BYOK) wins; without one this
+        # is None and clustering behaves exactly as before.
+        proposals = cluster_prs(prs, config=discovery_llm.active_config(tenant_id))
+    except Exception as exc:
+        # A failed run is still a fact about coverage: it says these months were
+        # attempted and are NOT covered, which is what stops the UI claiming they
+        # are. Recorded, then re-raised for the caller to map to a response.
+        _record_run(
+            tenant_id,
+            owner=owner,
+            repos=selected,
+            covered_from=covered_from,
+            covered_to=today,
+            prs=0,
+            proposals=0,
+            trigger=trigger,
+            status="error",
+            error_message=str(exc)[:500],
+            started_at=started_at,
+            started_by=started_by,
+        )
+        raise
+
     pr_by_ref = {pr.ref: pr for pr in prs}
     _persist_proposals(tenant_id, proposals, pr_by_ref)
     _save_scope(tenant_id, owner, selected)
@@ -696,6 +743,20 @@ def run_discovery(
     # stored rows against the NEW proposals. Totals are preserved; only attribution
     # moves. (Inference needs no equivalent: every sync re-attributes it.)
     reattributed = build.reattribute(tenant_id)
+    _record_run(
+        tenant_id,
+        owner=owner,
+        repos=selected,
+        covered_from=covered_from,
+        covered_to=today,
+        prs=len(prs),
+        proposals=len(proposals),
+        trigger=trigger,
+        status="success",
+        error_message=None,
+        started_at=started_at,
+        started_by=started_by,
+    )
 
     per_repo: Counter = Counter(p.repo for p in prs)
     return {
@@ -707,6 +768,117 @@ def run_discovery(
         "repos_scanned": len(accessible),  # repos accessible to the token
         "proposals": len(proposals),
         "build_cost_reattributed": reattributed,
+        "covered_from": covered_from.isoformat(),
+        "covered_to": today.isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Run history — what discovery has actually covered
+# ---------------------------------------------------------------------------
+def _record_run(
+    tenant_id: str,
+    *,
+    owner: str,
+    repos: list[str],
+    covered_from: dt.date,
+    covered_to: dt.date,
+    prs: int,
+    proposals: int,
+    trigger: str,
+    status: str,
+    error_message: Optional[str],
+    started_at: dt.datetime,
+    started_by: Optional[str],
+) -> None:
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO discovery_run (tenant_id, owner, repos, covered_from, covered_to,
+                                       prs, proposals, trigger, status, error_message,
+                                       started_at, finished_at, started_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
+            """,
+            (
+                tenant_id,
+                owner,
+                json.dumps(repos),
+                covered_from,
+                covered_to,
+                prs,
+                proposals,
+                trigger,
+                status,
+                error_message,
+                started_at,
+                started_by,
+            ),
+        )
+
+
+def _run_dict(row) -> dict:
+    return {
+        "id": str(row[0]),
+        "owner": row[1],
+        "repos": list(row[2] or []),
+        "covered_from": row[3].isoformat(),
+        "covered_to": row[4].isoformat(),
+        "prs": row[5],
+        "proposals": row[6],
+        "trigger": row[7],
+        "status": row[8],
+        "error_message": row[9],
+        "started_at": row[10].isoformat(),
+        "finished_at": row[11].isoformat() if row[11] else None,
+        "started_by": row[12],
+    }
+
+
+_RUN_COLUMNS = (
+    "id, owner, repos, covered_from, covered_to, prs, proposals, trigger, status, "
+    "error_message, started_at, finished_at, started_by"
+)
+
+
+def last_run(tenant_id: str, *, successful_only: bool = False) -> Optional[dict]:
+    """The most recent discovery run, or None if there has never been one."""
+    where = "WHERE status = 'success'" if successful_only else ""
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM discovery_run {where} "  # noqa: S608 - fixed literals
+            "ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+    return _run_dict(row) if row else None
+
+
+def run_history(tenant_id: str, limit: int = 20) -> list[dict]:
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        rows = conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM discovery_run ORDER BY started_at DESC LIMIT %s",
+            (limit,),
+        ).fetchall()
+    return [_run_dict(r) for r in rows]
+
+
+def coverage(tenant_id: str) -> dict:
+    """The earliest merge date any successful run has reached back to, and when.
+
+    Runs overlap and are re-run with different lookbacks, so "covered since" is
+    the earliest ``covered_from`` of any successful run — not the latest run's.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            "SELECT MIN(covered_from), MAX(covered_to), COUNT(*) "
+            "FROM discovery_run WHERE status = 'success'"
+        ).fetchone()
+    last = last_run(tenant_id)
+    return {
+        "runs": int(row[2] or 0),
+        "covered_from": row[0].isoformat() if row[0] else None,
+        "covered_to": row[1].isoformat() if row[1] else None,
+        "last_run_at": last["started_at"] if last else None,
+        "last_run_status": last["status"] if last else None,
+        "last_run_trigger": last["trigger"] if last else None,
     }
 
 
@@ -732,6 +904,149 @@ def _save_scope(tenant_id: str, owner: str, repos: list[str]) -> None:
             """,
             (tenant_id, owner, json.dumps(repos)),
         )
+
+
+# ---------------------------------------------------------------------------
+# The optional schedule
+# ---------------------------------------------------------------------------
+class ScheduleError(ValueError):
+    """Invalid schedule input (maps to HTTP 400)."""
+
+
+#: How often an enabled schedule runs. Nightly: PR evidence changes at the pace
+#: people merge, and anything finer would spend rate limit for nothing.
+SCHEDULE_INTERVAL = dt.timedelta(days=1)
+
+
+def get_schedule(tenant_id: str) -> dict:
+    """The tenant's automatic-discovery setting.
+
+    ``configurable`` is false until discovery has been run once: a scheduled run
+    needs an owner and a repo list, and there is nowhere to store a schedule for
+    a tenant that has neither.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            "SELECT owner, repos, auto_enabled, auto_lookback_days, next_run_at "
+            "FROM discovery_scope WHERE tenant_id = %s",
+            (tenant_id,),
+        ).fetchone()
+    if row is None:
+        return {
+            "configurable": False,
+            "enabled": False,
+            "lookback_days": 14,
+            "next_run_at": None,
+            "owner": None,
+            "repos": [],
+        }
+    return {
+        "configurable": True,
+        "enabled": row[2],
+        "lookback_days": row[3],
+        "next_run_at": row[4].isoformat() if row[4] else None,
+        "owner": row[0],
+        "repos": list(row[1] or []),
+    }
+
+
+def set_schedule(
+    tenant_id: str,
+    *,
+    enabled: bool,
+    lookback_days: Optional[int] = None,
+    now: Optional[dt.datetime] = None,
+) -> dict:
+    """Turn automatic discovery on or off. Raises if there is no scope to run against."""
+    if not isinstance(enabled, bool):
+        raise ScheduleError("enabled must be true or false.")
+    if lookback_days is not None:
+        if not isinstance(lookback_days, int) or isinstance(lookback_days, bool):
+            raise ScheduleError("Lookback must be a whole number of days.")
+        if not 1 <= lookback_days <= 365:
+            raise ScheduleError("Lookback must be between 1 and 365 days.")
+
+    current = get_schedule(tenant_id)
+    if not current["configurable"]:
+        raise ScheduleError(
+            "Run discovery once before scheduling it — an automatic run needs an "
+            "owner and a repository selection to run against."
+        )
+
+    now = now or dt.datetime.now(dt.timezone.utc)
+    # Enabling schedules the first run for the next interval rather than firing
+    # immediately: turning a setting on should not spend anyone's rate limit
+    # before they have left the page.
+    next_run = (now + SCHEDULE_INTERVAL) if enabled else None
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            "UPDATE discovery_scope SET auto_enabled = %s, "
+            "auto_lookback_days = COALESCE(%s, auto_lookback_days), "
+            "next_run_at = %s, updated_at = now() WHERE tenant_id = %s",
+            (enabled, lookback_days, next_run, tenant_id),
+        )
+    return get_schedule(tenant_id)
+
+
+def _scheduled_since(tenant_id: str, lookback_days: int, today: dt.date) -> dt.date:
+    """Where an automatic run should start reading from.
+
+    Just past the last successful run, with a couple of days of overlap, so each
+    run fetches what has happened since rather than the same quarter every night.
+    The configured lookback is the floor, and the whole thing falls back to it
+    when there is no successful run to continue from.
+    """
+    floor = today - dt.timedelta(days=lookback_days)
+    last = last_run(tenant_id, successful_only=True)
+    if last is None:
+        return floor
+    resume = dt.date.fromisoformat(last["covered_to"]) - dt.timedelta(days=SCHEDULE_OVERLAP_DAYS)
+    return min(resume, floor)
+
+
+def run_scheduled_discovery(now: Optional[dt.datetime] = None) -> list[dict]:
+    """Cron entry point: run discovery for every tenant that has asked for it.
+
+    Only tenants that turned it on, and only when one is due. One tenant failing
+    never stops the rest — and the failure is recorded as a run, so the product
+    can say that those months were attempted and are still not covered.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    today = now.date()
+    with connect(admin_dsn()) as conn:
+        due = conn.execute(
+            "SELECT tenant_id, owner, repos, auto_lookback_days FROM discovery_scope "
+            "WHERE auto_enabled AND next_run_at IS NOT NULL AND next_run_at <= %s",
+            (now,),
+        ).fetchall()
+
+    results = []
+    for tenant_id, owner, repos, lookback in due:
+        tid = str(tenant_id)
+        token = credentials.get_secret(tid, "github")
+        try:
+            summary = run_discovery(
+                tid,
+                owner,
+                token,
+                since=_scheduled_since(tid, lookback, today),
+                repos=list(repos or []),
+                trigger="scheduled",
+                started_by="schedule",
+            )
+            results.append({"tenant_id": tid, "status": "success", **summary})
+        except Exception as exc:  # noqa: BLE001 — one tenant must not stop the rest
+            logger.warning("scheduled discovery failed for tenant=%s: %s", tid, exc)
+            results.append({"tenant_id": tid, "status": "error", "error": str(exc)})
+        finally:
+            # Reschedule either way. A tenant whose token has expired should not
+            # get a retry every minute, and the failed run is on record.
+            with connect(app_dsn()) as conn, tenant_tx(conn, tid):
+                conn.execute(
+                    "UPDATE discovery_scope SET next_run_at = %s WHERE tenant_id = %s",
+                    (now + SCHEDULE_INTERVAL, tid),
+                )
+    return results
 
 
 def _match_existing(conn) -> tuple[dict, dict, set]:
@@ -929,3 +1244,10 @@ def _merged_date(pr) -> Optional[dt.date]:
 
 # Type alias documenting the clusterer contract (used in tests for injection).
 Clusterer = Callable[[list[PullRequest]], list[Proposal]]
+
+
+if __name__ == "__main__":
+    summary = run_scheduled_discovery()
+    print(f"Ran scheduled discovery for {len(summary)} tenants.")
+    for item in summary:
+        print(" ", item)

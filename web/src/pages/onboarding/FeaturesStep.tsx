@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type ConnectorStatus } from "../../api";
 import { ConnectorRow } from "../../components/ConnectorRow";
+import { DiscoverySchedule } from "../../components/DiscoverySchedule";
 import { ReviewStep } from "./ReviewStep";
 
 export function FeaturesStep() {
@@ -57,6 +58,8 @@ export function FeaturesStep() {
       )}
 
       <ReviewStep />
+
+      <DiscoverySchedule />
     </div>
   );
 }

@@ -1611,6 +1611,20 @@ def spend_by_provider(
         github = conn.execute(
             "SELECT EXISTS (SELECT 1 FROM connector_credential WHERE connector_type = 'github')"
         ).fetchone()
+        # What discovery actually did, which is the only thing that separates
+        # "we looked and there was nothing" from "we never looked". Read here
+        # rather than inferred from the PR dates below, which cannot tell them
+        # apart. `discovery_run` is empty for tenants that predate it, so the PR
+        # dates stay as the fallback.
+        run = conn.execute(
+            """
+            SELECT MIN(covered_from), MAX(covered_to), COUNT(*)
+            FROM discovery_run WHERE status = 'success'
+            """
+        ).fetchone()
+        latest = conn.execute(
+            "SELECT started_at, status, trigger FROM discovery_run ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
         activity_coverage = {
             "github_connected": bool(github[0]),
             # PR evidence anywhere in the tenant, not just this window — that is
@@ -1621,6 +1635,14 @@ def spend_by_provider(
             "undated_prs": int(coverage[1] or 0),
             "first_merged": coverage[2].isoformat() if coverage[2] else None,
             "last_merged": coverage[3].isoformat() if coverage[3] else None,
+            # The recorded coverage: the earliest merge date any successful run
+            # reached back to, and the latest day one ran up to.
+            "runs": int(run[2] or 0),
+            "covered_from": run[0].isoformat() if run[0] else None,
+            "covered_to": run[1].isoformat() if run[1] else None,
+            "last_run_at": latest[0].isoformat() if latest else None,
+            "last_run_status": latest[1] if latest else None,
+            "last_run_trigger": latest[2] if latest else None,
         }
 
         # ---- Per-customer metered spend (from SDK metadata.customer_id) ----
