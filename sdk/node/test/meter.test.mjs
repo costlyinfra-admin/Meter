@@ -23,7 +23,7 @@ test("record builds an event and authenticates", async () => {
     tokensOut: 300,
     featureId: "f1",
   });
-  assert.equal(await m.flush(), true);
+  assert.equal(await flush(m), true);
   assert.equal(calls[0].opts.headers.Authorization, "Bearer tok");
   const event = JSON.parse(calls[0].opts.body).events[0];
   assert.equal(event.tokens_in, 1200);
@@ -37,7 +37,7 @@ test("recordAnthropic maps usage fields", async () => {
     { model: "claude-haiku-4-5", usage: { input_tokens: 50, output_tokens: 7 } },
     { featureId: "f2" },
   );
-  await m.flush();
+  await flush(m);
   const event = JSON.parse(calls[0].opts.body).events[0];
   assert.equal(event.provider, "anthropic");
   assert.equal(event.tokens_in, 50);
@@ -50,7 +50,7 @@ test("unconfigured meter is a no-op", async () => {
   assert.equal(m.enabled, false);
   m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1, tokensOut: 1 });
   assert.equal(m._queue.length, 0); // nothing queued when unconfigured
-  assert.equal(await m.flush(), true);
+  assert.equal(await flush(m), true);
 });
 
 // --- wrap() auto-instrumentation ------------------------------------------
@@ -89,7 +89,7 @@ test("wrap records the completion with latency and passes through", async () => 
   assert.equal(out, resp); // returns the real response, unchanged
   assert.equal(wrapped.apiKey, "sk-real"); // non-instrumented attribute passes through
 
-  await meter.flush(); // delivery is batched; force it
+  await flush(meter); // delivery is batched; force it
   const event = JSON.parse(calls[0].opts.body).events[0];
   assert.equal(event.provider, "openai");
   assert.equal(event.feature_id, "f1");
@@ -112,7 +112,7 @@ test("wrap skips a streaming response (no usage)", async () => {
   const wrapped = wrap(new OpenAI(stream), { meter });
   const out = await wrapped.chat.completions.create({ stream: true });
   assert.equal(out, stream);
-  await meter.flush();
+  await flush(meter);
   assert.equal(calls.length, 0); // nothing recorded
 });
 
@@ -140,12 +140,33 @@ function optMeter(calls, opts = {}) {
   });
 }
 
+/**
+ * Await a flush with the event loop held open.
+ *
+ * Every timer the SDK owns is unref'd on purpose — a metering hook must never
+ * keep a host process alive (the last test in this file asserts exactly that).
+ * The consequence for tests is that while one awaits a flush, nothing keeps the
+ * loop running: not the abort deadline, not the retry backoff, not flush's own
+ * timeout. Whether the test runner holds a reference of its own varies by Node
+ * version — it does on 25, it does not on 20, which is how these passed locally
+ * and failed in CI. Holding one here makes these tests observe the SDK rather
+ * than the runner.
+ */
+const flush = async (meter, timeoutMs) => {
+  const keepAlive = setTimeout(() => {}, timeoutMs ?? 3000);
+  try {
+    return await (timeoutMs === undefined ? meter.flush() : meter.flush(timeoutMs));
+  } finally {
+    clearTimeout(keepAlive);
+  }
+};
+
 const allEvents = (calls) => calls.flatMap((c) => JSON.parse(c.opts.body).events);
 // The optimizer resolves its salt asynchronously before the event is queued, so
 // give that a turn, then force the batch out.
 const settle = async (meter) => {
   await new Promise((r) => setTimeout(r, 20));
-  await meter.flush();
+  await flush(meter);
 };
 
 test("optimize is off by default", async () => {
@@ -215,7 +236,7 @@ test("every request carries an abort deadline", async () => {
   const calls = [];
   const m = meterWithCapture(calls);
   m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1, tokensOut: 1 });
-  await m.flush();
+  await flush(m);
   assert.ok(calls[0].opts.signal, "no abort signal on the POST");
   assert.equal(typeof calls[0].opts.signal.aborted, "boolean");
 });
@@ -236,7 +257,7 @@ test("a hung endpoint aborts instead of pending forever", async () => {
 
   const started = Date.now();
   m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1, tokensOut: 1 });
-  await m.flush(3000);
+  await flush(m, 3000);
   assert.ok(Date.now() - started < 3000, "request did not abort");
   assert.equal(m.dropped, 1); // gave up after its attempts, and counted it
 });
@@ -254,7 +275,7 @@ test("events are batched into one request", async () => {
   for (let i = 0; i < 20; i += 1) {
     m.record({ provider: "openai", model: "gpt-4o", tokensIn: i, tokensOut: 1 });
   }
-  await m.flush();
+  await flush(m);
 
   assert.equal(calls.length, 1, "20 events should not be 20 requests");
   const events = JSON.parse(calls[0].opts.body).events;
@@ -277,7 +298,7 @@ test("a batch is capped at batchSize", async () => {
     },
   });
   for (let i = 0; i < 12; i += 1) m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1 });
-  await m.flush();
+  await flush(m);
 
   assert.deepEqual(
     calls.map((c) => JSON.parse(c.opts.body).events.length),
@@ -324,7 +345,7 @@ test("every batch carries an id and retries reuse it", async () => {
     },
   });
   m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1 });
-  await m.flush(5000);
+  await flush(m, 5000);
 
   assert.equal(seen.length, 3, "did not retry");
   assert.equal(new Set(seen).size, 1, `retries invented new batch ids: ${new Set(seen).size}`);
@@ -348,18 +369,18 @@ test("a 5xx is retried, a 4xx is not", async () => {
 
   const server = mk(503);
   server.m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1 });
-  await server.m.flush(5000);
+  await flush(server.m, 5000);
   assert.equal(server.attempts.length, 3, "a 5xx should be retried");
 
   const client = mk(401); // a bad token fails identically forever
   client.m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1 });
-  await client.m.flush(5000);
+  await flush(client.m, 5000);
   assert.equal(client.attempts.length, 1, "a 4xx should not be retried");
   assert.equal(client.m.dropped, 1);
 
   const throttled = mk(429); // the one 4xx that invites coming back
   throttled.m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1 });
-  await throttled.m.flush(5000);
+  await flush(throttled.m, 5000);
   assert.equal(throttled.attempts.length, 3);
 });
 
@@ -371,7 +392,7 @@ test("every event is timestamped when it happens, not when it is sent", async ()
   m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1 });
   const recorded = Date.now();
   await new Promise((r) => setTimeout(r, 30));
-  await m.flush();
+  await flush(m);
 
   const stamp = JSON.parse(calls[0].opts.body).events[0].occurred_at;
   assert.match(stamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
@@ -379,7 +400,7 @@ test("every event is timestamped when it happens, not when it is sent", async ()
 
   // An explicit occurredAt still wins, so backfilling stays possible.
   m.record({ provider: "openai", model: "gpt-4o", tokensIn: 1, occurredAt: "2026-01-15T10:00:00Z" });
-  await m.flush();
+  await flush(m);
   const last = JSON.parse(calls[calls.length - 1].opts.body).events.at(-1);
   assert.equal(last.occurred_at, "2026-01-15T10:00:00Z");
 });
@@ -391,5 +412,5 @@ test("the batching timer never holds the process open", async () => {
   assert.ok(m._timer, "no timer armed");
   assert.equal(typeof m._timer.hasRef, "function");
   assert.equal(m._timer.hasRef(), false, "the timer would keep the process alive");
-  await m.flush();
+  await flush(m);
 });
