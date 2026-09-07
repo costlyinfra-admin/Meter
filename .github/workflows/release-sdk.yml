@@ -1,7 +1,7 @@
 name: Release SDK
 
 # Publishes the metering SDKs on a version tag:
-#   git tag sdk-v0.1.0 && git push origin sdk-v0.1.0
+#   git tag sdk-v1.0.0 && git push origin sdk-v1.0.0
 #
 # PyPI uses TRUSTED PUBLISHING (OpenID Connect) — no API token is stored
 # anywhere. One-time human setup (see docs/deploy.md):
@@ -13,9 +13,9 @@ name: Release SDK
 #   The name is CLAIMED on the first successful publish — it can't be reserved.
 #
 # npm currently uses a token (npm trusted publishing can replace it later):
-#   3. Create the @costlyinfra scope on npm, then add repo secret NPM_TOKEN
-#      (npm -> Access Tokens -> Automation). Without it the Node job just
-#      tests and skips publishing.
+#   3. Add repo secret NPM_TOKEN (npm -> Access Tokens -> Automation). The
+#      package is unscoped (`costlyinfra-meter`), so no npm org or scope is
+#      needed. Without the token the Node job just tests and skips publishing.
 
 on:
   push:
