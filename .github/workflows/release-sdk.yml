@@ -58,6 +58,12 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdk/python/dist
+          # This job publishes to two registries that can fail independently —
+          # a bad npm token takes out one and leaves the other done. Re-running
+          # the release is then the only way forward, and it must not fail just
+          # because PyPI already has the version. A forgotten version bump still
+          # surfaces: npm rejects a duplicate publish outright.
+          skip-existing: true
 
   node:
     name: Publish Node SDK
