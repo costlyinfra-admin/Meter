@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type BudgetForecast, type ProviderSpend } from "../api";
 import { AuthProvider } from "../auth/AuthContext";
 import { Dashboard } from "./Dashboard";
+import { compactMoney } from "../format";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
@@ -353,10 +354,15 @@ describe("Dashboard (Overview)", () => {
 
     // Every figure is the server's. The page rounds for display and nothing else.
     await within(panel).findByText("13% over budget");
-    expect(panel.querySelector(".budget-headline")!.textContent).toBe("Forecast: $13.5K");
-    expect(within(panel).getByText("$12K")).toBeInTheDocument(); // budget
-    expect(within(panel).getByText("$7.3K")).toBeInTheDocument(); // spent so far
-    expect(within(panel).getByText("$11.7K")).toBeInTheDocument(); // with savings
+    // Formatted through the app's own formatter rather than asserted as a
+    // literal: compact currency is ICU output, and "$12K" on one Node/browser is
+    // "$12.0K" on another. What matters is that the right figure is rendered.
+    expect(panel.querySelector(".budget-headline")!.textContent).toBe(
+      `Forecast: ${compactMoney(13500)}`,
+    );
+    expect(within(panel).getByText(compactMoney(12000))).toBeInTheDocument(); // budget
+    expect(within(panel).getByText(compactMoney(7271))).toBeInTheDocument(); // spent so far
+    expect(within(panel).getByText(compactMoney(11660))).toBeInTheDocument(); // with savings
     expect(within(panel).getByText("13% over budget")).toBeInTheDocument();
 
     // Spend to date is solid; the projection is a separate dashed line, never
@@ -514,7 +520,9 @@ describe("Dashboard (Overview)", () => {
 
     await within(panel).findByText("39% under budget");
     // "Final spend", not "Forecast" — the period is over.
-    expect(panel.querySelector(".budget-headline")!.textContent).toBe("Final spend: $7.3K");
+    expect(panel.querySelector(".budget-headline")!.textContent).toBe(
+      `Final spend: ${compactMoney(7271)}`,
+    );
     expect(within(panel).getByText("39% under budget")).toBeInTheDocument();
     expect(within(panel).getByText(/no forecast applies/)).toBeInTheDocument();
     // A closed period draws no dashed tail: there is nothing left to project.

@@ -15,7 +15,10 @@ Homepage = "https://github.com/costlyinfra-admin/Meter"
 Source = "https://github.com/costlyinfra-admin/Meter/tree/main/sdk/python"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# ruff is here because CI lints this package (`ruff check .` in the SDK job).
+# Without it that step exits 127 — command not found — which is how the SDK
+# job failed for weeks while the tests underneath it were passing.
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [build-system]
 requires = ["setuptools>=68"]

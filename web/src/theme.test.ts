@@ -100,18 +100,25 @@ describe("theme", () => {
 
   it("still themes the page when storage is unavailable", () => {
     mockSystem(false);
-    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+    // Replace the whole object rather than spying on its methods. Where jsdom
+    // provides a real Storage it is a Proxy, and assigning `getItem` to it
+    // writes a storage ENTRY of that name instead of shadowing the method — so
+    // a spy silently does nothing and the test passes for the wrong reason.
+    const real = Object.getOwnPropertyDescriptor(window, "localStorage");
+    const blocked = () => {
       throw new Error("blocked");
-    });
-    const getItem = vi.spyOn(window.localStorage, "getItem").mockImplementation(() => {
-      throw new Error("blocked");
+    };
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: { getItem: blocked, setItem: blocked, removeItem: blocked },
     });
 
-    expect(choose("dark")).toBe("dark");
-    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
-    expect(stored()).toBeNull();
-
-    setItem.mockRestore();
-    getItem.mockRestore();
+    try {
+      expect(choose("dark")).toBe("dark");
+      expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+      expect(stored()).toBeNull();
+    } finally {
+      if (real) Object.defineProperty(window, "localStorage", real);
+    }
   });
 });
