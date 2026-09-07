@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 import httpx
 
-logger = logging.getLogger("annapurna.ingest")
+logger = logging.getLogger("meter.ingest")
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 

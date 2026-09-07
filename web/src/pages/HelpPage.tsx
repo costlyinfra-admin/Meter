@@ -115,10 +115,10 @@ export function HelpPage() {
             </>
           ) : (
             <>
-              <h2>Everything about Annapurna, in one place</h2>
+              <h2>Everything about Meter, in one place</h2>
               <p className="kb-summary">
                 Start at the beginning, or search for what you need. Every topic describes what
-                Annapurna actually does — including where each number comes from.
+                Meter actually does — including where each number comes from.
               </p>
               <div className="kb-toc">
                 {CATEGORIES.map((category) => (

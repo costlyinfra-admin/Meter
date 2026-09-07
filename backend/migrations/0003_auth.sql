@@ -1,4 +1,4 @@
--- Annapurna M2 — auth identities and encrypted connector credentials.
+-- Meter M2 — auth identities and encrypted connector credentials.
 --
 --   * `app_user` — a login identity belonging to a tenant. (Named app_user, not
 --     "user", to avoid quoting the SQL reserved word everywhere.)
@@ -48,7 +48,7 @@ CREATE INDEX connector_credential_tenant_idx ON connector_credential (tenant_id)
 -- ---------------------------------------------------------------------------
 -- Grants + RLS (same pattern as 0002).
 -- ---------------------------------------------------------------------------
-GRANT SELECT, INSERT, UPDATE, DELETE ON app_user, connector_credential TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON app_user, connector_credential TO meter_app;
 
 ALTER TABLE app_user ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_user FORCE ROW LEVEL SECURITY;

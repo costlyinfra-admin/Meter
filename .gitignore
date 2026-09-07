@@ -5,7 +5,7 @@
 *.pem
 *.key
 credentials.json
-# Local secret notes / scratch files (e.g. "Annapurna secrets.rtf")
+# Local secret notes / scratch files (e.g. "Meter secrets.rtf")
 *secret*.rtf
 *secrets*
 *.rtf

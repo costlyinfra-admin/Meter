@@ -66,7 +66,7 @@ export function InstallSdkPage() {
       <section className="source-section">
         <h2>1. Generate your ingest token</h2>
         <p className="muted">
-          One token per workspace. It authorizes the SDK to send usage to Annapurna. Set these{" "}
+          One token per workspace. It authorizes the SDK to send usage to Meter. Set these{" "}
           <strong>two</strong> environment variables where your app runs (your <code>.env</code>,
           secrets manager, or deploy config):
         </p>
@@ -77,14 +77,14 @@ export function InstallSdkPage() {
         )}
         {token ? (
           <>
-            <Snippet className="token">{`ANNAPURNA_INGEST_URL=${ingestUrl}
-ANNAPURNA_INGEST_TOKEN=${token}`}</Snippet>
+            <Snippet className="token">{`METER_INGEST_URL=${ingestUrl}
+METER_INGEST_TOKEN=${token}`}</Snippet>
             <p className="muted">Copy the token now — it isn't shown again. Keep it secret.</p>
           </>
         ) : (
           <>
-            <Snippet>{`ANNAPURNA_INGEST_URL=${ingestUrl}
-ANNAPURNA_INGEST_TOKEN=…    # click "Generate" to create yours`}</Snippet>
+            <Snippet>{`METER_INGEST_URL=${ingestUrl}
+METER_INGEST_TOKEN=…    # click "Generate" to create yours`}</Snippet>
             <button className="secondary" onClick={generate}>
               Generate ingest token
             </button>
@@ -126,20 +126,20 @@ ANNAPURNA_INGEST_TOKEN=…    # click "Generate" to create yours`}</Snippet>
           system Python.
         </p>
         <span className="chart-title">Python</span>
-        <Snippet>{`python3 -m pip install "annapurna-meter>=0.4"
+        <Snippet>{`python3 -m pip install "costlyinfra-meter>=1.0"
 
 # or, the durable version — add it to your requirements.txt / pyproject.toml:
-annapurna-meter>=0.4`}</Snippet>
+costlyinfra-meter>=1.0`}</Snippet>
         <p className="muted">
           If pip answers <code>error: externally-managed-environment</code>, you are outside a
           virtualenv — activate your app's environment and run it again. That message is Python
           protecting the system install, not a problem with the package.
         </p>
         <span className="chart-title">Node</span>
-        <Snippet>{`npm install annapurna-meter`}</Snippet>
+        <Snippet>{`npm install costlyinfra-meter`}</Snippet>
         <p className="muted">
           The Node package is <strong>ESM only</strong>: use <code>import</code>. In a CommonJS
-          project, load it with <code>{`const { wrap } = await import("annapurna-meter")`}</code> —{" "}
+          project, load it with <code>{`const { wrap } = await import("costlyinfra-meter")`}</code> —{" "}
           <code>require()</code> will not work.
         </p>
       </section>
@@ -157,7 +157,7 @@ annapurna-meter>=0.4`}</Snippet>
         </p>
         <span className="chart-title">Python</span>
         <Snippet>{`from anthropic import Anthropic
-from annapurna_meter import wrap
+from costlyinfra_meter import wrap
 
 client = wrap(Anthropic(), feature_id="<feature-id>")   # reads the env vars above
 
@@ -165,7 +165,7 @@ client = wrap(Anthropic(), feature_id="<feature-id>")   # reads the env vars abo
 resp = client.messages.create(model="claude-sonnet-4-6", messages=[...])`}</Snippet>
         <span className="chart-title">Node</span>
         <Snippet>{`import OpenAI from "openai";
-import { wrap } from "annapurna-meter";
+import { wrap } from "costlyinfra-meter";
 
 const client = wrap(new OpenAI(), { featureId: "<feature-id>" });
 
@@ -181,7 +181,7 @@ const resp = await client.chat.completions.create({ model: "gpt-4o", messages: [
           <strong>Two cases the wrapper doesn't cover.</strong> Streaming and async responses are
           skipped, so record those yourself — and for that you need a meter of your own rather than
           the one <code>wrap()</code> makes internally:
-          <Snippet>{`from annapurna_meter import Meter
+          <Snippet>{`from costlyinfra_meter import Meter
 
 meter = Meter(feature_id="<feature-id>")     # reads the same two env vars
 meter.record_anthropic(resp)                 # or meter.record_openai(resp)

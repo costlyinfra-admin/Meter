@@ -5,7 +5,7 @@
  * connectors without an entry fall back to the generic paste-token form.
  *
  * The credential each one expects mirrors what the backend client actually uses
- * (see backend/annapurna/providers.py) — admin/cost keys, not standard keys.
+ * (see backend/meter/providers.py) — admin/cost keys, not standard keys.
  */
 export type ConnectorGuide = {
   /** One line on what we read and the read-only assurance. */

@@ -7,13 +7,13 @@ name: Release SDK
 # anywhere. One-time human setup (see docs/deploy.md):
 #   1. Create a PyPI account (2FA is mandatory) and, under Account -> Publishing,
 #      add a *pending* GitHub Actions publisher:
-#        project = annapurna-meter, owner = costlyinfra-admin,
-#        repo = Annapurna, workflow = release-sdk.yml, environment = pypi
+#        project = costlyinfra-meter, owner = costlyinfra-admin,
+#        repo = Meter, workflow = release-sdk.yml, environment = pypi
 #   2. Create a GitHub Environment named `pypi` (repo Settings -> Environments).
 #   The name is CLAIMED on the first successful publish — it can't be reserved.
 #
 # npm currently uses a token (npm trusted publishing can replace it later):
-#   3. Create the @annapurna scope on npm, then add repo secret NPM_TOKEN
+#   3. Create the @costlyinfra scope on npm, then add repo secret NPM_TOKEN
 #      (npm -> Access Tokens -> Automation). Without it the Node job just
 #      tests and skips publishing.
 

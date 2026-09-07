@@ -31,7 +31,7 @@ describe("knowledge-base retrieval", () => {
   });
 
   it("still grounds the assistant when a question matches nothing", () => {
-    // Better to answer "here is what Annapurna is" than to answer from nothing.
+    // Better to answer "here is what Meter is" than to answer from nothing.
     const passages = retrieve("qwertyuiop zxcvbnm");
     expect(passages.length).toBeGreaterThan(0);
   });

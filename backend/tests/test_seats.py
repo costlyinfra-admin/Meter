@@ -7,8 +7,8 @@ import json
 
 import httpx
 import pytest
-from annapurna import credentials, discovery, okta, seats
-from annapurna.github import PullRequest
+from meter import credentials, discovery, okta, seats
+from meter.github import PullRequest
 
 PERIOD = dt.date(2026, 5, 1)
 

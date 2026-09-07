@@ -1,7 +1,7 @@
 """Bring-your-own LLM key for feature discovery (optional, per tenant).
 
-Discovery clusters PR metadata with an LLM. By default that is Annapurna's own
-server-side endpoint (ANNAPURNA_DISCOVERY_*). A tenant can point it at their own
+Discovery clusters PR metadata with an LLM. By default that is Meter's own
+server-side endpoint (METER_DISCOVERY_*). A tenant can point it at their own
 account instead — their provider, their key, their model — and this module is
 where that configuration lives.
 
@@ -34,7 +34,7 @@ from .db import app_dsn, connect, tenant_tx
 class LlmConfig:
     """Where discovery sends its clustering request.
 
-    One shape for both sources — Annapurna's own endpoint read from env, and a
+    One shape for both sources — Meter's own endpoint read from env, and a
     tenant's own configuration (BYOK) read from the database — so there is a
     single OpenAI-compatible implementation rather than one per provider.
     """
@@ -49,19 +49,19 @@ DEFAULT_DISCOVERY_MODEL = "llama-3.3-70b-versatile"
 
 
 def env_llm_config() -> Optional[LlmConfig]:
-    """Annapurna's own discovery endpoint, from env. None when unconfigured.
+    """Meter's own discovery endpoint, from env. None when unconfigured.
 
-    ANNAPURNA_DISCOVERY_BASE_URL  e.g. https://api.groq.com/openai/v1
-    ANNAPURNA_DISCOVERY_API_KEY   the provider key ("ollama" for local Ollama)
-    ANNAPURNA_DISCOVERY_MODEL     e.g. llama-3.3-70b-versatile
+    METER_DISCOVERY_BASE_URL  e.g. https://api.groq.com/openai/v1
+    METER_DISCOVERY_API_KEY   the provider key ("ollama" for local Ollama)
+    METER_DISCOVERY_MODEL     e.g. llama-3.3-70b-versatile
     """
-    base = os.environ.get("ANNAPURNA_DISCOVERY_BASE_URL")
+    base = os.environ.get("METER_DISCOVERY_BASE_URL")
     if not base:
         return None
     return LlmConfig(
         base_url=base,
-        api_key=os.environ.get("ANNAPURNA_DISCOVERY_API_KEY", ""),
-        model=os.environ.get("ANNAPURNA_DISCOVERY_MODEL", DEFAULT_DISCOVERY_MODEL),
+        api_key=os.environ.get("METER_DISCOVERY_API_KEY", ""),
+        model=os.environ.get("METER_DISCOVERY_MODEL", DEFAULT_DISCOVERY_MODEL),
     )
 
 
@@ -211,7 +211,7 @@ def active_config(tenant_id: str) -> Optional[LlmConfig]:
     """The config discovery should use, or None to leave existing behaviour alone.
 
     Never raises: a tenant whose stored key cannot be decrypted (a rotated
-    APP_SECRET_KEY, say) falls back to Annapurna's endpoint rather than losing
+    APP_SECRET_KEY, say) falls back to Meter's endpoint rather than losing
     the ability to run discovery at all.
     """
     try:
@@ -225,7 +225,7 @@ def active_config(tenant_id: str) -> Optional[LlmConfig]:
 
 
 def set_enabled(tenant_id: str, enabled: bool) -> dict:
-    """Turn BYOK off (back to Annapurna's endpoint) without discarding it."""
+    """Turn BYOK off (back to Meter's endpoint) without discarding it."""
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         conn.execute("UPDATE discovery_llm SET enabled = %s, updated_at = now()", (enabled,))
     return status(tenant_id)

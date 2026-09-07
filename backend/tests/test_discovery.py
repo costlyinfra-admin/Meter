@@ -7,8 +7,8 @@ import json
 
 import httpx
 import pytest
-from annapurna import discovery, discovery_llm, features
-from annapurna.github import PullRequest
+from meter import discovery, discovery_llm, features
+from meter.github import PullRequest
 
 
 def _pr(number, repo, title, branch, *, body="", labels=None, author="dev"):
@@ -96,8 +96,8 @@ def test_proposals_from_json_filters_unknown_refs():
 def test_openai_compatible_cluster_sends_body_and_labels(monkeypatch):
     import httpx
 
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_BASE_URL", "https://api.groq.com/openai/v1")
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_API_KEY", "gsk_free")
+    monkeypatch.setenv("METER_DISCOVERY_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("METER_DISCOVERY_API_KEY", "gsk_free")
 
     def handler(request: httpx.Request) -> httpx.Response:
         sent = json.loads(request.content)
@@ -116,12 +116,12 @@ def test_openai_compatible_cluster_sends_body_and_labels(monkeypatch):
 
 
 def test_llm_backend_selection(monkeypatch):
-    monkeypatch.delenv("ANNAPURNA_DISCOVERY_BASE_URL", raising=False)
+    monkeypatch.delenv("METER_DISCOVERY_BASE_URL", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert discovery._llm_backend() is None
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
     assert discovery._llm_backend() is discovery.claude_cluster
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("METER_DISCOVERY_BASE_URL", "http://localhost:11434/v1")
     assert discovery._llm_backend() is discovery.openai_compatible_cluster
 
 
@@ -243,9 +243,9 @@ def test_rerun_keeps_build_cost_attached_to_the_same_feature(tenant_id, monkeypa
     """The end-to-end payoff: attributed build cost survives a re-analysis intact."""
     from decimal import Decimal
 
-    from annapurna import build
-    from annapurna.build import DeveloperSpend
-    from annapurna.db import app_dsn, connect, tenant_tx
+    from meter import build
+    from meter.build import DeveloperSpend
+    from meter.db import app_dsn, connect, tenant_tx
 
     monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(MCS_PRS))
     discovery.run_discovery(tenant_id, "transilienceai", "tok")
@@ -407,16 +407,16 @@ def test_discovery_uses_the_tenants_config_when_set(tenant_id):
 
 
 def test_no_byok_leaves_the_existing_behaviour_alone(tenant_id, monkeypatch):
-    """Fallback must be exact: Annapurna's own env configuration, untouched."""
+    """Fallback must be exact: Meter's own env configuration, untouched."""
     assert discovery_llm.active_config(tenant_id) is None
 
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_BASE_URL", "https://api.groq.com/openai/v1")
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_API_KEY", "annapurna_server_key")
-    monkeypatch.delenv("ANNAPURNA_DISCOVERY_MODEL", raising=False)
+    monkeypatch.setenv("METER_DISCOVERY_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("METER_DISCOVERY_API_KEY", "meter_server_key")
+    monkeypatch.delenv("METER_DISCOVERY_MODEL", raising=False)
 
     config = discovery.env_llm_config()
     assert config.base_url == "https://api.groq.com/openai/v1"
-    assert config.api_key == "annapurna_server_key"
+    assert config.api_key == "meter_server_key"
     assert config.model == "llama-3.3-70b-versatile"  # the shipped default
     assert discovery._llm_backend() is discovery.openai_compatible_cluster
 
@@ -427,7 +427,7 @@ def test_disabling_byok_falls_back_without_discarding_it(tenant_id):
 
     off = discovery_llm.set_enabled(tenant_id, False)
     assert off["configured"] is True and off["enabled"] is False
-    assert discovery_llm.active_config(tenant_id) is None  # back to Annapurna's endpoint
+    assert discovery_llm.active_config(tenant_id) is None  # back to Meter's endpoint
 
     on = discovery_llm.set_enabled(tenant_id, True)
     assert on["enabled"] is True

@@ -138,7 +138,7 @@ def _apply_exclusions(unified: list) -> None:
 
 # Per-lever guidance (opt spec §20) — deterministic templates, never an LLM. The
 # implementation one-liner is the detector's `fix`; these add "how to validate the
-# change is safe" and "how Annapurna confirms it worked".
+# change is safe" and "how Meter confirms it worked".
 _DIRECTIONAL_GUIDANCE = {
     "validation": "Investigate whether this usage pattern really applies before acting.",
     "verification": "Install the metering SDK to turn this estimate into a measured, verifiable "

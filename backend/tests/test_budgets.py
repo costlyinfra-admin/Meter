@@ -10,10 +10,10 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from annapurna import budgets
-from annapurna.api import create_app
-from annapurna.db import admin_dsn, app_dsn, connect, tenant_tx
 from fastapi.testclient import TestClient
+from meter import budgets
+from meter.api import create_app
+from meter.db import admin_dsn, app_dsn, connect, tenant_tx
 
 GOOD_PASSWORD = "correct horse battery"
 

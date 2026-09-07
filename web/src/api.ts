@@ -1,5 +1,5 @@
 /**
- * Thin API client for the Annapurna backend.
+ * Thin API client for the Meter backend.
  *
  * All calls send the session cookie (`credentials: "include"`). In dev, Vite
  * proxies `/api` to the FastAPI backend (see vite.config.ts).

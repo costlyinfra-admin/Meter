@@ -1,6 +1,6 @@
 # infra/ — Deployment
 
-Annapurna ships as a **single Docker image** that serves both the API and the
+Meter ships as a **single Docker image** that serves both the API and the
 built web app, backed by a managed Postgres. The full step-by-step is in
 **[`docs/deploy.md`](../docs/deploy.md)** (free stack: Neon + Render + GitHub
 Actions cron + your Cloudflare-managed subdomain).
@@ -21,9 +21,9 @@ Actions cron + your Cloudflare-managed subdomain).
   migrations + auth + seeding. As the table owner it is exempt from RLS — the
   portable replacement for the local "superuser bypass" (see migration
   `0006_relax_force_rls.sql`).
-- The **app** role (`annapurna_app`) is a non-owner, so Row-Level Security still
+- The **app** role (`meter_app`) is a non-owner, so Row-Level Security still
   fully governs every tenant query. Its password comes from
-  `ANNAPURNA_APP_DB_PASSWORD`; the app derives its connection automatically.
+  `METER_APP_DB_PASSWORD`; the app derives its connection automatically.
 
 ## Beyond the free stack
 

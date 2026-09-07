@@ -65,7 +65,7 @@ def test_rls_enabled_on_tenant_tables(admin_conn):
 
 def test_migrations_are_idempotent(admin_conn, admin_conninfo):
     """Re-running apply_migrations on an already-migrated DB is a no-op."""
-    from annapurna.migrations import apply_migrations
+    from meter.migrations import apply_migrations
 
     again = apply_migrations(admin_conninfo)
     assert again == []

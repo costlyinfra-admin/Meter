@@ -3,7 +3,7 @@
 Three rules shape all of it.
 
 **Usage is compared with usage.** The principal number is the provider's usage
-subtotal against Annapurna's tracked usage cost. Tax, credits, discounts and
+subtotal against Meter's tracked usage cost. Tax, credits, discounts and
 fees are carried through and reported, but they are never added to either side
 of that comparison — an invoice total is not a usage figure, and calling the
 difference "missing usage" would be wrong every month there is any tax at all.
@@ -28,8 +28,8 @@ from .common import ZERO, pct, quantize, record_audit, tenant_conn
 from .flag import ReconciliationError
 
 #: Classifications. Chosen to name a cause, not to describe a size.
-PROVIDER_ONLY = "provider_usage_missing_from_annapurna"
-ANNAPURNA_ONLY = "annapurna_usage_absent_from_statement"
+PROVIDER_ONLY = "provider_usage_missing_from_meter"
+METER_ONLY = "meter_usage_absent_from_statement"
 PRICING_MISMATCH = "pricing_version_mismatch"
 CURRENCY_MISMATCH = "currency_mismatch"
 PERIOD_BOUNDARY = "billing_period_boundary"
@@ -38,7 +38,7 @@ UNKNOWN_MODEL = "unknown_model_mapping"
 UNATTRIBUTED_ACCOUNT = "unattributed_provider_workspace"
 UNSUPPORTED_LINE = "unsupported_line_item_type"
 INCOMPLETE_PROVIDER = "incomplete_provider_export"
-INCOMPLETE_TRACKED = "incomplete_annapurna_data"
+INCOMPLETE_TRACKED = "incomplete_meter_data"
 UNEXPLAINED = "unexplained_difference"
 MATCHED = "matched"
 
@@ -327,9 +327,9 @@ def _reconcile(
                 "tracked_amount": quantize(row["amount"]),
                 "difference": quantize(-row["amount"]),
                 "difference_pct": None,
-                "classification": ANNAPURNA_ONLY,
+                "classification": METER_ONLY,
                 "explanation": (
-                    "Annapurna tracked this spend but no line on the statement matched it."
+                    "Meter tracked this spend but no line on the statement matched it."
                 ),
                 "confidence": "possible",
                 "evidence": [
@@ -357,7 +357,7 @@ def _reconcile(
                 "difference_pct": None,
                 "classification": INCOMPLETE_TRACKED,
                 "explanation": (
-                    "Annapurna has no connector data for this provider and period, so there is "
+                    "Meter has no connector data for this provider and period, so there is "
                     "nothing to compare the statement against yet."
                 ),
                 "confidence": "confirmed",
@@ -375,7 +375,7 @@ def _reconcile(
         status = "discrepancy"
 
     unmatched_provider = sum(1 for m in matches if m["classification"] == PROVIDER_ONLY)
-    unmatched_tracked = sum(1 for m in matches if m["classification"] == ANNAPURNA_ONLY)
+    unmatched_tracked = sum(1 for m in matches if m["classification"] == METER_ONLY)
 
     conn.execute(
         """
@@ -491,7 +491,7 @@ def _compare(item, tracked_amount, strategy, taken, abs_tol, pct_tol) -> dict:
 
 def _unmatched_provider(item, tracked_rows, start, end) -> dict:
     """A statement line nothing tracked corresponds to. The reason matters: a
-    day outside the period Annapurna holds is a boundary problem, an unknown
+    day outside the period Meter holds is a boundary problem, an unknown
     workspace is an attribution problem, and neither is missing usage."""
     day = item["service_date"]
     known_accounts = {_norm(r["workspace_id"]) for r in tracked_rows}
@@ -508,7 +508,7 @@ def _unmatched_provider(item, tracked_rows, start, end) -> dict:
     elif item["provider_account"] and _norm(item["provider_account"]) not in known_accounts:
         classification, explanation, confidence = (
             UNATTRIBUTED_ACCOUNT,
-            f"The statement bills workspace {item['provider_account']}, which Annapurna has "
+            f"The statement bills workspace {item['provider_account']}, which Meter has "
             "no tracked spend for. It is probably not connected.",
             "possible",
         )
@@ -517,7 +517,7 @@ def _unmatched_provider(item, tracked_rows, start, end) -> dict:
     else:
         classification, explanation, confidence = (
             PROVIDER_ONLY,
-            "The provider billed this usage and Annapurna has no record of it.",
+            "The provider billed this usage and Meter has no record of it.",
             "possible",
         )
     return {

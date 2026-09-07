@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from annapurna.db import tenant_tx
-from annapurna.sampledata import create_tenant, insert_sample_data
+from meter.db import tenant_tx
+from meter.sampledata import create_tenant, insert_sample_data
 
 # Tables that carry tenant_id and must be isolated.
 TENANT_TABLES = [

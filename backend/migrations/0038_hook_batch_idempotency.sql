@@ -27,7 +27,7 @@ CREATE TABLE hook_batch (
     PRIMARY KEY (tenant_id, batch_id)
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON hook_batch TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON hook_batch TO meter_app;
 
 ALTER TABLE hook_batch ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hook_batch FORCE ROW LEVEL SECURITY;

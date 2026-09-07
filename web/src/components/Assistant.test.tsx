@@ -59,7 +59,7 @@ describe("support assistant", () => {
   it("opens on a greeting and a set of common questions", async () => {
     await open();
     expect(screen.getByRole("dialog", { name: /support assistant/i })).toBeInTheDocument();
-    expect(screen.getByText(/I'm the Annapurna assistant/)).toBeInTheDocument();
+    expect(screen.getByText(/I'm the Meter assistant/)).toBeInTheDocument();
     expect(screen.getByText("Common questions")).toBeInTheDocument();
   });
 

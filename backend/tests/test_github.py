@@ -6,7 +6,7 @@ import datetime as dt
 
 import httpx
 import pytest
-from annapurna.github import GitHubClient, GitHubError
+from meter.github import GitHubClient, GitHubError
 
 NOW = dt.datetime.now(dt.timezone.utc)
 

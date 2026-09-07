@@ -85,7 +85,11 @@ const STOP = new Set([
   "two",
   "see",
   "way",
-  "annapurna",
+  // The brand name, which appears in nearly every topic and so carries no
+  // signal. Note this list is applied BEFORE stemming, so "metering" (the
+  // concept) survives and stems to "meter" — the index's "meter" token
+  // therefore means metering, not the product name.
+  "meter",
   "please",
   "need",
   "want",
@@ -170,7 +174,7 @@ export const MAX_PASSAGE_CHARS = 2400;
  *
  * Returns the highest-scoring topics, and — when a question matches nothing —
  * the opening topics of the book, so the assistant can still ground a reply on
- * what Annapurna is rather than answering from thin air.
+ * what Meter is rather than answering from thin air.
  */
 export function retrieve(question: string, count = 4): Passage[] {
   const words = [...new Set(tokens(question))];

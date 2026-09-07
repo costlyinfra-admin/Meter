@@ -262,11 +262,11 @@ function ActivityGap({
 function evidenceSentence(coverage: ProviderSpend["activity_coverage"]): string {
   if (coverage.first_merged && coverage.last_merged) {
     return (
-      `Annapurna holds PR evidence for ${shortDay(coverage.first_merged)} – ` +
+      `Meter holds PR evidence for ${shortDay(coverage.first_merged)} – ` +
       `${shortDay(coverage.last_merged)}, but no record of which windows discovery has looked at.`
     );
   }
-  return "Annapurna holds PR evidence, but none of it falls in this window.";
+  return "Meter holds PR evidence, but none of it falls in this window.";
 }
 
 /**

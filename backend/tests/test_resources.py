@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from annapurna import resources
+from meter import resources
 
 
 def _register(tenant_id, name="service-a-prod", key="k_a"):

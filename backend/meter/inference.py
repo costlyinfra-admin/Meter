@@ -257,7 +257,7 @@ def sync_connected(tenant_id: str, period: Optional[dt.date] = None) -> dict:
         try:
             summary = run_inference_ingest(tenant_id, provider, period, admin_key)
         except Exception as exc:  # noqa: BLE001 — report per provider, keep going
-            logging.getLogger("annapurna.ingest").warning(
+            logging.getLogger("meter.ingest").warning(
                 "refresh sync failed for %s: %s", provider, exc
             )
             errors.append({"provider": provider, "error": str(exc)[:200]})
@@ -947,7 +947,7 @@ def run_scheduled_ingest(periods: Optional[list[dt.date]] = None) -> list[dict]:
                     hook.reconcile(str(tenant_id), period)
                     reconciled.add((str(tenant_id), period))
             except Exception as exc:  # one tenant/provider failing must not stop the rest
-                logging.getLogger("annapurna.ingest").warning(
+                logging.getLogger("meter.ingest").warning(
                     "inference ingest failed for tenant=%s provider=%s: %s",
                     tenant_id,
                     provider,

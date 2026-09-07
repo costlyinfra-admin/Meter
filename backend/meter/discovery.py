@@ -31,7 +31,7 @@ from .discovery_llm import (
 )
 from .github import GitHubClient, PullRequest
 
-logger = logging.getLogger("annapurna.discovery")
+logger = logging.getLogger("meter.discovery")
 
 _BRANCH_PREFIXES = (
     "feature/",
@@ -526,7 +526,7 @@ def _pr_payload(prs: list[PullRequest]) -> str:
 def claude_cluster(prs: list[PullRequest]) -> list[Proposal]:
     from anthropic import Anthropic  # imported lazily so the dep is optional at runtime
 
-    model = os.environ.get("ANNAPURNA_DISCOVERY_MODEL", "claude-sonnet-4-6")
+    model = os.environ.get("METER_DISCOVERY_MODEL", "claude-sonnet-4-6")
     client = Anthropic()  # reads ANTHROPIC_API_KEY
     message = client.messages.create(
         model=model,
@@ -547,7 +547,7 @@ def openai_compatible_cluster(
     """Cluster via any OpenAI-compatible /chat/completions endpoint.
 
     Lets discovery run on a FREE model — Groq's free tier, a local Ollama, an
-    OpenRouter ``:free`` model, etc. `config` defaults to Annapurna's own
+    OpenRouter ``:free`` model, etc. `config` defaults to Meter's own
     endpoint from env; a tenant's BYOK configuration is passed in instead.
     Only PR metadata (ref/title/branch/repo) is sent — never source code.
     """
@@ -621,7 +621,7 @@ def _llm_backend() -> Optional[Callable[[list[PullRequest]], list[Proposal]]]:
     An explicit OpenAI-compatible endpoint (free models: Groq, Ollama, OpenRouter)
     takes precedence; then Anthropic; otherwise None -> the heuristic.
     """
-    if os.environ.get("ANNAPURNA_DISCOVERY_BASE_URL"):
+    if os.environ.get("METER_DISCOVERY_BASE_URL"):
         return openai_compatible_cluster
     if os.environ.get("ANTHROPIC_API_KEY"):
         return claude_cluster
@@ -632,7 +632,7 @@ def cluster_prs(prs: list[PullRequest], *, config: Optional[LlmConfig] = None) -
     """Cluster with an LLM; fall back to the heuristic on any issue.
 
     `config` is a tenant's own endpoint (BYOK). Without one, selection is exactly
-    as it has always been: Annapurna's configured endpoint, else Anthropic, else
+    as it has always been: Meter's configured endpoint, else Anthropic, else
     the heuristic.
     """
     if not prs:

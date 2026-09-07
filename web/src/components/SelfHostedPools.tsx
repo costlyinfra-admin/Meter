@@ -82,7 +82,7 @@ export function SelfHostedPools({
       <p className="muted">
         Running models on your own GPUs — open-source (Llama, Mistral, Qwen…) or any self-hosted
         deployment — has no per-token bill; the cost is your infra spend. Register each serving pool
-        with its monthly cost, and Annapurna splits that cost across features by how much each one
+        with its monthly cost, and Meter splits that cost across features by how much each one
         actually used the pool.
       </p>
 

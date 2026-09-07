@@ -163,10 +163,10 @@ describe("Feature discovery model (BYOK)", () => {
 
   // The panel is hidden until its tab is open, so these render straight to it.
 
-  it("says Annapurna's model is in use until one is configured", async () => {
+  it("says Meter's model is in use until one is configured", async () => {
     renderPage("/settings#byok");
     expect(await screen.findByText("Feature discovery model")).toBeInTheDocument();
-    expect(screen.getByText("Using Annapurna's model")).toBeInTheDocument();
+    expect(screen.getByText("Using Meter's model")).toBeInTheDocument();
   });
 
   it("saves a configuration and never renders the key afterwards", async () => {
@@ -244,7 +244,7 @@ describe("Feature discovery model (BYOK)", () => {
     expect(document.body.textContent).toContain("***"); // redacted, as the server sent it
   });
 
-  it("can switch back to Annapurna's model without discarding the config", async () => {
+  it("can switch back to Meter's model without discarding the config", async () => {
     vi.mocked(api.discoveryLlm).mockResolvedValue({
       configured: true,
       enabled: true,
@@ -262,10 +262,10 @@ describe("Feature discovery model (BYOK)", () => {
       base_url: "u",
     });
     renderPage("/settings#byok");
-    fireEvent.click(await screen.findByRole("button", { name: "Use Annapurna's model" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use Meter's model" }));
 
     await waitFor(() => expect(api.setDiscoveryLlmEnabled).toHaveBeenCalledWith(false));
-    expect(await screen.findByText("Using Annapurna's model")).toBeInTheDocument();
+    expect(await screen.findByText("Using Meter's model")).toBeInTheDocument();
     // Still configured, so it can be switched back on.
     expect(screen.getByRole("button", { name: "Use my model" })).toBeInTheDocument();
   });

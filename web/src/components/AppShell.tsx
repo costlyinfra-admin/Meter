@@ -226,7 +226,7 @@ export function AppShell() {
         <div className="sidebar-brand">
           <span className="brand">
             <BrandMark />
-            Annapurna
+            Meter
           </span>
         </div>
         <nav className="sidebar-nav">

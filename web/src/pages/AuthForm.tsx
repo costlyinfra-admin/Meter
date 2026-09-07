@@ -73,7 +73,7 @@ export function AuthForm({ title, submitLabel, onSubmit, footer, note }: AuthFor
         <div className="auth-top-inner">
           <span className="brand">
             <BrandMark />
-            Annapurna
+            Meter
           </span>
           <a className="auth-home-link" href="https://costlyinfra.com">
             costlyinfra.com ↗

@@ -22,7 +22,7 @@ CREATE TABLE optimization_action (
 
 CREATE INDEX optimization_action_feature_idx ON optimization_action (tenant_id, feature_id);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON optimization_action TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON optimization_action TO meter_app;
 
 ALTER TABLE optimization_action ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON optimization_action

@@ -6,8 +6,8 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-from annapurna import alerts, alerts_eval, auth, budgets, notify
-from annapurna.db import app_dsn, connect, tenant_tx
+from meter import alerts, alerts_eval, auth, budgets, notify
+from meter.db import app_dsn, connect, tenant_tx
 
 MAY = dt.date(2026, 5, 1)
 APR = dt.date(2026, 4, 1)

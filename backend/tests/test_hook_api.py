@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from annapurna.api import create_app
 from fastapi.testclient import TestClient
+from meter.api import create_app
 
 PASSWORD = "correct horse battery"
 

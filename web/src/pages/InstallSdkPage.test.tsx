@@ -29,10 +29,10 @@ describe("InstallSdkPage", () => {
     renderPage();
     expect(screen.getByRole("heading", { name: "Install SDK" })).toBeInTheDocument();
     // Published on PyPI and npm.
-    expect(screen.getByText(/python3 -m pip install "annapurna-meter/)).toBeInTheDocument();
-    expect(screen.getByText(/npm install annapurna-meter/)).toBeInTheDocument();
+    expect(screen.getByText(/python3 -m pip install "costlyinfra-meter/)).toBeInTheDocument();
+    expect(screen.getByText(/npm install costlyinfra-meter/)).toBeInTheDocument();
     // Both required env vars are documented (the URL was previously missing).
-    expect(screen.getAllByText(/ANNAPURNA_INGEST_URL=/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/METER_INGEST_URL=/).length).toBeGreaterThan(0);
     await waitFor(() => expect(api.listFeatures).toHaveBeenCalled());
   });
 
@@ -71,7 +71,7 @@ describe("InstallSdkPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /copy prompt/i }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
-    expect(writeText.mock.calls[0][0]).toContain("Add Annapurna metering to this codebase.");
+    expect(writeText.mock.calls[0][0]).toContain("Add Meter metering to this codebase.");
     expect(await screen.findByRole("button", { name: /copied/i })).toBeInTheDocument();
   });
 

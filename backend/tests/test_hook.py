@@ -5,9 +5,9 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from annapurna import dashboard, features, hook, inference
-from annapurna.db import app_dsn, connect, tenant_tx
-from annapurna.providers import CostRecord
+from meter import dashboard, features, hook, inference
+from meter.db import app_dsn, connect, tenant_tx
+from meter.providers import CostRecord
 
 PERIOD = dt.date(2026, 6, 1)
 

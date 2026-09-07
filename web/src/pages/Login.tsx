@@ -46,7 +46,7 @@ export function Login() {
         await login(email, password);
         navigate("/");
       }}
-      footer={{ prompt: "New to Annapurna?", linkLabel: "Create an account", to: "/signup" }}
+      footer={{ prompt: "New to Meter?", linkLabel: "Create an account", to: "/signup" }}
       note={demoNote}
     />
   );

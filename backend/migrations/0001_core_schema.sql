@@ -1,4 +1,4 @@
--- Annapurna M1 — core schema.
+-- Meter M1 — core schema.
 --
 -- The six core entities from design doc §6, plus a `tenant` table that anchors
 -- tenant_id (the seed needs "one fake tenant" and M2 creates tenants on signup).

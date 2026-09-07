@@ -24,7 +24,7 @@ CREATE TABLE customer_cost (
 CREATE UNIQUE INDEX customer_cost_key ON customer_cost (tenant_id, customer_id, period);
 CREATE INDEX customer_cost_period_idx ON customer_cost (tenant_id, period);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON customer_cost TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON customer_cost TO meter_app;
 
 ALTER TABLE customer_cost ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON customer_cost

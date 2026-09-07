@@ -6,7 +6,7 @@ import json
 
 import httpx
 import pytest
-from annapurna import entra
+from meter import entra
 
 
 def test_entra_credential_parsing():

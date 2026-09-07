@@ -1,4 +1,4 @@
-# Annapurna — root orchestration.
+# Meter — root orchestration.
 # One entry point for installing, testing, and linting both packages.
 # Backend = Python (backend/), Web = React+TypeScript (web/).
 
@@ -12,7 +12,7 @@ PIP := $(VENV)/bin/pip
         lint lint-backend lint-web format db-migrate db-seed db-reset api web clean
 
 help:
-	@echo "Annapurna make targets:"
+	@echo "Meter make targets:"
 	@echo "  make install     - install backend (venv) + web (npm) dependencies"
 	@echo "  make test        - run backend + web test suites"
 	@echo "  make lint        - lint backend (ruff) + web (eslint)"
@@ -68,7 +68,7 @@ format:
 # ---- database ------------------------------------------------------------
 # Both need DATABASE_URL pointing at a Postgres instance (see README).
 db-migrate:
-	cd $(BACKEND) && .venv/bin/python -m annapurna.migrations
+	cd $(BACKEND) && .venv/bin/python -m meter.migrations
 
 db-seed:
 	cd $(BACKEND) && .venv/bin/python -m seed
@@ -78,12 +78,12 @@ db-reset:
 
 # Scheduled inference-cost ingest (run on a cadence in production).
 ingest:
-	cd $(BACKEND) && .venv/bin/python -m annapurna.inference
+	cd $(BACKEND) && .venv/bin/python -m meter.inference
 
 # ---- run -----------------------------------------------------------------
 # Needs DATABASE_URL + APP_SECRET_KEY in the environment (see .env.example).
 api:
-	cd $(BACKEND) && .venv/bin/uvicorn --factory annapurna.api:create_app --reload --port 8000
+	cd $(BACKEND) && .venv/bin/uvicorn --factory meter.api:create_app --reload --port 8000
 
 web:
 	cd $(WEB) && npm run dev

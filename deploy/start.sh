@@ -7,4 +7,4 @@ set -euo pipefail
 
 /app/deploy/release.sh
 
-exec uvicorn --factory annapurna.api:create_app --host 0.0.0.0 --port "${PORT:-8000}"
+exec uvicorn --factory meter.api:create_app --host 0.0.0.0 --port "${PORT:-8000}"

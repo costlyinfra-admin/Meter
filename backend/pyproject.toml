@@ -1,7 +1,7 @@
 [project]
-name = "annapurna-backend"
+name = "meter-backend"
 version = "0.1.0"
-description = "Annapurna backend — connector ingest, attribution, reconciliation, and API layer."
+description = "Meter backend — connector ingest, attribution, reconciliation, and API layer."
 requires-python = ">=3.9"
 license = { text = "AGPL-3.0-or-later" }
 # Runtime dependencies are added per-milestone. M1: Postgres. M2: API + auth.
@@ -30,12 +30,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["annapurna*"]
+include = ["meter*"]
 
 [tool.ruff]
 target-version = "py39"
 line-length = 100
-src = ["annapurna", "tests"]
+src = ["meter", "tests"]
 
 [tool.ruff.lint]
 # Sensible default rule set: pyflakes (F), pycodestyle (E/W), isort (I), bugbear (B), pyupgrade (UP).

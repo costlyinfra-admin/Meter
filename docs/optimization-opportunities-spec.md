@@ -8,7 +8,7 @@ that foundation as an **AI Cost Optimization Copilot** (five pillars: Observe,
 Detect, Recommend, Optimize, Prove) and defines the next milestones, without
 redesigning the architecture.
 **Relationship to existing work:** replaces nothing. The heuristic estimator in
-[`optimize.py`](../backend/annapurna/optimize.py) stays as the zero-instrumentation
+[`optimize.py`](../backend/meter/optimize.py) stays as the zero-instrumentation
 *directional* tier; the measured tier sits above it; the Copilot is the layer on top.
 
 ---
@@ -27,7 +27,7 @@ price book, never guessed.
 
 1. **Grounded, not guessed.** Every opportunity is backed by a measured signal
    (a count, a token total) and priced with `pricing.py` — never a flat %.
-   Same bar as the rest of Annapurna: *no black-box numbers* (invariant 3).
+   Same bar as the rest of Meter: *no black-box numbers* (invariant 3).
 2. **Metadata only, never content.** We capture *shapes* of calls (hashes,
    counts, token sizes), never prompt or response text. Hashes are salted
    per-tenant so they can't be dictionary-attacked or cross-referenced.
@@ -54,7 +54,7 @@ caching, LLM-written recommendations.
 
 ## 4. Data captured (SDK, metadata-only)
 
-The metering SDK ([`sdk/python/annapurna_meter`](../sdk/python/annapurna_meter))
+The metering SDK ([`sdk/python/costlyinfra_meter`](../sdk/python/costlyinfra_meter))
 gains an **optional** optimization mode (`Meter(..., optimize=True)`, default
 off). When on, for each recorded call the SDK computes locally:
 
@@ -118,7 +118,7 @@ change reprices old opportunities automatically.
 
 ## 6. Ingest path
 
-Extend `hook.ingest_events` ([`hook.py`](../backend/annapurna/hook.py)). Events
+Extend `hook.ingest_events` ([`hook.py`](../backend/meter/hook.py)). Events
 may now carry an optional `signal` block:
 
 ```json
@@ -179,7 +179,7 @@ detector in a later tier.
 ## 8. Connector-only complement (Tier A, no SDK)
 
 The provider cost APIs report cache usage the connectors currently discard.
-Extend the Anthropic/OpenAI clients ([`providers.py`](../backend/annapurna/providers.py))
+Extend the Anthropic/OpenAI clients ([`providers.py`](../backend/meter/providers.py))
 to read `cache_read_input_tokens` / `cache_creation_input_tokens` (Anthropic) and
 `cached_tokens` (OpenAI) and store them on the inference row. This gives, without
 any instrumentation:
@@ -339,7 +339,7 @@ This is the same "reconcile against reality" ethos as bill reconciliation.
 A structured triage of the broad optimization space (a 120-item industry list was
 the input). The filter is the product's own bar, not "is this a real technique":
 
-> **Annapurna may recommend an optimization only when it can both (a) DETECT it
+> **Meter may recommend an optimization only when it can both (a) DETECT it
 > from data it actually has, and (b) QUANTIFY the saving from the price book or a
 > measured count — never an invented percentage.** Detect-but-can't-quantify → a
 > low-confidence *symptom flag*. Neither → it's the customer's engineering team's
@@ -463,7 +463,7 @@ existing schema (`inference_cost`, `usage_signal`, `optimization_action`).*
 
 ## 17. Positioning & the five pillars
 
-Annapurna is repositioned as an **AI Cost Optimization Copilot** — built *on top of*
+Meter is repositioned as an **AI Cost Optimization Copilot** — built *on top of*
 the cost-attribution product, not replacing it. The existing strengths stay load-
 bearing: feature attribution, build vs inference split, connector-first onboarding,
 optional SDK precision, reconciliation, privacy-first metadata.
@@ -474,7 +474,7 @@ must move a customer toward it:
 1. *Where is AI money being wasted?* → Copilot Overview (§21)
 2. *What should we optimize first?* → deterministic prioritization (§19)
 3. *How much could each save?* → measured / modeled-ceiling savings (§18)
-4. *Why does Annapurna believe this?* → evidence trail + confidence reason (§18)
+4. *Why does Meter believe this?* → evidence trail + confidence reason (§18)
 5. *How hard is the fix?* → per-lever engineering effort (§19)
 6. *Did it actually work?* → reconciliation, projected → realized → verified (§18, §20)
 
@@ -588,7 +588,7 @@ must not be confused.
 
 Shipped. Each opportunity now carries `validation_guidance` and `verification` from
 a deterministic per-lever template (`_LEVER_GUIDANCE`, with a directional fallback)
-— the card shows a "How to apply & verify" expander (Validate / Annapurna verifies)
+— the card shows a "How to apply & verify" expander (Validate / Meter verifies)
 alongside the implementation one-liner (`fix`). The **Prove loop** gained the
 terminal `verified` state: `_actions` advances pending → measured → **verified**
 once the realized drop has held for `_VERIFY_PERIODS` (2) periods with a positive
@@ -602,12 +602,12 @@ guessed numbers) answering the seven questions:
 
 1. what was observed · 2. why it matters · 3. how savings were calculated ·
 4. recommended implementation · 5. engineering effort · 6. validation steps ·
-7. how Annapurna verifies success.
+7. how Meter verifies success.
 
 Example (provider switch): *"3.1B tokens on Together for Llama-3.1-70B; DeepInfra
 serves identical weights at $0.35/$0.40 vs $0.88 → save $X (rate delta × your
 tokens). Point the client's base URL at DeepInfra. Very low effort. Validate: run
-your eval suite (weights are identical, so parity is expected). Annapurna verifies:
+your eval suite (weights are identical, so parity is expected). Meter verifies:
 next month's provider row shifts to DeepInfra and the reconciliation loop reports
 the realized drop."*
 

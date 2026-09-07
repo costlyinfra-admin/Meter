@@ -1,7 +1,7 @@
 """Billing-data optimization — recommendations possible WITHOUT the SDK.
 
 The measured optimizer (optimize_measured.py) needs request-level telemetry from
-the metering SDK. Until that is installed, Annapurna may still hold authoritative
+the metering SDK. Until that is installed, Meter may still hold authoritative
 provider billing plus resource metadata — enough for a real, if narrower, set of
 recommendations. This module produces ONLY those, and never touches the measured
 path or its totals.
@@ -190,7 +190,7 @@ def _unattributed(conn, start: dt.date, end: dt.date) -> list[dict]:
                     "Attribution improves accountability; it does not reduce the bill."
                 ),
                 limitations=[
-                    "Annapurna maps spend only where you define an explicit key/project "
+                    "Meter maps spend only where you define an explicit key/project "
                     "mapping — it never guesses which feature spent the money.",
                 ],
                 action={"label": "View cost source", "href": "/cost-sources"},
@@ -242,7 +242,7 @@ def _dev_internal(conn, start: dt.date, end: dt.date) -> list[dict]:
                     "quantified once you confirm a resource is no longer needed."
                 ),
                 limitations=[
-                    "Based on your own classification — Annapurna does not judge whether the "
+                    "Based on your own classification — Meter does not judge whether the "
                     "workload is necessary.",
                 ],
                 action={"label": "View cost source", "href": "/cost-sources"},

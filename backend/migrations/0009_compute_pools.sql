@@ -36,7 +36,7 @@ CREATE TABLE pool_usage (
 CREATE INDEX pool_usage_tenant_idx ON pool_usage (tenant_id);
 CREATE INDEX pool_usage_pool_period_idx ON pool_usage (tenant_id, pool_id, period);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON compute_pool, pool_usage TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON compute_pool, pool_usage TO meter_app;
 
 -- RLS: ENABLE (not FORCE) — owner-exemption model for managed Postgres, same as
 -- every other tenant table after migration 0006. The app role is a non-owner and

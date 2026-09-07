@@ -1,10 +1,10 @@
-# Deploying Annapurna (free stack → `annapurna.costlyinfra.com`)
+# Deploying Meter (free stack → `meter.costlyinfra.com`)
 
 This gets the whole app live on a **free** stack, on your own subdomain.
 
 > **Forking this for your own use?** Replace the example values below with yours:
-> the repo (`costlyinfra-admin/Annapurna`), the domain (`costlyinfra.com` /
-> `annapurna.costlyinfra.com`), and any branding. The steps are otherwise identical.
+> the repo (`costlyinfra-admin/Meter`), the domain (`costlyinfra.com` /
+> `meter.costlyinfra.com`), and any branding. The steps are otherwise identical.
 
 **The stack**
 - **Database:** Neon (free managed Postgres)
@@ -28,7 +28,7 @@ Generate these once and keep them safe:
   ```bash
   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
   ```
-- **`ANNAPURNA_APP_DB_PASSWORD`** — a password you pick for the app's database
+- **`METER_APP_DB_PASSWORD`** — a password you pick for the app's database
   role (any strong random string; the same generator works).
 
 ---
@@ -43,34 +43,34 @@ Generate these once and keep them safe:
 That's it — migrations create the tables and the app's database role automatically
 on first deploy.
 
-> If the deploy logs ever show a permission error creating the `annapurna_app`
+> If the deploy logs ever show a permission error creating the `meter_app`
 > role, run this once in Neon's SQL editor, then redeploy:
-> `CREATE ROLE annapurna_app LOGIN;`
+> `CREATE ROLE meter_app LOGIN;`
 
 ## Step 2 — Deploy the app (Render)
 
-1. Sign up at **render.com** and connect your GitHub (`costlyinfra-admin/Annapurna`).
+1. Sign up at **render.com** and connect your GitHub (`costlyinfra-admin/Meter`).
 2. **New → Blueprint** → pick the repo. Render reads [`render.yaml`](../render.yaml)
-   and proposes the `annapurna` web service. Click **Apply**.
+   and proposes the `meter` web service. Click **Apply**.
 3. When prompted, fill the three secrets (these are `sync:false` in the blueprint):
    - `DATABASE_URL` → the Neon string from Step 1
    - `APP_SECRET_KEY` → your generated key
-   - `ANNAPURNA_APP_DB_PASSWORD` → your chosen app DB password
+   - `METER_APP_DB_PASSWORD` → your chosen app DB password
 4. Deploy. Render builds the Docker image (web + API), runs migrations on start,
-   and gives you a URL like `https://annapurna.onrender.com`. Open it — you should
+   and gives you a URL like `https://meter.onrender.com`. Open it — you should
    see the login page. 🎉
 
 ## Step 3 — Your subdomain (Render + Cloudflare)
 
-1. In Render: **Settings → Custom Domains → Add** `annapurna.costlyinfra.com`.
-   Render shows you a target (a `CNAME` value like `annapurna.onrender.com`).
+1. In Render: **Settings → Custom Domains → Add** `meter.costlyinfra.com`.
+   Render shows you a target (a `CNAME` value like `meter.onrender.com`).
 2. In **Cloudflare** → your `costlyinfra.com` zone → **DNS → Add record**:
    - **Type:** `CNAME`
-   - **Name:** `annapurna`
+   - **Name:** `meter`
    - **Target:** the value Render gave you
    - **Proxy status:** **DNS only** (grey cloud) — see the note below
 3. Wait a few minutes. Render auto-issues a free HTTPS certificate, and
-   **https://annapurna.costlyinfra.com** goes live. Your `www` site is untouched.
+   **https://meter.costlyinfra.com** goes live. Your `www` site is untouched.
 
 > **⚠️ Cloudflare proxy + certificates.** Leave the record on **DNS only (grey
 > cloud)** at first. If you turn Cloudflare's proxy on (orange cloud) before
@@ -87,14 +87,14 @@ pulls fresh cost data and then **evaluates alert rules** and dispatches
 notifications. In GitHub: **Settings → Secrets and variables → Actions → New
 repository secret**, add the three core secrets:
 
-- `DATABASE_URL`, `APP_SECRET_KEY`, `ANNAPURNA_APP_DB_PASSWORD`
+- `DATABASE_URL`, `APP_SECRET_KEY`, `METER_APP_DB_PASSWORD`
 
 For email alerts (via [Resend](https://resend.com)) and clickable links in
 notifications, also add these **optional** secrets:
 
 - `RESEND_API_KEY` — a Resend API key
 - `ALERT_EMAIL_FROM` — a verified Resend sender (e.g. `alerts@costlyinfra.com`)
-- `APP_BASE_URL` — your app's base URL (e.g. `https://annapurna.costlyinfra.com`)
+- `APP_BASE_URL` — your app's base URL (e.g. `https://meter.costlyinfra.com`)
 
 Without them, in-app / Slack / webhook alerts still work; email is reported as
 "unconfigured" (never a fake success). It runs daily; you can also trigger it
@@ -107,8 +107,8 @@ anytime from the **Actions** tab (**Scheduled ingest & alerts → Run workflow**
 - On the dashboard, **Add cost data** to sync inference and import a build-cost CSV.
 
 Want a populated demo instead? You can seed the demo tenant by running, with your
-Neon `DATABASE_URL` exported locally: `make db-seed` (login `demo@annapurna.com` /
-`annapurna-demo`). The demo tenant ("Acme Security") ships with 8 features and
+Neon `DATABASE_URL` exported locally: `make db-seed` (login `demo@costlyinfra.com` /
+`meter-demo`). The demo tenant ("Acme Security") ships with 8 features and
 ~2 years of monthly build/inference history.
 
 **One-click reset (recommended).** Two GitHub Actions handle the demo without a
@@ -127,7 +127,7 @@ Run either from the repo's **Actions** tab → pick the workflow → **Run workf
 ## For customers installing the metering hook (optional)
 
 They point the SDK at:
-`https://annapurna.costlyinfra.com/api/hook/events`
+`https://meter.costlyinfra.com/api/hook/events`
 using the ingest token from **POST `/api/hook/token`** (offered in onboarding).
 
 ## Environment variables (reference)
@@ -136,29 +136,29 @@ using the ingest token from **POST `/api/hook/token`** (offered in onboarding).
 |---|---|---|
 | `DATABASE_URL` | Render + GitHub secrets | Neon connection (owner/admin role) |
 | `APP_SECRET_KEY` | Render + GitHub secrets | Encrypts stored credentials — **keep stable** |
-| `ANNAPURNA_APP_DB_PASSWORD` | Render + GitHub secrets | Password for the RLS-enforced app DB role |
-| `ANNAPURNA_SECURE_COOKIES` | set to `true` in prod (blueprint default) | Secure session cookie over HTTPS |
-| `ANNAPURNA_STATIC_DIR` | set by the Docker image | Tells the API to also serve the web app |
-| `ANNAPURNA_ADMIN_EMAILS` | Render (comma-separated) | Unlocks the internal Admin Portal for these accounts |
+| `METER_APP_DB_PASSWORD` | Render + GitHub secrets | Password for the RLS-enforced app DB role |
+| `METER_SECURE_COOKIES` | set to `true` in prod (blueprint default) | Secure session cookie over HTTPS |
+| `METER_STATIC_DIR` | set by the Docker image | Tells the API to also serve the web app |
+| `METER_ADMIN_EMAILS` | Render (comma-separated) | Unlocks the internal Admin Portal for these accounts |
 | `RESEND_API_KEY` | GitHub secrets (optional) | Resend API key — enables email alert delivery |
 | `ALERT_EMAIL_FROM` | GitHub secrets (optional) | Verified Resend sender address for alert emails |
 | `APP_BASE_URL` | GitHub secrets (optional) | App base URL for deep links in alert notifications |
 
-## Internal Admin Portal (`admin.annapurna.costlyinfra.com`)
+## Internal Admin Portal (`admin.meter.costlyinfra.com`)
 
 The admin portal (onboard/support customers without touching the database) is served
 by the **same** Render service — no extra infra. Two steps:
 
-1. **Grant access.** Set `ANNAPURNA_ADMIN_EMAILS` on the Render service to your
+1. **Grant access.** Set `METER_ADMIN_EMAILS` on the Render service to your
    admin accounts, comma-separated (e.g. `you@costlyinfra.com`). Those users log in
    with their normal account; the portal (and the `/api/admin/*` routes) unlock for
    them and stay hidden/403 for everyone else. No schema change, no self-service.
 2. **Point the subdomain.** In Cloudflare → `costlyinfra.com` → **DNS → Add record**:
-   a `CNAME` named `admin.annapurna` targeting the same Render host as Step 3
-   (`annapurna.onrender.com`), **DNS only (grey cloud)**. Add
-   `admin.annapurna.costlyinfra.com` as a custom domain on the Render service too.
+   a `CNAME` named `admin.meter` targeting the same Render host as Step 3
+   (`meter.onrender.com`), **DNS only (grey cloud)**. Add
+   `admin.meter.costlyinfra.com` as a custom domain on the Render service too.
 
-Then visit `admin.annapurna.costlyinfra.com/admin` (or the "Admin portal →" link in
+Then visit `admin.meter.costlyinfra.com/admin` (or the "Admin portal →" link in
 the customer sidebar). Access is gated by the allowlist, not the hostname, so the
 subdomain is purely where admins go.
 

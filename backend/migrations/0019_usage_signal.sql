@@ -33,7 +33,7 @@ CREATE TABLE usage_signal (
 CREATE INDEX usage_signal_lookup_idx
     ON usage_signal (tenant_id, feature_id, period, signal_kind);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON usage_signal TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON usage_signal TO meter_app;
 
 ALTER TABLE usage_signal ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON usage_signal

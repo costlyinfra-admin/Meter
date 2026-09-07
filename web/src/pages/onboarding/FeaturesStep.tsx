@@ -33,7 +33,7 @@ export function FeaturesStep() {
     <div>
       <h2>Identify features</h2>
       <p className="muted">
-        Annapurna reads your merged pull requests to propose the features you've shipped — the spine
+        Meter reads your merged pull requests to propose the features you've shipped — the spine
         that every cost attributes to. A token is optional for public organizations and required for
         private repos. Read-only, stored encrypted.
       </p>

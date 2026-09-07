@@ -13,11 +13,11 @@ afterEach(() => vi.useRealTimers());
 
 describe("Snippet", () => {
   it("shows the code and copies exactly what is shown", async () => {
-    render(<Snippet>{"npm install annapurna-meter"}</Snippet>);
-    expect(screen.getByText("npm install annapurna-meter")).toBeInTheDocument();
+    render(<Snippet>{"npm install costlyinfra-meter"}</Snippet>);
+    expect(screen.getByText("npm install costlyinfra-meter")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm install annapurna-meter"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("npm install costlyinfra-meter"));
     await screen.findByText("Copied");
   });
 

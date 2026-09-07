@@ -1,6 +1,6 @@
-# Annapurna — v1 Build Plan
+# Meter — v1 Build Plan
 
-**Companion to:** `annapurna-design-doc.md` (the canonical spec — read it first)
+**Companion to:** `meter-design-doc.md` (the canonical spec — read it first)
 **Audience:** Claude Code
 **Goal:** Ship v1 — per-feature AI build + inference cost for a cybersecurity CTO/CFO, connector path as the must-ship core, metering hook just behind.
 

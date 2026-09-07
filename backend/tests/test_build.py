@@ -6,9 +6,9 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-from annapurna import build, discovery
-from annapurna.build import DeveloperSpend
-from annapurna.github import CopilotSeat, PullRequest
+from meter import build, discovery
+from meter.build import DeveloperSpend
+from meter.github import CopilotSeat, PullRequest
 
 PERIOD = dt.date(2026, 5, 1)
 
@@ -234,7 +234,7 @@ def test_import_copilot_seats(discovered, monkeypatch):
 # Re-attribution after discovery regenerates proposals.
 # ---------------------------------------------------------------------------
 def _build_total_by_feature(tenant_id):
-    from annapurna.db import app_dsn, connect, tenant_tx
+    from meter.db import app_dsn, connect, tenant_tx
 
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         rows = conn.execute(
@@ -291,7 +291,7 @@ def test_reattribute_is_idempotent_and_total_preserving(discovered):
 def test_reattribute_leaves_directly_attributed_fine_tuning_alone(discovered):
     """Fine-tuning runs are attributed by the USER — never re-derived from PRs."""
     features = build.build_summary(discovered, PERIOD)  # noqa: F841 - ensures schema is live
-    from annapurna.db import app_dsn, connect, tenant_tx
+    from meter.db import app_dsn, connect, tenant_tx
 
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id=discovered):
         feature_id = conn.execute(

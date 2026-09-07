@@ -431,7 +431,7 @@ function MeasuredRow({
         <dl className="opt-guidance">
           <dt>Validate</dt>
           <dd>{opp.validation_guidance}</dd>
-          <dt>Annapurna verifies</dt>
+          <dt>Meter verifies</dt>
           <dd>{opp.verification}</dd>
         </dl>
       </details>

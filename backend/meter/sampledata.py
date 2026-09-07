@@ -637,7 +637,7 @@ def _add_discovery_demo(conn, tenant_id) -> None:
                                        prs, proposals, trigger, status, started_at, finished_at,
                                        started_by)
             VALUES (%s, 'acme-security', %s, %s, %s, %s, %s, 'manual', 'success',
-                    %s, %s, 'demo@annapurna.com')
+                    %s, %s, 'demo@costlyinfra.com')
             """,
             (
                 tenant_id,

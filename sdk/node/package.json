@@ -1,7 +1,7 @@
 {
-  "name": "annapurna-meter",
-  "version": "0.4.0",
-  "description": "Annapurna metering hook — emit per-call LLM usage events for per-feature cost attribution.",
+  "name": "costlyinfra-meter",
+  "version": "1.0.0",
+  "description": "Meter — emit per-call LLM usage events for per-feature cost attribution.",
   "type": "module",
   "main": "index.mjs",
   "exports": "./index.mjs",
@@ -11,10 +11,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/costlyinfra-admin/Annapurna.git",
+    "url": "git+https://github.com/costlyinfra-admin/Meter.git",
     "directory": "sdk/node"
   },
-  "homepage": "https://github.com/costlyinfra-admin/Annapurna/tree/main/sdk/node",
+  "homepage": "https://github.com/costlyinfra-admin/Meter/tree/main/sdk/node",
   "files": ["index.mjs", "LICENSE"],
   "license": "Apache-2.0"
 }

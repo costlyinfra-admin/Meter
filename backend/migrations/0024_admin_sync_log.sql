@@ -3,7 +3,7 @@
 -- "Sync Now" from the portal, giving Sync History and Errors real data.
 --
 -- Admin-only: accessed exclusively via the RLS-exempt owner connection
--- (admin_dsn). The app role (annapurna_app) gets NO grant, so a tenant can never
+-- (admin_dsn). The app role (meter_app) gets NO grant, so a tenant can never
 -- read it. Not part of the customer product; no RLS policy needed.
 
 CREATE TABLE admin_sync_log (

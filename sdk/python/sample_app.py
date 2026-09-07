@@ -1,10 +1,10 @@
 """Sample app — how a customer wires the metering hook into their LLM calls.
 
 Run offline:  python sample_app.py
-(With ANNAPURNA_INGEST_URL + ANNAPURNA_INGEST_TOKEN set, events are reported.)
+(With METER_INGEST_URL + METER_INGEST_TOKEN set, events are reported.)
 """
 
-from annapurna_meter import Meter
+from costlyinfra_meter import Meter
 
 # One meter per feature (or pass feature_id per call).
 meter = Meter(feature_id="feature-threat-triage")
@@ -30,4 +30,4 @@ def classify_alert(alert_text: str) -> str:
 
 if __name__ == "__main__":
     print("classification:", classify_alert("suspicious login from new ASN"))
-    print("hook enabled:", meter.enabled, "(set ANNAPURNA_INGEST_URL/TOKEN to report)")
+    print("hook enabled:", meter.enabled, "(set METER_INGEST_URL/TOKEN to report)")

@@ -109,7 +109,7 @@ CREATE TABLE alert_notification (
 
 -- Grants + RLS (same pattern as every other tenant table).
 GRANT SELECT, INSERT, UPDATE, DELETE ON alert_rule, alert_destination,
-    alert_incident, alert_event, alert_notification TO annapurna_app;
+    alert_incident, alert_event, alert_notification TO meter_app;
 
 ALTER TABLE alert_rule         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alert_destination  ENABLE ROW LEVEL SECURITY;

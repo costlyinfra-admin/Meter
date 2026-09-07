@@ -132,7 +132,7 @@ export function ReviewStep() {
     <div>
       <h2>Review auto-discovered features</h2>
       <p className="muted">
-        Annapurna analyzes your last 90 days of merged pull requests and proposes features. Pick the
+        Meter analyzes your last 90 days of merged pull requests and proposes features. Pick the
         repositories to analyze, curate the proposals below, then confirm.
       </p>
 

@@ -1,4 +1,4 @@
-"""Annapurna backend package.
+"""Meter backend package.
 
 Per-feature AI cost attribution: what each feature cost to *build* (AI coding
 tools) and to *run* (inference). The connector path is the must-ship core;

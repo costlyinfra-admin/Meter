@@ -7,12 +7,12 @@ import time
 
 import httpx
 import pytest
-from annapurna import assistant
+from meter import assistant
 
 PASSAGES = [
     {
-        "id": "getting-started/what-annapurna-does",
-        "title": "What Annapurna does",
+        "id": "getting-started/what-meter-does",
+        "title": "What Meter does",
         "category": "Getting started",
         "text": "Build cost is what a feature cost to make. "
         "Inference cost is what it costs to run.",
@@ -30,9 +30,9 @@ PASSAGES = [
 @pytest.fixture(autouse=True)
 def _byok_env(monkeypatch):
     """Point the assistant at a stub endpoint, and clear the rate-limit window."""
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_BASE_URL", "https://llm.example/v1")
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_API_KEY", "sk-super-secret-key-value")
-    monkeypatch.setenv("ANNAPURNA_DISCOVERY_MODEL", "llama-3.3-70b-versatile")
+    monkeypatch.setenv("METER_DISCOVERY_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("METER_DISCOVERY_API_KEY", "sk-super-secret-key-value")
+    monkeypatch.setenv("METER_DISCOVERY_MODEL", "llama-3.3-70b-versatile")
     assistant._recent.clear()
 
 
@@ -56,7 +56,7 @@ def test_answers_from_the_handbook_and_cites_its_sources():
             {
                 "answer": "Build cost is what a feature cost to make; inference is what it "
                 "costs to run. They are never added together.",
-                "sources": ["getting-started/what-annapurna-does"],
+                "sources": ["getting-started/what-meter-does"],
                 "answered": True,
             }
         )
@@ -70,7 +70,7 @@ def test_answers_from_the_handbook_and_cites_its_sources():
 
     assert result["answered"] is True
     assert result["composed"] is True
-    assert result["sources"] == ["getting-started/what-annapurna-does"]
+    assert result["sources"] == ["getting-started/what-meter-does"]
     assert "never added together" in result["answer"]
 
     # The excerpts, the question and the screen all reach the model.
@@ -129,19 +129,19 @@ def test_history_is_passed_through_and_capped():
 
 
 def test_falls_back_to_the_handbook_when_no_model_is_configured(monkeypatch):
-    monkeypatch.delenv("ANNAPURNA_DISCOVERY_BASE_URL", raising=False)
+    monkeypatch.delenv("METER_DISCOVERY_BASE_URL", raising=False)
     result = assistant.answer("what is build cost?", passages=PASSAGES)
     assert result["composed"] is False
     assert result["answered"] is True
-    assert "What Annapurna does" in result["answer"]
-    assert result["sources"] == ["getting-started/what-annapurna-does"]
+    assert "What Meter does" in result["answer"]
+    assert result["sources"] == ["getting-started/what-meter-does"]
 
 
 def test_a_provider_failure_degrades_to_the_handbook_rather_than_an_error():
     with _client(_replies("upstream exploded", status_code=500)) as client:
         result = assistant.answer("what is build cost?", passages=PASSAGES, client=client)
     assert result["composed"] is False
-    assert "What Annapurna does" in result["answer"]
+    assert "What Meter does" in result["answer"]
 
 
 def test_a_network_failure_degrades_the_same_way():
@@ -203,8 +203,8 @@ def client(admin_conn, admin_conninfo, app_conninfo, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", "unit-test-secret-key")
     monkeypatch.setenv("DATABASE_URL", admin_conninfo)
     monkeypatch.setenv("DATABASE_APP_URL", app_conninfo)
-    from annapurna.api import create_app
     from fastapi.testclient import TestClient
+    from meter.api import create_app
 
     c = TestClient(create_app())
     c.post("/api/auth/signup", json={"email": "cto@acme.com", "password": GOOD_PASSWORD})
@@ -217,8 +217,8 @@ def test_the_assistant_needs_a_signed_in_user(
     monkeypatch.setenv("APP_SECRET_KEY", "unit-test-secret-key")
     monkeypatch.setenv("DATABASE_URL", admin_conninfo)
     monkeypatch.setenv("DATABASE_APP_URL", app_conninfo)
-    from annapurna.api import create_app
     from fastapi.testclient import TestClient
+    from meter.api import create_app
 
     anonymous = TestClient(create_app())
     assert anonymous.post("/api/assistant/chat", json={"question": "hi"}).status_code == 401
@@ -230,7 +230,7 @@ def test_meta_says_whether_answers_are_written_or_quoted(client, monkeypatch):
     assert meta["composed"] is True
     assert "@" in meta["support_email"]
 
-    monkeypatch.delenv("ANNAPURNA_DISCOVERY_BASE_URL")
+    monkeypatch.delenv("METER_DISCOVERY_BASE_URL")
     assert client.get("/api/assistant/meta").json()["composed"] is False
 
 

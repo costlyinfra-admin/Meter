@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from annapurna.providers import (
+from meter.providers import (
     AnthropicCostClient,
     OpenAICostClient,
     ProviderError,
@@ -74,7 +74,7 @@ def test_anthropic_current_month_queries_month_to_date_not_future():
 
 
 def test_aggregate_sums_same_key_project_model():
-    from annapurna.providers import CostRecord
+    from meter.providers import CostRecord
 
     recs = [
         CostRecord("openai", dt.date(2026, 5, 1), Decimal("10"), project="p1", model="gpt-4o"),
@@ -444,7 +444,7 @@ def test_openai_captures_cached_tokens():
 
 
 def test_google_gemini_parses_cost_by_project():
-    from annapurna.providers import GoogleCostClient
+    from meter.providers import GoogleCostClient
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Authorization"] == "Bearer goog-token"
@@ -474,7 +474,7 @@ def test_google_gemini_parses_cost_by_project():
 
 
 def test_hosted_oss_uses_reported_dollar_cost():
-    from annapurna.providers import make_cost_client
+    from meter.providers import make_cost_client
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Authorization"] == "Bearer or-key"
@@ -503,7 +503,7 @@ def test_hosted_oss_uses_reported_dollar_cost():
 
 
 def test_hosted_oss_prices_tokens_when_no_dollar_cost():
-    from annapurna.providers import HostedUsageCostClient
+    from meter.providers import HostedUsageCostClient
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -535,7 +535,7 @@ def test_hosted_oss_prices_tokens_when_no_dollar_cost():
 def test_bedrock_reads_cost_explorer_by_tag():
     import json
 
-    from annapurna.providers import BedrockCostClient
+    from meter.providers import BedrockCostClient
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"  # Cost Explorer is a POST API
@@ -579,7 +579,7 @@ def test_bedrock_reads_cost_explorer_by_tag():
 
 
 def test_bedrock_requires_json_credentials():
-    from annapurna.providers import BedrockCostClient, ProviderError
+    from meter.providers import BedrockCostClient, ProviderError
 
     with pytest.raises(ProviderError):
         BedrockCostClient("not-json")
@@ -598,7 +598,7 @@ def test_provider_401_raises():
 def test_litellm_reads_spend_report():
     import json
 
-    from annapurna.providers import make_cost_client
+    from meter.providers import make_cost_client
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"  # read-only
@@ -623,7 +623,7 @@ def test_litellm_reads_spend_report():
 
 
 def test_elevenlabs_prices_character_usage():
-    from annapurna.providers import make_cost_client
+    from meter.providers import make_cost_client
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["xi-api-key"] == "xi-key"
@@ -640,7 +640,7 @@ def test_elevenlabs_prices_character_usage():
 def test_azure_parses_cost_query_by_tag():
     import json
 
-    from annapurna.providers import make_cost_client
+    from meter.providers import make_cost_client
 
     def handler(request: httpx.Request) -> httpx.Response:
         if "oauth2" in str(request.url):
@@ -676,7 +676,7 @@ def test_azure_parses_cost_query_by_tag():
 
 
 def test_new_json_connectors_require_json():
-    from annapurna.providers import (
+    from meter.providers import (
         AzureCostClient,
         LiteLLMCostClient,
         ModalCostClient,
@@ -691,7 +691,7 @@ def test_new_json_connectors_require_json():
 def test_portkey_reads_analytics_cost():
     import json
 
-    from annapurna.providers import make_cost_client
+    from meter.providers import make_cost_client
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"  # read-only
@@ -715,7 +715,7 @@ def test_portkey_reads_analytics_cost():
 
 
 def test_groq_prices_tokens_via_hosted_pattern():
-    from annapurna.providers import make_cost_client
+    from meter.providers import make_cost_client
 
     def handler(_request: httpx.Request) -> httpx.Response:
         # No dollar cost -> priced from tokens. groq llama-3.1-8b-instant = 0.05/0.08 per M.

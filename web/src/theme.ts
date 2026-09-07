@@ -13,7 +13,7 @@
  */
 export type Theme = "light" | "dark";
 
-export const STORAGE_KEY = "annapurna.theme";
+export const STORAGE_KEY = "meter.theme";
 
 const DARK = "(prefers-color-scheme: dark)";
 

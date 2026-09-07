@@ -1,14 +1,14 @@
-# annapurna-meter (Node)
+# costlyinfra-meter (Node)
 
-The optional metering hook for [Annapurna](https://github.com/costlyinfra-admin/Annapurna) —
+The optional metering hook for [Meter](https://github.com/costlyinfra-admin/Meter) —
 a thin, fail-safe wrapper that reports per-call LLM usage so spend can be
 attributed **per feature**. No dependencies (Node ≥ 18). Cost is computed
-server-side from Annapurna's pricing tables — the SDK never sees prices, and it
+server-side from Meter's pricing tables — the SDK never sees prices, and it
 never sends prompt or response content, only token counts and a `featureId`.
 
 It is **fail-safe**: recording appends to an in-memory queue and returns. A timer
 batches and posts; nothing on your call path blocks, throws, or touches the
-network. If Annapurna is down, misconfigured, or asleep, your application is
+network. If Meter is down, misconfigured, or asleep, your application is
 unaffected. With no ingest URL/token configured, every call is a no-op.
 
 It is also **bounded**: a capped queue (10,000 events) whose oldest entries are
@@ -19,18 +19,18 @@ process open.
 ## Install
 
 ```bash
-npm install annapurna-meter
+npm install costlyinfra-meter
 ```
 
 ESM only — `import` it. In a CommonJS project use a dynamic import
-(`const { wrap } = await import("annapurna-meter")`); `require()` will not work.
+(`const { wrap } = await import("costlyinfra-meter")`); `require()` will not work.
 
 ## Use
 
 **Recommended — wrap the client once (no per-call code):**
 
 ```js
-import { wrap } from "annapurna-meter";
+import { wrap } from "costlyinfra-meter";
 
 const client = wrap(openai, { featureId: "feature-threat-triage" }); // reads ENV
 
@@ -44,7 +44,7 @@ Streaming responses use the explicit form below.
 **Explicit — one line per call:**
 
 ```js
-import { Meter } from "annapurna-meter";
+import { Meter } from "costlyinfra-meter";
 
 const meter = new Meter("feature-threat-triage");
 const resp = await openai.chat.completions.create({ model: "gpt-4o", ... });
@@ -81,7 +81,7 @@ Tunable: `batchSize`, `flushIntervalMs`, `queueMax`, `timeoutMs`, `maxAttempts`,
 ### Optimize mode (opt-in)
 
 `new Meter(featureId, { optimize: true })` additionally emits **privacy-safe**
-signals — salted hashes and counts, never prompt text — so Annapurna can surface
+signals — salted hashes and counts, never prompt text — so Meter can surface
 *measured* optimization opportunities (duplicate calls, uncached repeated
 prefixes). Off by default; work is off the call path, memory-bounded, and
 fail-safe. The SDK fetches a per-tenant salt once (`GET /api/hook/salt`, same
@@ -91,10 +91,10 @@ ingest token).
 
 | Env var                  | What it is                                        |
 |--------------------------|---------------------------------------------------|
-| `ANNAPURNA_INGEST_URL`   | e.g. `https://app.example.com/api/hook/events`    |
-| `ANNAPURNA_INGEST_TOKEN` | the per-workspace ingest token from the dashboard |
+| `METER_INGEST_URL`   | e.g. `https://app.example.com/api/hook/events`    |
+| `METER_INGEST_TOKEN` | the per-workspace ingest token from the dashboard |
 
 ## License
 
-Apache-2.0. (The Annapurna server is AGPL-3.0; this client SDK is permissive so
+Apache-2.0. (The Meter server is AGPL-3.0; this client SDK is permissive so
 you can embed it in a proprietary app.)

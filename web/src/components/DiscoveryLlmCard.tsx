@@ -2,7 +2,7 @@
  * Settings → "Feature discovery model" (BYOK).
  *
  * Optional per tenant. Configured, discovery clusters PR metadata through the
- * tenant's own OpenAI-compatible endpoint; left alone, it uses Annapurna's, and
+ * tenant's own OpenAI-compatible endpoint; left alone, it uses Meter's, and
  * nothing about discovery changes.
  *
  * The API key is write-only by design: the server never returns it, so this card
@@ -113,14 +113,14 @@ export function DiscoveryLlmCard() {
       <h2>Feature discovery model</h2>
       <p className="muted settings-hint">
         Feature discovery groups your merged pull requests into features using an LLM. By default it
-        runs on Annapurna's own model at no cost to you. Point it at your own OpenAI-compatible
+        runs on Meter's own model at no cost to you. Point it at your own OpenAI-compatible
         endpoint to keep that traffic and spend on your account. Only PR titles, branches and labels
         are ever sent — never source code.
       </p>
 
       <p className="detail-meta">
         <span className={active ? "badge conf-high" : "badge"}>
-          {active ? "Using your model" : "Using Annapurna's model"}
+          {active ? "Using your model" : "Using Meter's model"}
         </span>
         {config.configured && !editing && (
           <span className="muted">
@@ -152,7 +152,7 @@ export function DiscoveryLlmCard() {
               if (next) setConfig(next);
             }}
           >
-            {config.enabled ? "Use Annapurna's model" : "Use my model"}
+            {config.enabled ? "Use Meter's model" : "Use my model"}
           </button>
           <button
             className="link danger"

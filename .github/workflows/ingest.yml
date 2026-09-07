@@ -4,7 +4,7 @@ name: Scheduled ingest & alerts
 # (the same job as `make ingest`), then evaluates alert rules against the fresh
 # data and dispatches any notifications.
 #
-# Required repo secrets: DATABASE_URL, ANNAPURNA_APP_DB_PASSWORD, APP_SECRET_KEY.
+# Required repo secrets: DATABASE_URL, METER_APP_DB_PASSWORD, APP_SECRET_KEY.
 # Optional (email + deep links in notifications): RESEND_API_KEY, ALERT_EMAIL_FROM,
 # APP_BASE_URL. Without them, in-app/Slack/webhook still work and email is reported
 # as "unconfigured" (never a fake success).
@@ -32,18 +32,18 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ANNAPURNA_APP_DB_PASSWORD: ${{ secrets.ANNAPURNA_APP_DB_PASSWORD }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
-        run: python -m annapurna.inference
+        run: python -m meter.inference
       - name: Evaluate alert rules
         working-directory: backend
         # Runs even if ingest fails, so alerts still evaluate on the last-good data.
         if: always()
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ANNAPURNA_APP_DB_PASSWORD: ${{ secrets.ANNAPURNA_APP_DB_PASSWORD }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
-        run: python -m annapurna.alerts_eval
+        run: python -m meter.alerts_eval

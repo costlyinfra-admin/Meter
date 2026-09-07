@@ -1,4 +1,4 @@
-# Annapurna — Design-Partner Demo Script
+# Meter — Design-Partner Demo Script
 
 A start-to-finish demo of the v1 connector path (plus the optional hook). Target
 length: **under 10 minutes**.
@@ -22,7 +22,7 @@ starts the API (`:8000`) and the web app (`:5173`), and prints the login. Press
 
 Open **http://localhost:5173** and sign in:
 
-> **demo@annapurna.com** / **annapurna-demo**
+> **demo@costlyinfra.com** / **meter-demo**
 
 ---
 
@@ -57,7 +57,7 @@ Click **AI threat triage**. Talking points:
 Open a fresh signup (or describe it):
 
 1. **Connect** GitHub + one AI provider (read-only tokens).
-2. **Review** — Annapurna reads the last 90 days of merged PRs and proposes
+2. **Review** — Meter reads the last 90 days of merged PRs and proposes
    features; rename / split / merge / delete / add as needed.
 3. **Confirm & go live** — lands on the dashboard. Then **Add cost data** syncs
    inference and imports a coding-tool CSV (e.g. a Cursor seat export).

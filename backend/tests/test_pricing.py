@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from annapurna import pricing
+from meter import pricing
 
 
 def test_known_model_costs_tokens():

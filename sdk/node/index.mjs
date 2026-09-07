@@ -1,9 +1,9 @@
 /**
- * Annapurna metering hook (Node).
+ * Meter metering hook (Node).
  *
- * Thin, fail-safe wrapper that reports per-call LLM usage to Annapurna for
+ * Thin, fail-safe wrapper that reports per-call LLM usage to Meter for
  * per-feature cost attribution. Mirrors the Python SDK. Cost is computed server
- * side from Annapurna's pricing tables — the SDK never sees prices.
+ * side from Meter's pricing tables — the SDK never sees prices.
  *
  *   - Never throws into the caller (errors are swallowed).
  *   - Recording enqueues and returns; a timer batches and posts, so the call
@@ -18,7 +18,7 @@
  * `flushIntervalMs`, whichever comes first. `await meter.flush()` forces a send —
  * do that before `process.exit()`, which bypasses the automatic drain.
  *
- * Config (constructor opts or env): ANNAPURNA_INGEST_URL, ANNAPURNA_INGEST_TOKEN.
+ * Config (constructor opts or env): METER_INGEST_URL, METER_INGEST_TOKEN.
  */
 import { createHash, randomUUID } from "node:crypto";
 
@@ -40,8 +40,8 @@ const METERS = new Set();
 export class Meter {
   constructor(featureId = null, opts = {}) {
     this.featureId = featureId;
-    this.ingestUrl = opts.ingestUrl ?? process.env.ANNAPURNA_INGEST_URL ?? null;
-    this.token = opts.token ?? process.env.ANNAPURNA_INGEST_TOKEN ?? null;
+    this.ingestUrl = opts.ingestUrl ?? process.env.METER_INGEST_URL ?? null;
+    this.token = opts.token ?? process.env.METER_INGEST_TOKEN ?? null;
     // Default tags applied to every event (e.g. environment); per-call metadata
     // is merged on top. Optional — omit for the simplest setup.
     this.metadata = opts.metadata ?? {};

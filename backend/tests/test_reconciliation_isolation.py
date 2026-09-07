@@ -12,11 +12,11 @@ import re
 from pathlib import Path
 
 import pytest
-from annapurna import dashboard
-from annapurna.reconciliation import engine, flag, imports
+from meter import dashboard
+from meter.reconciliation import engine, flag, imports
 
 MAY = dt.date(2026, 5, 1)
-SOURCE = Path(__file__).resolve().parent.parent / "annapurna"
+SOURCE = Path(__file__).resolve().parent.parent / "meter"
 
 STATEMENT = (
     "date,model,category,cost,currency\n"

@@ -1,4 +1,4 @@
--- Annapurna — relax FORCE RLS for managed-Postgres compatibility.
+-- Meter — relax FORCE RLS for managed-Postgres compatibility.
 --
 -- We originally FORCEd RLS so even a table's owner is subject to its policies.
 -- On a managed Postgres (e.g. Neon) the bootstrap/admin path has no SUPERUSER to
@@ -7,7 +7,7 @@
 --
 -- Result:
 --   * admin DSN (the database owner) is exempt -> runs auth + migrations + seed,
---   * app role `annapurna_app` is a NON-owner -> STILL fully governed by the
+--   * app role `meter_app` is a NON-owner -> STILL fully governed by the
 --     tenant-isolation policies.
 -- Application-level per-tenant isolation is unchanged; only the trusted admin
 -- role's exemption mechanism changes (superuser-bypass -> owner-exemption).

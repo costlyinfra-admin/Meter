@@ -33,25 +33,25 @@ trap cleanup EXIT
 echo "▶ Starting throwaway Postgres…"
 initdb -D "$TMPD/data" >/dev/null
 pg_ctl -D "$TMPD/data" -o "-k $TMPD -p 5544 -c listen_addresses=''" -l "$TMPD/log" -w start >/dev/null
-createdb -h "$TMPD" -p 5544 annapurna
+createdb -h "$TMPD" -p 5544 meter
 
-export DATABASE_URL="host=$TMPD port=5544 dbname=annapurna"
+export DATABASE_URL="host=$TMPD port=5544 dbname=meter"
 export APP_SECRET_KEY="demo-secret-change-me"
 # The demo account is an admin here so the internal Admin Portal is explorable in
-# the throwaway demo. In production, set ANNAPURNA_ADMIN_EMAILS to your own admins.
-export ANNAPURNA_ADMIN_EMAILS="demo@annapurna.com"
+# the throwaway demo. In production, set METER_ADMIN_EMAILS to your own admins.
+export METER_ADMIN_EMAILS="demo@costlyinfra.com"
 
 echo "▶ Migrating + seeding the Acme Security demo tenant…"
 make db-seed
 
 echo "▶ Starting API on http://localhost:8000 …"
-( cd backend && .venv/bin/uvicorn --factory annapurna.api:create_app --port 8000 --log-level warning ) &
+( cd backend && .venv/bin/uvicorn --factory meter.api:create_app --port 8000 --log-level warning ) &
 UVPID=$!
 
 echo ""
 echo "  ┌────────────────────────────────────────────────────────┐"
 echo "  │  Open http://localhost:5173                             │"
-echo "  │  Login:  demo@acme.com  /  annapurna-demo               │"
+echo "  │  Login:  demo@acme.com  /  meter-demo               │"
 echo "  └────────────────────────────────────────────────────────┘"
 echo ""
 echo "▶ Starting web on http://localhost:5173  (Ctrl-C to stop everything)…"

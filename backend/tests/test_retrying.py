@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from annapurna.retrying import http_get_with_retry
+from meter.retrying import http_get_with_retry
 
 _NO_SLEEP = lambda _d: None  # noqa: E731
 

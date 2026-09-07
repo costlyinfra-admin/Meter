@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from annapurna.api import create_app
 from fastapi.testclient import TestClient
+from meter.api import create_app
 
 PASSWORD = "correct horse battery"
-ADMIN_EMAIL = "admin@annapurna.com"
+ADMIN_EMAIL = "admin@costlyinfra.com"
 
 
 @pytest.fixture
@@ -15,7 +15,7 @@ def client(admin_conn, admin_conninfo, app_conninfo, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", "unit-test-secret-key")
     monkeypatch.setenv("DATABASE_URL", admin_conninfo)
     monkeypatch.setenv("DATABASE_APP_URL", app_conninfo)
-    monkeypatch.setenv("ANNAPURNA_ADMIN_EMAILS", ADMIN_EMAIL)
+    monkeypatch.setenv("METER_ADMIN_EMAILS", ADMIN_EMAIL)
     return TestClient(create_app())
 
 

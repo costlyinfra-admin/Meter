@@ -1,4 +1,4 @@
--- Annapurna M1 — tenant isolation via Postgres Row-Level Security (RLS).
+-- Meter M1 — tenant isolation via Postgres Row-Level Security (RLS).
 --
 -- WHY RLS (and not just "filter by tenant_id in every query"):
 --   Invariant 6 says per-tenant isolation must be *enforced*. RLS pushes the
@@ -7,10 +7,10 @@
 --   product sold to security teams.
 --
 -- HOW IT WORKS:
---   * The app connects as a dedicated, NON-privileged role (annapurna_app).
+--   * The app connects as a dedicated, NON-privileged role (meter_app).
 --     Superusers/owners bypass RLS; this role does not — so policies bite.
 --   * Each request sets a transaction-local variable `app.current_tenant`
---     (see backend/annapurna/db.py: tenant_tx). Policies compare it to the
+--     (see backend/meter/db.py: tenant_tx). Policies compare it to the
 --     row's tenant_id.
 --   * With no tenant set, current_setting(..., true) is NULL -> the policy
 --     matches no rows. Default-deny: forget to set the tenant and you see
@@ -26,17 +26,17 @@
 -- ---------------------------------------------------------------------------
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'annapurna_app') THEN
-        CREATE ROLE annapurna_app LOGIN;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'meter_app') THEN
+        CREATE ROLE meter_app LOGIN;
     END IF;
 END
 $$;
 
-GRANT USAGE ON SCHEMA public TO annapurna_app;
+GRANT USAGE ON SCHEMA public TO meter_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     tenant, feature, feature_signal, build_cost,
     inference_cost, bill_reconciliation, feature_usage
-TO annapurna_app;
+TO meter_app;
 
 -- ---------------------------------------------------------------------------
 -- Enable + FORCE RLS and add a tenant-isolation policy on every tenant table.

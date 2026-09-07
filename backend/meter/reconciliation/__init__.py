@@ -1,6 +1,6 @@
 """Provider invoice reconciliation — an additive, opt-in module.
 
-Compares an official provider billing export against the spend Annapurna
+Compares an official provider billing export against the spend Meter
 already tracks, and explains the difference.
 
 The module is deliberately sealed off from the rest of the product:

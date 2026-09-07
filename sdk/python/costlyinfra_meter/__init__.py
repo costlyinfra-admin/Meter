@@ -1,14 +1,14 @@
-"""Annapurna metering hook (Python).
+"""Meter metering hook (Python).
 
-A thin, fail-safe wrapper that reports per-call LLM usage to Annapurna so spend
+A thin, fail-safe wrapper that reports per-call LLM usage to Meter so spend
 can be attributed per feature. It captures tokens_in, tokens_out, model and a
 feature_id and posts them to the hook-ingest endpoint. Cost is computed server
-side from Annapurna's pricing tables — the SDK never sees prices.
+side from Meter's pricing tables — the SDK never sees prices.
 
 Design principles:
   * **Never break the caller.** Recording appends to an in-memory queue and
     returns; a single background worker batches and posts. Nothing on the call
-    path can block, raise, or wait on the network. If Annapurna is down,
+    path can block, raise, or wait on the network. If Meter is down,
     misconfigured, or asleep, your app is unaffected.
   * **Bounded.** One worker thread per meter, whatever the traffic, and a capped
     queue. When the queue is full the oldest events are dropped and counted —
@@ -24,8 +24,8 @@ batch fills or after ``flush_interval`` seconds, whichever comes first. Call
 An ``atexit`` hook flushes automatically, with a short deadline.
 
 Configuration (constructor args or environment):
-  ANNAPURNA_INGEST_URL    e.g. https://app.annapurna.example/api/hook/events
-  ANNAPURNA_INGEST_TOKEN  the per-tenant ingest token from the dashboard
+  METER_INGEST_URL    e.g. https://meter.example.com/api/hook/events
+  METER_INGEST_TOKEN  the per-tenant ingest token from the dashboard
 """
 
 from __future__ import annotations
@@ -87,8 +87,8 @@ class Meter:
         transport: Optional[Any] = None,
     ):
         self.feature_id = feature_id
-        self.ingest_url = ingest_url or os.environ.get("ANNAPURNA_INGEST_URL")
-        self.token = token or os.environ.get("ANNAPURNA_INGEST_TOKEN")
+        self.ingest_url = ingest_url or os.environ.get("METER_INGEST_URL")
+        self.token = token or os.environ.get("METER_INGEST_TOKEN")
         self.timeout = timeout
         # Default tags applied to every event (e.g. environment). Per-call
         # metadata is merged on top. Optional — omit for the simplest setup.
@@ -239,7 +239,7 @@ class Meter:
 
         Together, Fireworks, Groq, OpenRouter, DeepInfra, etc. all return the
         OpenAI usage shape (prompt_tokens/completion_tokens). Pass the provider
-        name so Annapurna prices it against that host's rates.
+        name so Meter prices it against that host's rates.
         """
         tin, tout = _usage(response, ("prompt_tokens", "completion_tokens"))
         return self.record(

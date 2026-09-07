@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from annapurna import features, hook, optimize_measured
-from annapurna.db import app_dsn, connect, tenant_tx
+from meter import features, hook, optimize_measured
+from meter.db import app_dsn, connect, tenant_tx
 
 PERIOD = dt.date(2026, 6, 1)
 
@@ -76,7 +76,7 @@ def test_duplicate_savings_match_the_price_book(tenant_id):
     # Per-lever effort + deterministic priority (6.0 × high 1.0 × medium 0.5 = 3.0).
     assert dup["engineering_effort"] == "medium"
     assert dup["priority_score"] == 3.0
-    # Guidance templates (opt spec §20): how to validate + how Annapurna verifies.
+    # Guidance templates (opt spec §20): how to validate + how Meter verifies.
     assert "idempotent retries" in dup["validation_guidance"]
     assert "duplicate count" in dup["verification"]
     assert dup["status"] == "detected"

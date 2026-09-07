@@ -10,9 +10,9 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from annapurna import discovery
-from annapurna.db import app_dsn, connect, tenant_tx
-from annapurna.github import PullRequest
+from meter import discovery
+from meter.db import app_dsn, connect, tenant_tx
+from meter.github import PullRequest
 
 
 def _pr(number, repo, title, branch, merged="2026-05-01T00:00:00Z"):

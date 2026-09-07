@@ -4,11 +4,11 @@
 # Secrets (set in the Render dashboard; sync:false means "I'll fill this in"):
 #   DATABASE_URL              Neon connection string (the owner/admin role)
 #   APP_SECRET_KEY            long random string; encrypts stored credentials — NEVER change once set
-#   ANNAPURNA_APP_DB_PASSWORD a password you choose for the app's RLS-enforced DB role
+#   METER_APP_DB_PASSWORD    a password you choose for the app's RLS-enforced DB role
 
 services:
   - type: web
-    name: annapurna
+    name: meter
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
@@ -19,9 +19,9 @@ services:
         sync: false
       - key: APP_SECRET_KEY
         sync: false
-      - key: ANNAPURNA_APP_DB_PASSWORD
+      - key: METER_APP_DB_PASSWORD
         sync: false
-      - key: ANNAPURNA_SECURE_COOKIES
+      - key: METER_SECURE_COOKIES
         value: "true"
-      - key: ANNAPURNA_LOG_LEVEL
+      - key: METER_LOG_LEVEL
         value: INFO

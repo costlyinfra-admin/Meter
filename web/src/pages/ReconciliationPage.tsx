@@ -47,8 +47,8 @@ const CONFIDENCE_LABEL: Record<string, string> = {
 /** Classifications, in the words a CFO would use. */
 const CLASSIFICATION_LABEL: Record<string, string> = {
   matched: "Matched",
-  provider_usage_missing_from_annapurna: "Billed, not tracked",
-  annapurna_usage_absent_from_statement: "Tracked, not billed",
+  provider_usage_missing_from_meter: "Billed, not tracked",
+  meter_usage_absent_from_statement: "Tracked, not billed",
   pricing_version_mismatch: "Price difference",
   currency_mismatch: "Currency mismatch",
   billing_period_boundary: "Outside the period",
@@ -56,7 +56,7 @@ const CLASSIFICATION_LABEL: Record<string, string> = {
   unknown_model_mapping: "Unrecognised model",
   unattributed_provider_workspace: "Unconnected workspace",
   unsupported_line_item_type: "Unrecognised line type",
-  incomplete_annapurna_data: "No tracked data",
+  incomplete_meter_data: "No tracked data",
   incomplete_provider_export: "Incomplete export",
   provider_tax: "Tax",
   provider_credit: "Credit or discount",
@@ -113,7 +113,7 @@ export function ReconciliationPage() {
         <h1>Reconciliation</h1>
       </div>
       <p className="muted recon-intro">
-        Compare an official provider billing export against the spend Annapurna tracked, and see
+        Compare an official provider billing export against the spend Meter tracked, and see
         what explains the difference. Nothing here changes your cost data — a statement is evidence,
         not a correction.
       </p>
@@ -180,9 +180,9 @@ function NotEnabled({
         <h1>Reconciliation</h1>
       </div>
       <div className="source-section recon-empty">
-        <h2>Compare your provider bill against what Annapurna tracked</h2>
+        <h2>Compare your provider bill against what Meter tracked</h2>
         <p className="muted">
-          Import an official billing export and Annapurna will line it up against the spend it
+          Import an official billing export and Meter will line it up against the spend it
           already has — usage against usage, with tax, credits and fees kept separate — and explain
           what differs.
         </p>
@@ -228,7 +228,7 @@ function Summary() {
       <div className="source-section recon-empty">
         <h2>No statement reconciled yet</h2>
         <p className="muted">
-          Import a provider billing export to see how it compares with the spend Annapurna tracked
+          Import a provider billing export to see how it compares with the spend Meter tracked
           for the same period.
         </p>
         <Link className="button-link" to="/reconciliation/import">
@@ -248,7 +248,7 @@ function Summary() {
               <th>Provider</th>
               <th>Account</th>
               <th className="num">Provider usage</th>
-              <th className="num">Annapurna tracked</th>
+              <th className="num">Meter tracked</th>
               <th className="num">Difference</th>
               <th className="num">%</th>
               <th>Status</th>
@@ -385,7 +385,7 @@ function ImportWorkflow({ settings }: { settings: ReconSettings }) {
         <>
           <h3>Columns</h3>
           <p className="muted">
-            Annapurna guessed these from your headers. Change anything it got wrong — a mapping is a
+            Meter guessed these from your headers. Change anything it got wrong — a mapping is a
             statement about your file, not about the provider.
           </p>
           <div className="recon-mapping">
@@ -589,7 +589,7 @@ function RunDetail({ runId }: { runId: string }) {
 
       <div className="recon-figures">
         <Figure label="Provider usage subtotal" value={money(run.provider_usage)} />
-        <Figure label="Annapurna tracked usage" value={money(run.tracked_usage)} />
+        <Figure label="Meter tracked usage" value={money(run.tracked_usage)} />
         <Figure label="Difference" value={money(run.usage_difference)} />
         <Figure label="Difference %" value={pctText(run.usage_difference_pct)} />
         <Figure label="Credits and discounts" value={money(run.provider_credits)} />
@@ -641,7 +641,7 @@ function RunDetail({ runId }: { runId: string }) {
             <tr>
               <th>Classification</th>
               <th className="num">Provider</th>
-              <th className="num">Annapurna</th>
+              <th className="num">Meter</th>
               <th className="num">Difference</th>
               <th>Confidence</th>
               <th>Explanation and evidence</th>

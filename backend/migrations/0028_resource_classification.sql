@@ -29,7 +29,7 @@ CREATE TABLE resource_classification (
     UNIQUE (tenant_id, provider, resource_type, resource_id)
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON resource_classification TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON resource_classification TO meter_app;
 
 ALTER TABLE resource_classification ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON resource_classification

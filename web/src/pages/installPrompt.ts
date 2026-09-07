@@ -14,11 +14,11 @@
 import type { Feature } from "../api";
 
 /** The lowest SDK version with the queue, batching and retries. */
-export const MIN_SDK = "0.4";
+export const MIN_SDK = "1.0";
 
 function featureList(features: Feature[]): string {
   if (features.length === 0) {
-    return `  (No features are confirmed in Annapurna yet. Ask me for the feature id
+    return `  (No features are confirmed in Meter yet. Ask me for the feature id
   before you wrap anything — do not invent one.)`;
   }
   const width = Math.max(...features.map((f) => f.id.length));
@@ -26,22 +26,22 @@ function featureList(features: Feature[]): string {
 }
 
 export function agentPrompt(ingestUrl: string, features: Feature[]): string {
-  return `Add Annapurna metering to this codebase.
+  return `Add Meter metering to this codebase.
 
-Annapurna reports per-call LLM token counts so we can see what each of our
+Meter reports per-call LLM token counts so we can see what each of our
 features costs to run. Your job is to install its SDK and wrap the LLM clients
 we already have. Work through it end to end, then summarise what you changed.
 
 INSTALL
-- Python: annapurna-meter>=${MIN_SDK} (PyPI) — add it to requirements.txt / pyproject.toml,
+- Python: costlyinfra-meter>=${MIN_SDK} (PyPI) — add it to requirements.txt / pyproject.toml,
   and install it into the virtualenv this app runs in.
-- Node: annapurna-meter@^${MIN_SDK} (npm). It is ESM-only: import it, never require() it.
+- Node: costlyinfra-meter@^${MIN_SDK} (npm). It is ESM-only: import it, never require() it.
 It has no dependencies and is Apache-2.0 licensed.
 
 CONFIGURE
 Two environment variables, set wherever this app already keeps its secrets:
-  ANNAPURNA_INGEST_URL=${ingestUrl}
-  ANNAPURNA_INGEST_TOKEN=<ask me for this; it is a secret>
+  METER_INGEST_URL=${ingestUrl}
+  METER_INGEST_TOKEN=<ask me for this; it is a secret>
 Never hardcode the token in source and never commit it. The SDK is a silent
 no-op until both variables are set, so this is safe to merge and deploy before
 the token exists.
@@ -52,11 +52,11 @@ Google GenAI, or any OpenAI-compatible client — and wrap it once, where it is
 constructed, with the feature its calls belong to. Do not add per-call code.
 
   # Python
-  from annapurna_meter import wrap
+  from costlyinfra_meter import wrap
   client = wrap(Anthropic(), feature_id="<feature-id>")
 
   // Node
-  import { wrap } from "annapurna-meter";
+  import { wrap } from "costlyinfra-meter";
   const client = wrap(new OpenAI(), { featureId: "<feature-id>" });
 
 wrap() returns a transparent proxy. Existing calls stay exactly as they are and
@@ -74,11 +74,11 @@ TWO CASES wrap() DOES NOT COVER
 1. Streaming and async responses are skipped. Record those explicitly, with a
    meter of your own:
      # Python
-     from annapurna_meter import Meter
+     from costlyinfra_meter import Meter
      meter = Meter(feature_id="<feature-id>")
      meter.record_anthropic(resp)   # or meter.record_openai(resp)
      // Node
-     import { Meter } from "annapurna-meter";
+     import { Meter } from "costlyinfra-meter";
      const meter = new Meter("<feature-id>");
      meter.recordAnthropic(resp);   // or meter.recordOpenAI(resp)
 2. Short-lived processes — a script, a cron job, a Lambda — can exit before the
@@ -94,7 +94,7 @@ the wrapped client per request with that customer's id, or record the call
 explicitly with meter.record_*(resp, metadata={"customer_id": ...}).
 
 RULES — these are not negotiable
-- Never send prompt or response text to Annapurna. The SDK sends token counts,
+- Never send prompt or response text to Meter. The SDK sends token counts,
   the model name, latency and the feature id. Keep it that way.
 - Metering must never break or slow the request path. Do not await delivery, do
   not add your own retries, and do not put metering in a code path whose failure

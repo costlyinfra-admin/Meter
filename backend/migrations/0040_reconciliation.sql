@@ -1,6 +1,6 @@
 -- 0040: provider invoice reconciliation (additive, opt-in, isolated).
 --
--- Compares an official provider billing export against the spend Annapurna
+-- Compares an official provider billing export against the spend Meter
 -- already tracks, and explains the difference. Everything it needs lives in
 -- these tables: the module READS inference_cost_daily and writes nothing back,
 -- so no existing row, column, total or query changes because this exists.
@@ -180,7 +180,7 @@ CREATE INDEX recon_audit_tenant_idx ON recon_audit (tenant_id, created_at DESC);
 -- ---------------------------------------------------------------------------
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     recon_settings, recon_import, recon_line_item, recon_run, recon_match, recon_audit
-    TO annapurna_app;
+    TO meter_app;
 
 DO $$
 DECLARE t text;

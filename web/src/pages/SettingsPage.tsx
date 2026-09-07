@@ -264,7 +264,7 @@ export function SettingsPage() {
       >
         <section className="settings-card">
           <h2>Privacy &amp; data</h2>
-          <p className="muted">Control what Annapurna stores about your traffic and customers.</p>
+          <p className="muted">Control what Meter stores about your traffic and customers.</p>
           <div className="settings-field">
             <label htmlFor="cust-id">Customer identifiers</label>
             <select
@@ -296,7 +296,7 @@ export function SettingsPage() {
               <span>{settings.store_prompts ? "On" : "Off"}</span>
             </label>
             <span className="settings-hint muted">
-              Annapurna stores no prompt text today; leaving this off keeps it that way.
+              Meter stores no prompt text today; leaving this off keeps it that way.
             </span>
           </div>
           <div className="settings-field">

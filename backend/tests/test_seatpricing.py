@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from annapurna import seatpricing
+from meter import seatpricing
 
 
 def test_known_seat_prices():

@@ -43,7 +43,7 @@ CREATE TABLE discovery_run (
     started_by     text
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_run TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_run TO meter_app;
 
 ALTER TABLE discovery_run ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON discovery_run

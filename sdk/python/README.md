@@ -1,14 +1,14 @@
-# annapurna-meter
+# costlyinfra-meter
 
-The optional metering hook for [Annapurna](https://github.com/costlyinfra-admin/Annapurna) —
+The optional metering hook for [Meter](https://github.com/costlyinfra-admin/Meter) —
 a thin, fail-safe wrapper that reports per-call LLM usage so spend can be
 attributed **per feature**. Stdlib-only, no dependencies. Cost is computed
-server-side from Annapurna's pricing tables — the SDK never sees prices, and it
+server-side from Meter's pricing tables — the SDK never sees prices, and it
 never sends prompt or response content, only token counts and a `feature_id`.
 
 It is **fail-safe**: recording appends to an in-memory queue and returns. A
 single background worker batches and posts; nothing on your call path blocks,
-raises, or touches the network. If Annapurna is down, misconfigured, or asleep,
+raises, or touches the network. If Meter is down, misconfigured, or asleep,
 your application is unaffected. With no ingest URL/token configured, every call
 is a no-op.
 
@@ -52,10 +52,10 @@ Tunable per meter: `batch_size`, `flush_interval`, `queue_max`, `timeout`,
 Into the virtualenv your application runs in:
 
 ```bash
-python3 -m pip install "annapurna-meter>=0.4"
+python3 -m pip install "costlyinfra-meter>=1.0"
 ```
 
-Or add `annapurna-meter>=0.4` to `requirements.txt` / `pyproject.toml`, which is
+Or add `costlyinfra-meter>=1.0` to `requirements.txt` / `pyproject.toml`, which is
 the version that survives a rebuild.
 
 If pip answers `error: externally-managed-environment`, you are outside a
@@ -66,7 +66,7 @@ virtualenv — activate your application's environment and run it again.
 **Recommended — wrap the client once (no per-call code):**
 
 ```python
-from annapurna_meter import wrap
+from costlyinfra_meter import wrap
 
 client = wrap(anthropic_client, feature_id="feature-threat-triage")  # reads ENV
 
@@ -80,7 +80,7 @@ attribution. Streaming/async calls use the explicit form below.
 **Explicit — one line per call:**
 
 ```python
-from annapurna_meter import Meter
+from costlyinfra_meter import Meter
 
 meter = Meter(feature_id="feature-threat-triage")
 resp = anthropic_client.messages.create(model="claude-sonnet-4-6", ...)
@@ -94,7 +94,7 @@ tokens_in=…, tokens_out=…, feature_id=…)`.
 ### Optimize mode (opt-in)
 
 `Meter(..., optimize=True)` additionally emits **privacy-safe** signals — salted
-hashes and counts, never prompt text — so Annapurna can surface *measured*
+hashes and counts, never prompt text — so Meter can surface *measured*
 optimization opportunities (duplicate calls, uncached repeated prefixes). Off by
 default; all work is off the call path, memory-bounded, and fail-safe. The SDK
 fetches a per-tenant salt once (`GET /api/hook/salt`, same ingest token).
@@ -103,10 +103,10 @@ fetches a per-tenant salt once (`GET /api/hook/salt`, same ingest token).
 
 | Env var                  | What it is                                            |
 |--------------------------|-------------------------------------------------------|
-| `ANNAPURNA_INGEST_URL`   | e.g. `https://app.example.com/api/hook/events`        |
-| `ANNAPURNA_INGEST_TOKEN` | the per-workspace ingest token from the dashboard     |
+| `METER_INGEST_URL`   | e.g. `https://app.example.com/api/hook/events`        |
+| `METER_INGEST_TOKEN` | the per-workspace ingest token from the dashboard     |
 
 ## License
 
-Apache-2.0. (The Annapurna server is AGPL-3.0; this client SDK is permissive so
+Apache-2.0. (The Meter server is AGPL-3.0; this client SDK is permissive so
 you can embed it in a proprietary app.)

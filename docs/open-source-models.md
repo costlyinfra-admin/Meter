@@ -1,13 +1,13 @@
 # Open-source & self-hosted models
 
-Annapurna attributes inference cost for open-source models the same way it does
+Meter attributes inference cost for open-source models the same way it does
 for Anthropic/OpenAI — onto the `feature_id` spine, separate from build cost,
 with a confidence on every number. What changes is **where the dollars come
 from**, because open-source splits into two very different cost models.
 
 ## The two modes
 
-| Mode | Who meters the $ | Examples | How Annapurna costs it |
+| Mode | Who meters the $ | Examples | How Meter costs it |
 |---|---|---|---|
 | **Priced (hosted)** | The host bills per token | Together, Fireworks, OpenRouter, (Groq, Bedrock, DeepInfra) | **Connector** pulls the host's bill (or we price tokens via its rates), attributed by api_key → feature. |
 | **Pooled (self-hosted)** | Nobody — it's a GPU/infra bill | vLLM, Ollama, TGI on your own GPUs or on-prem | You register the serving deployment + its **monthly infra cost**; we split that pool across features by usage share. |
@@ -20,7 +20,7 @@ by **(provider, model)**.
 
 **1. Connector (the primary path — no code changes).** Together, Fireworks, and
 OpenRouter are first-class **inference connectors**: store the admin key under
-*Add cost data → Sync inference* (or onboarding), and Annapurna pulls the bill
+*Add cost data → Sync inference* (or onboarding), and Meter pulls the bill
 per period and attributes it by **api_key → feature** — exactly like
 Anthropic/OpenAI. The host's reported dollar cost is used when present; otherwise
 we price the reported tokens via its `(provider, model)` rates.
@@ -43,7 +43,7 @@ meter.record_openai_compatible(resp, provider="together", feature_id="triage")
 ```
 
 An unpriced (provider, model) costs $0 and shows up as a reconciliation gap —
-never a silently-wrong number. Add rates in `backend/annapurna/pricing.py`.
+never a silently-wrong number. Add rates in `backend/meter/pricing.py`.
 
 ## Pooled (self-hosted) — register a pool, allocate the bill
 

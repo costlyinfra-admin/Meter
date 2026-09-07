@@ -2,7 +2,7 @@
  * The knowledge base, as data.
  *
  * Organised like a book: categories in reading order, each with topics. Every
- * statement here describes what Annapurna actually does today — if a behaviour
+ * statement here describes what Meter actually does today — if a behaviour
  * changes, the topic that documents it changes with it. Where a topic makes a
  * claim about a number, it says where the number comes from, because that is the
  * product's whole premise.
@@ -27,15 +27,15 @@ export const CATEGORIES: Category[] = [
   {
     slug: "getting-started",
     title: "Getting started",
-    blurb: "What Annapurna is for, and how to get your first real numbers.",
+    blurb: "What Meter is for, and how to get your first real numbers.",
     topics: [
       {
-        slug: "what-annapurna-does",
-        title: "What Annapurna does",
+        slug: "what-meter-does",
+        title: "What Meter does",
         summary: "Turns one blended AI bill into per-feature cost to build and cost to run.",
         blocks: [
           p(
-            "Your AI spend arrives as a handful of invoices: some model providers, some coding tools. It tells you **how much**, never **what for**. Annapurna disaggregates that bill into the thing you can actually make decisions about — cost **per feature**.",
+            "Your AI spend arrives as a handful of invoices: some model providers, some coding tools. It tells you **how much**, never **what for**. Meter disaggregates that bill into the thing you can actually make decisions about — cost **per feature**.",
           ),
           p("Every feature gets two numbers, and they are never added together:"),
           list(
@@ -46,7 +46,7 @@ export const CATEGORIES: Category[] = [
             "They stay separate because they answer different questions. Build cost is largely one-off and tells you what a feature cost to ship. Inference cost recurs every month and tells you what it costs to keep. A single blended number would hide both.",
           ),
           note(
-            "Annapurna never invents a number. Provider bills are authoritative on dollars; anything Annapurna cannot attribute is shown in an **Unattributed** bucket rather than quietly spread across your features.",
+            "Meter never invents a number. Provider bills are authoritative on dollars; anything Meter cannot attribute is shown in an **Unattributed** bucket rather than quietly spread across your features.",
           ),
         ],
       },
@@ -59,9 +59,9 @@ export const CATEGORIES: Category[] = [
             "You need two connections to see something meaningful. Everything else is optional and can be added later.",
           ),
           steps(
-            "**Connect GitHub** on [Features](/features). Annapurna reads your merged pull requests to work out what features exist. Read-only, and a token is optional for public organisations.",
+            "**Connect GitHub** on [Features](/features). Meter reads your merged pull requests to work out what features exist. Read-only, and a token is optional for public organisations.",
             "**Discover features.** Pick the repositories to analyse and run discovery. You get a list of proposed features, each with the pull requests behind it as evidence. Rename, split, merge or delete them until the list looks like your product.",
-            "**Connect a provider** on [Cost sources](/cost-sources) — Anthropic, OpenAI, or whichever you use. Annapurna reads its cost API. Read-only, using your own admin credentials, stored encrypted.",
+            "**Connect a provider** on [Cost sources](/cost-sources) — Anthropic, OpenAI, or whichever you use. Meter reads its cost API. Read-only, using your own admin credentials, stored encrypted.",
             "**Sync.** The first sync backfills twelve months so you have history immediately, not in a year.",
           ),
           p(
@@ -109,7 +109,7 @@ export const CATEGORIES: Category[] = [
             "**Inference cost** is what your features spend calling models in production. It recurs every month and scales with usage.",
           ),
           p(
-            "Annapurna stores and displays them separately everywhere, including in the charts. A feature that cost $4,000 to build and $50/month to run is a very different proposition from one that cost $50 to build and $4,000/month to run, and one blended number cannot tell you which you have.",
+            "Meter stores and displays them separately everywhere, including in the charts. A feature that cost $4,000 to build and $50/month to run is a very different proposition from one that cost $50 to build and $4,000/month to run, and one blended number cannot tell you which you have.",
           ),
         ],
       },
@@ -122,7 +122,7 @@ export const CATEGORIES: Category[] = [
             "A feature is the unit everything hangs off. Build cost attributes to one, inference cost attributes to one, usage attributes to one.",
           ),
           p(
-            "Features come from your merged pull requests. Annapurna clusters them into proposed features, and you confirm, rename, split or merge until the list matches how you actually think about your product. See [How discovery works](/help/features/discovery).",
+            "Features come from your merged pull requests. Meter clusters them into proposed features, and you confirm, rename, split or merge until the list matches how you actually think about your product. See [How discovery works](/help/features/discovery).",
           ),
           note(
             "Anything that cannot be attributed to a feature goes to **Unattributed** — visibly, as its own row. It is never spread across features to make the totals look tidy.",
@@ -152,7 +152,7 @@ export const CATEGORIES: Category[] = [
               ],
               [
                 "Build spend with no matching PR author",
-                "A developer in your tooling CSV whose GitHub handle Annapurna could not match",
+                "A developer in your tooling CSV whose GitHub handle Meter could not match",
                 "Check the handle in the CSV",
               ],
               [
@@ -172,7 +172,7 @@ export const CATEGORIES: Category[] = [
         title: "Reconciliation: why the bill is always right",
         summary: "Provider cost APIs are authoritative; metering adds resolution, never dollars.",
         blocks: [
-          p("Annapurna has two sources of truth about inference, and they do different jobs:"),
+          p("Meter has two sources of truth about inference, and they do different jobs:"),
           list(
             "**The provider's cost API** is authoritative on **dollars**. It is what you will actually be invoiced.",
             "**Metered calls from the SDK** are authoritative on **resolution** — which feature, which customer, which model made each call.",
@@ -184,7 +184,7 @@ export const CATEGORIES: Category[] = [
             "This is why losing a few metered events never corrupts your bill — it only reduces how much of the bill is attributed. Under-counting is caught by design.",
           ),
           p(
-            "This reconciliation is internal and automatic. Checking Annapurna against the invoice your provider actually sent is a separate, opt-in feature — see [Invoice reconciliation](/help/reconciliation/what-it-is).",
+            "This reconciliation is internal and automatic. Checking Meter against the invoice your provider actually sent is a separate, opt-in feature — see [Invoice reconciliation](/help/reconciliation/what-it-is).",
           ),
         ],
       },
@@ -216,7 +216,7 @@ export const CATEGORIES: Category[] = [
   {
     slug: "cost-sources",
     title: "Cost sources",
-    blurb: "Connecting providers, and telling Annapurna what each key is for.",
+    blurb: "Connecting providers, and telling Meter what each key is for.",
     topics: [
       {
         slug: "connecting",
@@ -224,7 +224,7 @@ export const CATEGORIES: Category[] = [
         summary: "Read-only, your own admin credentials, encrypted at rest.",
         blocks: [
           p(
-            "On [Cost sources](/cost-sources), connect the providers you are billed by. Annapurna reads each provider's cost API — it never sends prompts, never makes model calls on your behalf, and never writes anything to your account.",
+            "On [Cost sources](/cost-sources), connect the providers you are billed by. Meter reads each provider's cost API — it never sends prompts, never makes model calls on your behalf, and never writes anything to your account.",
           ),
           p(
             "Credentials are encrypted before they are stored and are never returned by any API or shown in the UI again. Every table is isolated per tenant at the database level.",
@@ -233,17 +233,17 @@ export const CATEGORIES: Category[] = [
             "The first sync backfills twelve months. After that, the refresh control on the Overview pulls the current month so today's spend is current.",
           ),
           note(
-            "The current month is always **month-to-date**. Some providers report the most recent days as estimates until the invoice settles; where they do, Annapurna labels that portion rather than presenting it as billed.",
+            "The current month is always **month-to-date**. Some providers report the most recent days as estimates until the invoice settles; where they do, Meter labels that portion rather than presenting it as billed.",
           ),
         ],
       },
       {
         slug: "classification",
         title: "Classifying workspaces and API keys",
-        summary: "Tell Annapurna which keys are production so the split means something.",
+        summary: "Tell Meter which keys are production so the split means something.",
         blocks: [
           p(
-            "Providers report spend per workspace and API key. Annapurna cannot know which of those is production and which is a developer's test key — only you can, so classification is a decision you make, never a guess from a naming convention.",
+            "Providers report spend per workspace and API key. Meter cannot know which of those is production and which is a developer's test key — only you can, so classification is a decision you make, never a guess from a naming convention.",
           ),
           p("Open a connected provider on [Cost sources](/cost-sources) and set each resource to:"),
           list(
@@ -270,7 +270,7 @@ export const CATEGORIES: Category[] = [
             "A model you run yourself has no per-token price. Its cost is the compute pool it runs on — a monthly infrastructure bill.",
           ),
           p(
-            "Annapurna records usage per feature against the pool, then allocates the pool's bill across features in proportion to that usage. The result is labelled as an allocation with medium confidence, because it is a fair split of a real bill rather than a measured per-call price.",
+            "Meter records usage per feature against the pool, then allocates the pool's bill across features in proportion to that usage. The result is labelled as an allocation with medium confidence, because it is a fair split of a real bill rather than a measured per-call price.",
           ),
         ],
       },
@@ -280,7 +280,7 @@ export const CATEGORIES: Category[] = [
   {
     slug: "features",
     title: "Features & discovery",
-    blurb: "How Annapurna works out what your product is made of.",
+    blurb: "How Meter works out what your product is made of.",
     topics: [
       {
         slug: "discovery",
@@ -288,10 +288,10 @@ export const CATEGORIES: Category[] = [
         summary: "Merged pull requests, clustered into proposed features you then curate.",
         blocks: [
           p(
-            "Annapurna reads your **merged pull requests** — title, branch, labels, description, author, and size. It never reads source code.",
+            "Meter reads your **merged pull requests** — title, branch, labels, description, author, and size. It never reads source code.",
           ),
           p(
-            "Those pull requests are clustered into proposed features. Each proposal carries the pull requests behind it, so you can always see why Annapurna thinks a feature exists.",
+            "Those pull requests are clustered into proposed features. Each proposal carries the pull requests behind it, so you can always see why Meter thinks a feature exists.",
           ),
           p(
             "Discovery is **manual**: it runs when you run it. Nothing rediscovers your features on a schedule behind your back.",
@@ -310,7 +310,7 @@ export const CATEGORIES: Category[] = [
             "Discovery proposes; you decide. On [Features](/features) you can rename a proposal, split one that is really two, merge two that are really one, delete a spurious one, or add a feature by hand.",
           ),
           p(
-            "Proposals arrive with a confidence badge. Anything Annapurna could not cluster confidently lands under **Needs review** so it is visible rather than silently misfiled.",
+            "Proposals arrive with a confidence badge. Anything Meter could not cluster confidently lands under **Needs review** so it is visible rather than silently misfiled.",
           ),
           p(
             "Confirming a feature does not lock it. You can keep editing at any time, and your edits survive the next discovery run.",
@@ -336,10 +336,10 @@ export const CATEGORIES: Category[] = [
       {
         slug: "byok",
         title: "Using your own LLM key (BYOK)",
-        summary: "Point discovery at your own provider instead of Annapurna's.",
+        summary: "Point discovery at your own provider instead of Meter's.",
         blocks: [
           p(
-            "Discovery uses an LLM to cluster pull requests. By default that runs on Annapurna's own model at no cost to you.",
+            "Discovery uses an LLM to cluster pull requests. By default that runs on Meter's own model at no cost to you.",
           ),
           p(
             "If you would rather that traffic and spend sat on your own account, configure your own OpenAI-compatible endpoint under **Feature discovery model** in [Settings](/settings): provider, base URL, model and API key.",
@@ -351,7 +351,7 @@ export const CATEGORIES: Category[] = [
             "Save. Discovery uses your model from the next run onwards.",
           ),
           p(
-            "You can switch back to Annapurna's model at any time without discarding the configuration, or remove it outright, which deletes the stored key.",
+            "You can switch back to Meter's model at any time without discarding the configuration, or remove it outright, which deletes the stored key.",
           ),
           note(
             "The key is encrypted at rest and never returned by any API, shown in the UI, or written to logs — including inside provider error messages, which are scrubbed before you see them. Because it is never shown, editing the model or endpoint does not require re-entering it.",
@@ -384,7 +384,7 @@ export const CATEGORIES: Category[] = [
             "Measured optimization findings — duplicate calls and uncached repeated prompt prefixes",
           ),
           note(
-            "It is entirely optional. Annapurna is designed to be useful without it, and installing it later does not invalidate anything you already have.",
+            "It is entirely optional. Meter is designed to be useful without it, and installing it later does not invalidate anything you already have.",
           ),
         ],
       },
@@ -398,12 +398,12 @@ export const CATEGORIES: Category[] = [
           ),
           code(`# Python
 from anthropic import Anthropic
-from annapurna_meter import wrap
+from costlyinfra_meter import wrap
 
 client = wrap(Anthropic(), feature_id="<feature-id>")
 resp = client.messages.create(...)   # metered automatically`),
           code(`// Node
-import { wrap } from "annapurna-meter";
+import { wrap } from "costlyinfra-meter";
 
 const client = wrap(openai, { featureId: "<feature-id>" });
 await client.chat.completions.create({ ... });   // metered automatically`),
@@ -411,7 +411,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "Configuration is two environment variables — the ingest URL and your token. With neither set, every call is a no-op, so the same code runs in environments where you have not enabled it.",
           ),
           note(
-            'Install into the environment your app actually runs in. On Python that means the virtualenv — `python3 -m pip install "annapurna-meter>=0.4"`, or a line in your requirements file. The Node package is ESM only, so `import` it rather than `require()` it.',
+            'Install into the environment your app actually runs in. On Python that means the virtualenv — `python3 -m pip install "costlyinfra-meter>=0.4"`, or a line in your requirements file. The Node package is ESM only, so `import` it rather than `require()` it.',
           ),
         ],
       },
@@ -428,7 +428,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "optionally, a customer identifier you supply in metadata",
           ),
           p(
-            "It never sends prompt text, response text, or source code. Cost is computed **server-side** from Annapurna's pricing tables, so the SDK never sees prices either.",
+            "It never sends prompt text, response text, or source code. Cost is computed **server-side** from Meter's pricing tables, so the SDK never sees prices either.",
           ),
           p(
             "Optimize mode, which is off by default, adds salted hashes and counts describing the *shape* of your traffic — enough to spot a repeated prompt prefix or a duplicated call, never enough to reconstruct one.",
@@ -447,7 +447,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "**Bounded.** One worker whatever your traffic, and a capped queue. If the queue fills, the oldest events are dropped and counted, rather than growing without limit.",
             "**Batched.** Up to 50 events per request, flushed when a batch fills or after five seconds.",
             "**Retried safely.** A failed batch is retried with backoff. Every attempt carries the same batch id, which the server applies once and then recognises, so a retry can never double-count a feature's cost.",
-            "**Fail-safe.** Errors are swallowed. If Annapurna is down or misconfigured, your application is unaffected.",
+            "**Fail-safe.** Errors are swallowed. If Meter is down or misconfigured, your application is unaffected.",
           ),
           note(
             "In a short-lived process — a script, or a serverless handler that freezes between invocations — call `meter.flush()` before exiting so queued events are delivered.",
@@ -490,7 +490,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "**By customer**, when the SDK has tagged calls with one",
           ),
           note(
-            "Token *counts* are reported by the provider and are exact. The dollar split **by token type** is derived: providers bill per line item, not per token type, so Annapurna weights each type by its published rate and apportions the real bill. The parts always sum back to what you were charged, and the view says so.",
+            "Token *counts* are reported by the provider and are exact. The dollar split **by token type** is derived: providers bill per line item, not per token type, so Meter weights each type by its published rate and apportions the real bill. The parts always sum back to what you were charged, and the view says so.",
           ),
         ],
       },
@@ -569,7 +569,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
       {
         slug: "savings-language",
         title: "What the savings numbers mean",
-        summary: "Observed spend is not saved money, and Annapurna will not call it that.",
+        summary: "Observed spend is not saved money, and Meter will not call it that.",
         blocks: [
           table(
             ["Label", "Meaning"],
@@ -596,7 +596,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "Projected, then realized, then verified against your actual bill.",
         blocks: [
           p(
-            "When you act on a measured finding, mark it applied. Annapurna then tracks it through three states:",
+            "When you act on a measured finding, mark it applied. Meter then tracks it through three states:",
           ),
           steps(
             "**Projected** — what the finding estimated before you changed anything.",
@@ -614,7 +614,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
   {
     slug: "reconciliation",
     title: "Invoice reconciliation",
-    blurb: "Check Annapurna's numbers against the provider's own bill, and see what differs.",
+    blurb: "Check Meter's numbers against the provider's own bill, and see what differs.",
     topics: [
       {
         slug: "what-it-is",
@@ -622,13 +622,13 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "Compares a provider billing export against tracked spend, and explains the gap.",
         blocks: [
           p(
-            "Import the CSV your provider bills you with, and Annapurna lines it up against the spend it already tracked for the same period — then tells you what accounts for the difference, line by line, with the evidence for each explanation.",
+            "Import the CSV your provider bills you with, and Meter lines it up against the spend it already tracked for the same period — then tells you what accounts for the difference, line by line, with the evidence for each explanation.",
           ),
           p(
             "It answers the question a finance team asks first: *does this tool agree with my actual invoice, and if not, why not?*",
           ),
           note(
-            "This is a different thing from [Reconciliation: why the bill is always right](/help/concepts/reconciliation), which is internal and automatic — that one keeps SDK metering honest against the provider's cost API. This one compares Annapurna against the **invoice you were sent**, and only happens when you import one.",
+            "This is a different thing from [Reconciliation: why the bill is always right](/help/concepts/reconciliation), which is internal and automatic — that one keeps SDK metering honest against the provider's cost API. This one compares Meter against the **invoice you were sent**, and only happens when you import one.",
           ),
           p(
             "It is **opt-in and additive**. Until you turn it on there is no menu item, and turning it on changes nothing about your existing cost data, dashboards, Optimize or Alerts.",
@@ -649,7 +649,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "Turning it off again hides the section and stops all of its work. It deletes nothing: your imports, runs and explanations are all still there if you turn it back on.",
           ),
           note(
-            "An operator can disable the module for a whole installation with `ANNAPURNA_RECONCILIATION=off`, regardless of what any organization has chosen. That is a kill switch, not a data change.",
+            "An operator can disable the module for a whole installation with `METER_RECONCILIATION=off`, regardless of what any organization has chosen. That is a kill switch, not a data change.",
           ),
         ],
       },
@@ -659,7 +659,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "Map your columns, see what would be imported, then commit.",
         blocks: [
           p(
-            "Providers do not agree on a billing CSV format, so Annapurna does not pretend to know yours. It reads your header row, guesses which column holds each field, and shows you the guess to correct before anything is stored.",
+            "Providers do not agree on a billing CSV format, so Meter does not pretend to know yours. It reads your header row, guesses which column holds each field, and shows you the guess to correct before anything is stored.",
           ),
           p("Only two fields are required:"),
           list(
@@ -683,10 +683,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "Usage against usage, on the most specific dimensions both sides share.",
         blocks: [
           p(
-            "The headline number is the **provider's usage subtotal** against **Annapurna's tracked usage cost**. Tax, credits, discounts and fees are read from the statement and reported separately — never added to either side.",
+            "The headline number is the **provider's usage subtotal** against **Meter's tracked usage cost**. Tax, credits, discounts and fees are read from the statement and reported separately — never added to either side.",
           ),
           p(
-            "That distinction matters more than it sounds. Comparing a tax-inclusive invoice total against usage cost would report a discrepancy every month there is any tax at all, and call it missing usage. Annapurna does not do that.",
+            "That distinction matters more than it sounds. Comparing a tax-inclusive invoice total against usage cost would report a discrepancy every month there is any tax at all, and call it missing usage. Meter does not do that.",
           ),
           p(
             "Each statement line is matched against tracked spend using the most specific dimensions both sides carry, in this order:",
@@ -741,7 +741,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "Every explanation says how sure it is, and shows what it is based on.",
         blocks: [
           p(
-            "A difference is classified when the data supports a classification: usage the provider billed that Annapurna has no record of, usage Annapurna tracked that the statement never mentions, a price difference, a line dated outside the period, a workspace that is not connected, a duplicated statement row, an unrecognised model, or simply an unexplained difference.",
+            "A difference is classified when the data supports a classification: usage the provider billed that Meter has no record of, usage Meter tracked that the statement never mentions, a price difference, a line dated outside the period, a workspace that is not connected, a duplicated statement row, an unrecognised model, or simply an unexplained difference.",
           ),
           p("Each explanation carries a confidence, and the distinction is real:"),
           table(
@@ -756,7 +756,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             ],
           ),
           p(
-            "The evidence behind each explanation is shown with it, so you can disagree. Annapurna will not tell you a cause is confirmed because it is plausible.",
+            "The evidence behind each explanation is shown with it, so you can disagree. Meter will not tell you a cause is confirmed because it is plausible.",
           ),
         ],
       },
@@ -784,7 +784,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "It reports differences. It does not resolve them for you.",
         blocks: [
           list(
-            "**It never changes your cost data.** A statement is evidence, not a correction. No tracked row is updated, reclassified or deleted, and no total anywhere else in Annapurna moves because you imported a bill.",
+            "**It never changes your cost data.** A statement is evidence, not a correction. No tracked row is updated, reclassified or deleted, and no total anywhere else in Meter moves because you imported a bill.",
             "**It never converts currencies.** A statement in one currency and tracked data in another is reported as incomplete data, with both figures intact.",
             "**It never manufactures a match.** If a line cannot be matched, it is shown as unmatched rather than absorbed into an aggregate that happens to balance.",
             "**It never treats tax, credits or fees as usage.** They are on your invoice and they are reported, but they are not inference cost.",
@@ -853,15 +853,15 @@ await client.chat.completions.create({ ... });   // metered automatically`),
   {
     slug: "trust",
     title: "Privacy & trust",
-    blurb: "What Annapurna reads, stores, and can never do.",
+    blurb: "What Meter reads, stores, and can never do.",
     topics: [
       {
         slug: "what-we-read",
-        title: "What Annapurna reads",
+        title: "What Meter reads",
         summary: "Read-only, metadata only, your own credentials.",
         blocks: [
           list(
-            "**All connectors are read-only.** Annapurna never writes to your provider accounts or your repositories.",
+            "**All connectors are read-only.** Meter never writes to your provider accounts or your repositories.",
             "**From GitHub**: pull request metadata — title, branch, labels, description, author, size. Never source code.",
             "**From providers**: cost and usage reports. Never prompts or responses.",
             "**From the SDK**: token counts, model, feature id, latency. Never prompt or response content.",
@@ -893,7 +893,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "[Settings](/settings) holds your organization profile and privacy preferences: display name, time zone, reporting currency, how customer identifiers are stored, whether prompt content may ever be stored, and your data retention window.",
           ),
           note(
-            "Annapurna stores no prompt text today. The **store prompt content** preference is a forward-looking guarantee rather than a switch over existing data.",
+            "Meter stores no prompt text today. The **store prompt content** preference is a forward-looking guarantee rather than a switch over existing data.",
           ),
         ],
       },
@@ -912,9 +912,9 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p("Work through these in order:"),
           steps(
-            "**Check the period.** Annapurna's *This month* is the calendar month to date. Provider consoles often default to a rolling 30 days or to a billing cycle that does not start on the 1st.",
-            "**Check for ignored resources.** Any workspace or key classified as **Ignore** is excluded from Annapurna's totals by design.",
-            "**Check for estimated spend.** Recent days may be estimated until the provider settles them; Annapurna labels that portion.",
+            "**Check the period.** Meter's *This month* is the calendar month to date. Provider consoles often default to a rolling 30 days or to a billing cycle that does not start on the 1st.",
+            "**Check for ignored resources.** Any workspace or key classified as **Ignore** is excluded from Meter's totals by design.",
+            "**Check for estimated spend.** Recent days may be estimated until the provider settles them; Meter labels that portion.",
             "**Re-sync.** Use the refresh control on the [Overview](/) to pull the current month again.",
           ),
           p(
@@ -960,7 +960,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "Expected before the SDK is installed; here is what closes the gap.",
         blocks: [
           p(
-            "With only cost-API connectors, Annapurna knows what each provider and key cost but not which feature made each call. That is honest rather than broken — the spend is real and shown, just not yet attributed.",
+            "With only cost-API connectors, Meter knows what each provider and key cost but not which feature made each call. That is honest rather than broken — the spend is real and shown, just not yet attributed.",
           ),
           p("Two things reduce it:"),
           list(
@@ -975,7 +975,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "The assistant answers from this handbook; a human answers the rest.",
         blocks: [
           p(
-            "The chat button in the bottom-right corner opens the Annapurna assistant. It answers from **this handbook and nothing else**, and every reply links to the topics it drew on, so you can check the answer against the source rather than taking its word for it.",
+            "The chat button in the bottom-right corner opens the Meter assistant. It answers from **this handbook and nothing else**, and every reply links to the topics it drew on, so you can check the answer against the source rather than taking its word for it.",
           ),
           p("That boundary is deliberate. It means the assistant can tell you:"),
           list(

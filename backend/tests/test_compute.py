@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from annapurna import compute, dashboard, features, hook
+from meter import compute, dashboard, features, hook
 
 PERIOD = dt.date(2026, 6, 1)
 

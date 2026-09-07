@@ -1,4 +1,4 @@
--- Annapurna M5 — record the actor (developer) behind a signal.
+-- Meter M5 — record the actor (developer) behind a signal.
 --
 -- Build-cost allocation splits a developer's coding-tool spend across features by
 -- the PRs they authored (design §7.1). To do that we need to know who authored

@@ -1,4 +1,4 @@
--- Annapurna M7 — per-tenant ingest token for the metering hook.
+-- Meter M7 — per-tenant ingest token for the metering hook.
 --
 -- The metering SDK runs in the customer's production app (server-to-server), so
 -- it can't use a browser session cookie. Instead each tenant has an ingest token;
@@ -15,7 +15,7 @@ CREATE TABLE hook_token (
 CREATE UNIQUE INDEX hook_token_hash_key ON hook_token (token_hash);
 CREATE INDEX hook_token_tenant_idx ON hook_token (tenant_id);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON hook_token TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON hook_token TO meter_app;
 
 ALTER TABLE hook_token ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hook_token FORCE ROW LEVEL SECURITY;

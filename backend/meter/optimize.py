@@ -1,6 +1,6 @@
 """Cost-optimization estimator (heuristic, transparent).
 
-IMPORTANT: unlike the rest of Annapurna, these are *estimates*, not measured
+IMPORTANT: unlike the rest of Meter, these are *estimates*, not measured
 numbers. They are directional projections derived from a feature's inference
 usage (spend, model mix, input/output token split, request volume) using simple,
 explainable rules. Every opportunity carries a confidence and a rationale so the

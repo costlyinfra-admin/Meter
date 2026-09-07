@@ -1,10 +1,10 @@
-"""Annapurna HTTP API (FastAPI).
+"""Meter HTTP API (FastAPI).
 
 Auth is cookie-session based: a signed, http-only session cookie (Starlette
 SessionMiddleware) holds the user id. Tenant-scoped data is always read/written
 under the authenticated user's tenant, which drives RLS.
 
-Run locally:  uvicorn --factory annapurna.api:create_app --reload
+Run locally:  uvicorn --factory meter.api:create_app --reload
 """
 
 from __future__ import annotations
@@ -51,11 +51,11 @@ from .github import GitHubError
 from .providers import ProviderError
 from .reconciliation import api as reconciliation_api
 
-logger = logging.getLogger("annapurna.api")
+logger = logging.getLogger("meter.api")
 
 #: Where "Contact support" in the assistant writes to. Overridable so a fork, or
 #: a customer running their own deployment, can point it at their own desk.
-SUPPORT_EMAIL = os.environ.get("ANNAPURNA_SUPPORT_EMAIL", "support@costlyinfra.com")
+SUPPORT_EMAIL = os.environ.get("METER_SUPPORT_EMAIL", "support@costlyinfra.com")
 
 #: The named review periods every window-scoped endpoint accepts.
 _RANGE_RE = "^(this_month|last_month|last_3_months|last_6_months|last_12_months)$"
@@ -344,7 +344,7 @@ class AssistantPassage(BaseModel):
 
     The knowledge base ships in the app bundle and retrieval runs there, so the
     excerpts arrive with the question rather than from a second copy on the
-    server that could drift out of date. See annapurna/assistant.py.
+    server that could drift out of date. See meter/assistant.py.
     """
 
     id: str = Field(min_length=1, max_length=120)
@@ -512,18 +512,18 @@ def create_app() -> FastAPI:
         raise RuntimeError("APP_SECRET_KEY must be set to run the API.")
 
     logging.basicConfig(
-        level=os.environ.get("ANNAPURNA_LOG_LEVEL", "INFO"),
+        level=os.environ.get("METER_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    # Secure cookies behind HTTPS in production (set ANNAPURNA_SECURE_COOKIES=true).
-    secure_cookies = os.environ.get("ANNAPURNA_SECURE_COOKIES", "false").lower() in (
+    # Secure cookies behind HTTPS in production (set METER_SECURE_COOKIES=true).
+    secure_cookies = os.environ.get("METER_SECURE_COOKIES", "false").lower() in (
         "1",
         "true",
         "yes",
     )
 
-    app = FastAPI(title="Annapurna API", version=__version__)
+    app = FastAPI(title="Meter API", version=__version__)
     app.add_middleware(
         SessionMiddleware,
         secret_key=secret_key,
@@ -1338,7 +1338,7 @@ def create_app() -> FastAPI:
 
     @app.patch("/api/settings/discovery-llm")
     def toggle_discovery_llm(body: DiscoveryLlmEnabledRequest, user: CurrentUser) -> dict:
-        """Switch back to Annapurna's endpoint without discarding the config."""
+        """Switch back to Meter's endpoint without discarding the config."""
         return discovery_llm.set_enabled(user["tenant_id"], body.enabled)
 
     @app.delete("/api/settings/discovery-llm")
@@ -1347,7 +1347,7 @@ def create_app() -> FastAPI:
         return discovery_llm.remove(user["tenant_id"])
 
     # ---- Provider invoice reconciliation (opt-in, isolated module) -------
-    # The whole feature lives in annapurna/reconciliation and is off unless a
+    # The whole feature lives in meter/reconciliation and is off unless a
     # tenant turns it on. This line is the only place the rest of the app knows
     # it exists; removing it removes the feature's entire HTTP surface.
     app.include_router(reconciliation_api.build_router(_current_user))
@@ -1435,7 +1435,7 @@ def create_app() -> FastAPI:
             ) from exc
 
     # ---- Serve the built web app (production single-service deploy) -----
-    # When ANNAPURNA_STATIC_DIR points at the built frontend, the API also serves
+    # When METER_STATIC_DIR points at the built frontend, the API also serves
     # it: static files where they exist, else index.html (SPA client routing).
     # Registered last so all /api routes take precedence.
     _mount_frontend(app)
@@ -1444,7 +1444,7 @@ def create_app() -> FastAPI:
 
 
 def _mount_frontend(app: FastAPI) -> None:
-    static_dir = os.environ.get("ANNAPURNA_STATIC_DIR")
+    static_dir = os.environ.get("METER_STATIC_DIR")
     if not static_dir or not os.path.isdir(static_dir):
         return  # no frontend bundled (e.g. tests, API-only) -> nothing to serve
 

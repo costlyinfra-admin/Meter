@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>Annapurna</title>
+    <title>Meter</title>
     <script>
       // Resolve the theme before the first paint. Doing this in React instead
       // would show a flash of the light theme on a dark-mode machine. Kept in
       // sync with src/theme.ts, which owns everything after this point.
       (function () {
         try {
-          var stored = localStorage.getItem("annapurna.theme");
+          var stored = localStorage.getItem("meter.theme");
           var theme =
             stored === "light" || stored === "dark"
               ? stored

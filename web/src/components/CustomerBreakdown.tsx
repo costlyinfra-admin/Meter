@@ -163,7 +163,7 @@ function NoCustomerData() {
       <p className="empty-title">No customer-attributed spend yet</p>
       <p className="muted">
         Provider bills record what was spent, never who it was spent on — so this view can't be
-        filled in from a cost connector. It needs the Annapurna metering SDK in your application,
+        filled in from a cost connector. It needs the Meter metering SDK in your application,
         passing <code>metadata.customer_id</code> on each model call. Once calls arrive tagged, cost
         per customer, cost per request, and period-over-period change appear here.
       </p>

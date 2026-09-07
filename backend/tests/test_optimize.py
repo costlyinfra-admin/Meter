@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from annapurna import optimize
+from meter import optimize
 
 
 def _names(result):

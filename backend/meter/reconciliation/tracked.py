@@ -1,4 +1,4 @@
-"""The read-only boundary onto the cost data Annapurna already tracks.
+"""The read-only boundary onto the cost data Meter already tracks.
 
 This is the ONLY place the reconciliation module touches existing cost tables,
 and every statement in it is a SELECT. Nothing here updates, annotates,
@@ -90,7 +90,7 @@ def currencies(conn, provider: str, start: dt.date, end: dt.date) -> list[str]:
 
 
 def has_any_data(conn, provider: str, start: dt.date, end: dt.date) -> bool:
-    """Whether Annapurna tracked anything at all for this provider and period.
+    """Whether Meter tracked anything at all for this provider and period.
     Nothing tracked is 'incomplete data', not 'the provider billed you for
     everything' — a distinction the run status depends on."""
     row = conn.execute(

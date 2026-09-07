@@ -9,8 +9,8 @@ in an apt path (CI).
 from __future__ import annotations
 
 import pytest
-from annapurna import db
-from annapurna.migrations import MIGRATIONS_DIR, apply_migrations
+from meter import db
+from meter.migrations import MIGRATIONS_DIR, apply_migrations
 from pytest_postgresql import factories
 
 # Point pytest-postgresql at a discoverable pg_ctl (PATH, Homebrew, or apt/CI).

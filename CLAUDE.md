@@ -1,19 +1,19 @@
-# CLAUDE.md — Annapurna
+# CLAUDE.md — Meter
 
 > **What this file is (for forkers):** these are the project's standing
 > instructions for AI coding assistants (e.g. Claude Code) — the product intent,
 > non-negotiable invariants, and working conventions. It's **not** required to run
-> or use Annapurna; for that, see [`README.md`](README.md),
+> or use Meter; for that, see [`README.md`](README.md),
 > [`CONTRIBUTING.md`](CONTRIBUTING.md), and [`docs/`](docs). It's kept in the repo
 > because the invariants below are genuinely useful context for any contributor.
 
-Standing instructions for building Annapurna. Read these before any work.
+Standing instructions for building Meter. Read these before any work.
 
-## What Annapurna is
+## What Meter is
 A SaaS that disaggregates a company's blended AI bill into **per-feature cost** — what each feature cost to **build** (AI coding tools) and to **run** (inference). Buyer is a **CTO/CFO** (a business-decision tool, not a developer tool). First vertical: cybersecurity. Clean-slate product — **no relation to any prior fork, scanner, or codebase.**
 
 ## The two source-of-truth docs
-- `docs/annapurna-design-doc.md` — canonical spec (intent, data model, attribution, screens). **The design doc wins on intent.**
+- `docs/meter-design-doc.md` — canonical spec (intent, data model, attribution, screens). **The design doc wins on intent.**
 - `docs/build-plan.md` — ordered milestones (M0–M8) with acceptance criteria. **Work one milestone at a time, in order; stop at each boundary for review.**
 
 If either is wrong or underspecified, flag it and propose an update — don't silently guess.

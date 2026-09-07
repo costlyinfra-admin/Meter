@@ -37,7 +37,7 @@ CREATE TABLE inference_cost_daily (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON inference_cost_daily TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON inference_cost_daily TO meter_app;
 
 ALTER TABLE inference_cost_daily ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inference_cost_daily FORCE ROW LEVEL SECURITY;

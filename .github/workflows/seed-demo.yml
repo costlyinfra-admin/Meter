@@ -10,11 +10,11 @@ on:
     inputs:
       email:
         description: "Demo login email"
-        default: "demo@annapurna.com"
+        default: "demo@costlyinfra.com"
         required: true
       password:
         description: "Demo login password"
-        default: "annapurna-demo"
+        default: "meter-demo"
         required: true
 
 jobs:

@@ -29,7 +29,7 @@ export function AdminShell() {
         <div className="sidebar-brand">
           <span className="brand">
             <BrandMark />
-            Annapurna
+            Meter
           </span>
           <span className="admin-tag">Admin</span>
         </div>

@@ -29,7 +29,7 @@ def export_csv(tenant_id: str, run_id: str) -> tuple:
     out = io.StringIO()
     writer = csv.writer(out)
 
-    _row(writer, "Annapurna reconciliation report")
+    _row(writer, "Meter reconciliation report")
     _row(writer, "Run", run["id"])
     _row(writer, "Provider", run["provider"])
     _row(writer, "Provider account", run["provider_account"] or "")
@@ -47,7 +47,7 @@ def export_csv(tenant_id: str, run_id: str) -> tuple:
     _row(writer, "Provider tax", run["provider_tax"])
     _row(writer, "Provider fees and adjustments", run["provider_fees"])
     _row(writer, "Provider invoice total", run["provider_total"])
-    _row(writer, "Annapurna tracked usage", run["tracked_usage"])
+    _row(writer, "Meter tracked usage", run["tracked_usage"])
     _row(writer, "Usage difference", run["usage_difference"])
     _row(writer, "Usage difference %", run["usage_difference_pct"])
     writer.writerow([])
@@ -58,7 +58,7 @@ def export_csv(tenant_id: str, run_id: str) -> tuple:
         "Strategy",
         "Confidence",
         "Provider amount",
-        "Annapurna amount",
+        "Meter amount",
         "Difference",
         "Difference %",
         "Explanation",

@@ -6,7 +6,7 @@
 --   (a) line counts — GitHub returns `additions`/`deletions` from the same PR
 --       detail endpoint the connector ALREADY calls for commits/changed_files,
 --       so this costs no extra API request;
---   (b) merged_at — the PR's own merge date. `created_at` is when Annapurna
+--   (b) merged_at — the PR's own merge date. `created_at` is when Meter
 --       inserted the row, which is the date of the last discovery run, not of
 --       the work. Without the real date, activity cannot honestly be scoped to
 --       the review period the user selected.

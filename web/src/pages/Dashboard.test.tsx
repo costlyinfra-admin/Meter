@@ -1166,6 +1166,6 @@ describe("Dashboard (Overview)", () => {
     // fires the alerts-refresh window event.
     await waitFor(() => expect(api.refreshInference).toHaveBeenCalled());
     await waitFor(() => expect(api.dashboard).toHaveBeenCalledTimes(2));
-    expect(dispatch.mock.calls.some(([e]) => e.type === "annapurna:refresh-alerts")).toBe(true);
+    expect(dispatch.mock.calls.some(([e]) => e.type === "meter:refresh-alerts")).toBe(true);
   });
 });

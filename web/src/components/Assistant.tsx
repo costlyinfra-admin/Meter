@@ -27,10 +27,10 @@ interface Message {
   unanswered?: boolean;
 }
 
-const STORE_KEY = "annapurna.assistant.thread";
+const STORE_KEY = "meter.assistant.thread";
 
 const GREETING =
-  "Hi 👋 I'm the Annapurna assistant. Ask me anything about how the numbers are " +
+  "Hi 👋 I'm the Meter assistant. Ask me anything about how the numbers are " +
   "put together, connecting a provider, or getting set up.";
 
 const SUGGESTIONS = [
@@ -219,12 +219,12 @@ export function Assistant() {
   return (
     <>
       {open && (
-        <div className="assist-panel" role="dialog" aria-label="Annapurna support assistant">
+        <div className="assist-panel" role="dialog" aria-label="Meter support assistant">
           <header className="assist-head">
             <div>
               <p className="assist-title">Support</p>
               <p className="assist-sub">
-                {composed ? "Answers from the Annapurna handbook" : "Straight from the handbook"}
+                {composed ? "Answers from the Meter handbook" : "Straight from the handbook"}
               </p>
             </div>
             <button

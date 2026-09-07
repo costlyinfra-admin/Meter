@@ -9,7 +9,7 @@ import type { Feature } from "../api";
 
 // The SDKs themselves, read as text. Loading the real files is the whole point:
 // a claim in the prompt that no longer matches the code fails here.
-import PYTHON_SDK from "../../../sdk/python/annapurna_meter/__init__.py?raw";
+import PYTHON_SDK from "../../../sdk/python/costlyinfra_meter/__init__.py?raw";
 import NODE_SDK from "../../../sdk/node/index.mjs?raw";
 import PYTHON_MANIFEST from "../../../sdk/python/pyproject.toml?raw";
 import NODE_MANIFEST_TEXT from "../../../sdk/node/package.json?raw";
@@ -19,14 +19,14 @@ const NODE_MANIFEST = JSON.parse(NODE_MANIFEST_TEXT);
 const feature = (id: string, name: string) => ({ id, name }) as Feature;
 const FEATURES = [feature("f-threat-triage", "AI threat triage"), feature("f-reports", "Reports")];
 
-const prompt = () => agentPrompt("https://annapurna.example.com/api/hook/events", FEATURES);
+const prompt = () => agentPrompt("https://meter.example.com/api/hook/events", FEATURES);
 
 describe("the coding-agent prompt", () => {
   it("names the packages that are actually published", () => {
     const text = prompt();
-    expect(PYTHON_MANIFEST).toContain('name = "annapurna-meter"');
-    expect(NODE_MANIFEST.name).toBe("annapurna-meter");
-    expect(text).toContain("annapurna-meter");
+    expect(PYTHON_MANIFEST).toContain('name = "costlyinfra-meter"');
+    expect(NODE_MANIFEST.name).toBe("costlyinfra-meter");
+    expect(text).toContain("costlyinfra-meter");
   });
 
   it("does not ask for a version the SDK has not reached", () => {
@@ -44,7 +44,7 @@ describe("the coding-agent prompt", () => {
     }
     expect(PYTHON_SDK).toContain("def flush(");
     const text = prompt();
-    expect(text).toContain("from annapurna_meter import wrap");
+    expect(text).toContain("from costlyinfra_meter import wrap");
     expect(text).toContain("meter.record_anthropic(resp)");
   });
 
@@ -58,7 +58,7 @@ describe("the coding-agent prompt", () => {
       expect(NODE_SDK).toContain(name);
     }
     const text = prompt();
-    expect(text).toContain('import { wrap } from "annapurna-meter"');
+    expect(text).toContain('import { wrap } from "costlyinfra-meter"');
     expect(text).toContain("meter.recordAnthropic(resp)");
   });
 
@@ -70,7 +70,7 @@ describe("the coding-agent prompt", () => {
   });
 
   it("uses the environment variables the SDK reads", () => {
-    for (const name of ["ANNAPURNA_INGEST_URL", "ANNAPURNA_INGEST_TOKEN"]) {
+    for (const name of ["METER_INGEST_URL", "METER_INGEST_TOKEN"]) {
       expect(PYTHON_SDK).toContain(name);
       expect(NODE_SDK).toContain(name);
       expect(prompt()).toContain(name);
@@ -79,7 +79,7 @@ describe("the coding-agent prompt", () => {
 
   it("carries this install's ingest URL, not a placeholder", () => {
     expect(prompt()).toContain(
-      "ANNAPURNA_INGEST_URL=https://annapurna.example.com/api/hook/events",
+      "METER_INGEST_URL=https://meter.example.com/api/hook/events",
     );
   });
 
@@ -97,7 +97,7 @@ describe("the coding-agent prompt", () => {
 
   it("never puts the ingest token in the text it hands over", () => {
     // The prompt goes into a third-party tool; the secret does not travel with it.
-    expect(prompt()).toMatch(/ANNAPURNA_INGEST_TOKEN=<ask me/);
+    expect(prompt()).toMatch(/METER_INGEST_TOKEN=<ask me/);
   });
 
   it("states the invariants that make metering safe to merge", () => {

@@ -6,8 +6,8 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-from annapurna import features, inference, resources
-from annapurna.providers import CostRecord, UsageRecord
+from meter import features, inference, resources
+from meter.providers import CostRecord, UsageRecord
 
 PERIOD = dt.date(2026, 5, 1)
 
@@ -110,7 +110,7 @@ def test_anthropic_estimates_not_yet_billed_current_month(tenant_id, monkeypatch
     # Cost Report (billed) has 1,000 tokens for $10; Usage Report shows 1,500 tokens
     # through today -> the extra 500 tokens are not yet billed. Estimate scales the
     # bill by 500/1000 = $5.00, stored separately as source='cost_api_est'.
-    from annapurna.db import app_dsn, connect, tenant_tx
+    from meter.db import app_dsn, connect, tenant_tx
 
     today = dt.date.today()
 
@@ -176,7 +176,7 @@ def test_anthropic_estimates_not_yet_billed_current_month(tenant_id, monkeypatch
 def test_daily_rows_roll_up_to_the_monthly_total(tenant_id, monkeypatch):
     # Anthropic reports 3 daily cost buckets across a month; the daily table keeps
     # each day, and summing them equals the single monthly inference_cost total.
-    from annapurna.db import app_dsn, connect, tenant_tx
+    from meter.db import app_dsn, connect, tenant_tx
 
     d1, d2, d3 = dt.date(2026, 5, 4), dt.date(2026, 5, 5), dt.date(2026, 5, 20)
 
@@ -442,8 +442,8 @@ def test_classifying_a_key_restamps_existing_cost_rows(tenant_id):
     # Reproduces the bug: after ingest stamps a key 'unclassified', classifying it
     # production must re-stamp the persisted rows so the Overview trend shows the
     # spend under Production immediately — not only after the next re-sync.
-    from annapurna import dashboard, resources
-    from annapurna.db import app_dsn, connect, tenant_tx
+    from meter import dashboard, resources
+    from meter.db import app_dsn, connect, tenant_tx
 
     inference.ingest_anthropic(
         tenant_id,

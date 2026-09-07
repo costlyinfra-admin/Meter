@@ -21,7 +21,7 @@ CREATE TABLE seat_source (
 CREATE UNIQUE INDEX seat_source_app_key ON seat_source (tenant_id, provider, app_id);
 CREATE INDEX seat_source_tenant_idx ON seat_source (tenant_id);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON seat_source TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON seat_source TO meter_app;
 
 ALTER TABLE seat_source ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON seat_source

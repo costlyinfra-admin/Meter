@@ -1,13 +1,13 @@
-# Annapurna — Design Doc
+# Meter — Design Doc
 
 **Version:** 0.2
 **Date:** June 3, 2026
 **Status:** Draft for build
 **Author:** Bipin (with Claude)
 
-> Annapurna takes a company's blended AI bill and tells them exactly which features consumed it — what each feature cost to **build** and to **run** — so a CTO/CFO can decide whether the AI investment was worth it.
+> Meter takes a company's blended AI bill and tells them exactly which features consumed it — what each feature cost to **build** and to **run** — so a CTO/CFO can decide whether the AI investment was worth it.
 
-This is a clean-slate design. It has **no relation** to any prior fork, scanner, or codebase. Annapurna is its own product, its own company.
+This is a clean-slate design. It has **no relation** to any prior fork, scanner, or codebase. Meter is its own product, its own company.
 
 **What changed in 0.2:** added the instrumentation hook (the metering SDK) as part of v1, alongside the connector-only path; introduced the confidence ladder and bill reconciliation; made the data model hook-ready; folded in the onboarding-wizard details from the validated wireframes.
 
@@ -36,15 +36,15 @@ The buyer is a **CTO or CFO**, not a developer. That dictates everything:
 - They will not adopt an SDK-heavy, developer-led product. (We chose SaaS over open source for this reason — CTOs/CFOs don't buy from GitHub.)
 - Onboarding must take **under 10 minutes** and require no engineering project.
 
-> **Design tension we resolve in this doc:** the buyer wants zero-friction onboarding, but the most accurate inference numbers need instrumentation. Annapurna resolves this with a **two-tier model** — connector-only for instant first value, plus an optional hook for precision. The hook is shipped in v1 but is *never* required to see real numbers.
+> **Design tension we resolve in this doc:** the buyer wants zero-friction onboarding, but the most accurate inference numbers need instrumentation. Meter resolves this with a **two-tier model** — connector-only for instant first value, plus an optional hook for precision. The hook is shipped in v1 but is *never* required to see real numbers.
 
 **First vertical: cybersecurity.** Security companies are heavy, fast-growing AI spenders (threat triage, SOC automation, vuln summarization), they already buy "visibility" tools (SIEM, CSPM), and their CFOs are under board pressure to justify AI spend.
 
 ## 3. The product principle
 
-Everything in Annapurna hangs off one spine: **the feature.**
+Everything in Meter hangs off one spine: **the feature.**
 
-A *feature* is a unit of product work the company shipped (e.g. "AI threat triage," "Report generator"). For each feature, Annapurna answers three questions, in priority order:
+A *feature* is a unit of product work the company shipped (e.g. "AI threat triage," "Report generator"). For each feature, Meter answers three questions, in priority order:
 
 1. **What did it cost to build?** — AI coding-tool spend attributed to the developers and PRs that built it.
 2. **What does it cost to run?** — inference spend (LLM API calls) the feature consumes in production.
@@ -81,7 +81,7 @@ Build cost is **one-time-ish** (concentrated during development, with a long tai
    admin APIs                 + optional hook             / Stripe (later)
 ```
 
-Every dollar Annapurna sees is either (a) attributed to a feature, or (b) sitting in an **Unattributed bucket** that the customer can triage. The unattributed bucket is a feature, not a bug — it's honest, and it gives the CTO a reason to come back ("there's $3.1k I haven't explained yet").
+Every dollar Meter sees is either (a) attributed to a feature, or (b) sitting in an **Unattributed bucket** that the customer can triage. The unattributed bucket is a feature, not a bug — it's honest, and it gives the CTO a reason to come back ("there's $3.1k I haven't explained yet").
 
 ## 6. Data model (v1)
 
@@ -112,7 +112,7 @@ Attribution is **probabilistic and transparent**, never a black box. There are t
 
 ### 7.2 Hook layer (optional, ships in v1)
 
-A lightweight **metering SDK** (Python + Node) wraps the customer's LLM calls. It does not merely tag — it **meters**: captures `tokens_in`, `tokens_out`, `model`, and a `feature_id` per call and reports them to Annapurna, which computes cost from internal pricing tables. This gives per-call, per-feature precision that the provider cost APIs can't.
+A lightweight **metering SDK** (Python + Node) wraps the customer's LLM calls. It does not merely tag — it **meters**: captures `tokens_in`, `tokens_out`, `model`, and a `feature_id` per call and reports them to Meter, which computes cost from internal pricing tables. This gives per-call, per-feature precision that the provider cost APIs can't.
 
 Critically, the hook does **not** replace the provider bill — it's reconciled against it:
 
@@ -144,7 +144,7 @@ v1 connects four categories (Stripe/value deferred):
 
 1. **Inference spend** — Anthropic Admin API and OpenAI Admin API (org-level usage + cost by key/project/model). Polled on a regular cadence. Authoritative dollar source.
 2. **Build activity** — GitHub (PRs, repos, branches, authorship) + coding-tool admin/usage exports (Claude Code, Cursor for Teams, Copilot, Codex). GitHub is the backbone for mapping developers → features.
-3. **Hook ingest** — an endpoint that receives metered per-call events from the Annapurna SDK (§7.2). Optional for the customer, but part of the shipped product.
+3. **Hook ingest** — an endpoint that receives metered per-call events from the Meter SDK (§7.2). Optional for the customer, but part of the shipped product.
 4. **Usage (light)** — optional product-analytics connector for active-user counts per feature; can also be a manual/CSV input in v1.
 
 All connectors are **read-only** and use the customer's own admin credentials, stored encrypted. Data is per-tenant isolated. Minimum to get started: **GitHub + one AI provider.**

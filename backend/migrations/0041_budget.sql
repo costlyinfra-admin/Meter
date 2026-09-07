@@ -33,7 +33,7 @@ CREATE TABLE org_budget (
     updated_by     text
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON org_budget TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON org_budget TO meter_app;
 
 ALTER TABLE org_budget ENABLE ROW LEVEL SECURITY;
 

@@ -6,10 +6,10 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-from annapurna import inference
-from annapurna.api import create_app
-from annapurna.providers import CostRecord, ProviderError
 from fastapi.testclient import TestClient
+from meter import inference
+from meter.api import create_app
+from meter.providers import CostRecord, ProviderError
 
 PASSWORD = "correct horse battery"
 
@@ -50,13 +50,13 @@ class _FakeAnthropicDetailed:
         return False
 
     def fetch_costs(self, period):
-        from annapurna.providers import month_start
+        from meter.providers import month_start
 
         start = month_start(period)
         return [CostRecord("anthropic", start, Decimal("1000"), project="ws_mcs")]
 
     def fetch_usage(self, period):
-        from annapurna.providers import UsageRecord
+        from meter.providers import UsageRecord
 
         return [
             UsageRecord("ws_mcs", "k_a", "claude-sonnet-4-6", tokens_in=1_000_000, tokens_out=0),

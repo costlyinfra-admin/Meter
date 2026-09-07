@@ -6,9 +6,9 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-from annapurna import dashboard, inference, providers, resources
-from annapurna.providers import CostRecord, UsageRecord
-from annapurna.sampledata import insert_sample_data
+from meter import dashboard, inference, providers, resources
+from meter.providers import CostRecord, UsageRecord
+from meter.sampledata import insert_sample_data
 
 PERIOD = dt.date(2026, 5, 1)  # sampledata's period
 
@@ -825,7 +825,7 @@ def test_demo_seed_fills_the_by_customer_tab(tenant_id, app_env):
 
 def test_developer_activity_is_scoped_to_the_period(seeded, app_env):
     # Activity sits beside per-developer spend on the same tab, so it must cover
-    # the same window — scoped by the PR's own MERGE date, not by when Annapurna
+    # the same window — scoped by the PR's own MERGE date, not by when Meter
     # happened to sync it.
     app_env.execute(
         """

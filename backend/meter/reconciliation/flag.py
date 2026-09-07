@@ -4,7 +4,7 @@ Off by default, per tenant. An installation that never opens this page has no
 reconciliation navigation, no reachable routes and no work being done — the
 row does not even exist until someone turns it on.
 
-ANNAPURNA_RECONCILIATION=off is an operator kill switch on top: it disables the
+METER_RECONCILIATION=off is an operator kill switch on top: it disables the
 module for every tenant without touching a single stored row, so turning it
 back on restores exactly what was there.
 """
@@ -31,7 +31,7 @@ class ReconciliationError(ValueError):
 
 def globally_enabled() -> bool:
     """The operator's kill switch. On unless explicitly turned off."""
-    return os.environ.get("ANNAPURNA_RECONCILIATION", "on").strip().lower() not in (
+    return os.environ.get("METER_RECONCILIATION", "on").strip().lower() not in (
         "0",
         "off",
         "false",

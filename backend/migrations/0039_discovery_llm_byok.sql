@@ -1,13 +1,13 @@
 -- 0039: bring-your-own LLM key for feature discovery.
 --
--- Discovery clusters PR metadata with an LLM. Today that is always Annapurna's
--- own server-side endpoint (ANNAPURNA_DISCOVERY_*). A tenant may prefer to use
+-- Discovery clusters PR metadata with an LLM. Today that is always Meter's
+-- own server-side endpoint (METER_DISCOVERY_*). A tenant may prefer to use
 -- their own account — for data-handling reasons, for a model they trust, or to
 -- keep the spend on their own bill. This table holds that optional override.
 --
 -- One row per tenant (the primary key), and entirely optional: no row means
 -- discovery behaves exactly as it does today. `enabled` lets a tenant switch
--- back to Annapurna's endpoint without discarding the configuration.
+-- back to Meter's endpoint without discarding the configuration.
 --
 -- The key is encrypted with crypto.encrypt before it reaches this table, the
 -- same as connector_credential, and is never read back out to any API or UI —
@@ -24,7 +24,7 @@ CREATE TABLE discovery_llm (
     updated_by  text                  -- user email that last changed it
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_llm TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_llm TO meter_app;
 
 ALTER TABLE discovery_llm ENABLE ROW LEVEL SECURITY;
 ALTER TABLE discovery_llm FORCE ROW LEVEL SECURITY;

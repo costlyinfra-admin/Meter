@@ -1,4 +1,4 @@
--- Annapurna — per-PR commit and file-change counts on the evidence trail.
+-- Meter — per-PR commit and file-change counts on the evidence trail.
 --
 -- The GitHub PR *list* endpoint doesn't return commit or changed-file counts;
 -- they come from the single-PR detail endpoint. We fetch them (best-effort) during

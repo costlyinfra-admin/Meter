@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from annapurna import discovery, features
-from annapurna.github import PullRequest
+from meter import discovery, features
+from meter.github import PullRequest
 
 
 def _pr(number, repo, title, branch):

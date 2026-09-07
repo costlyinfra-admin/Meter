@@ -28,7 +28,7 @@ _ACTIONABLE_CONNECTORS = {"github", "anthropic"}
 # Access control (env allowlist — no schema change, reuses existing auth)
 # --------------------------------------------------------------------------
 def admin_emails() -> set[str]:
-    raw = os.environ.get("ANNAPURNA_ADMIN_EMAILS", "")
+    raw = os.environ.get("METER_ADMIN_EMAILS", "")
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 

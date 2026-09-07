@@ -11,7 +11,7 @@
 --   customer_id_storage— how customer identifiers will be stored once customer
 --                        attribution ships (default 'hashed' — the most private)
 --   store_prompts      — whether to store raw prompt content (default OFF; today
---                        Annapurna stores no prompt text at all, so this is a
+--                        Meter stores no prompt text at all, so this is a
 --                        forward-looking guarantee, not a toggle over existing data)
 --   data_retention     — retention window; enforcement is deferred, so the safe
 --                        default is 'indefinite' (never auto-delete existing data)

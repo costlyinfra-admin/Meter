@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from annapurna import optimize_billing as ob
+from meter import optimize_billing as ob
 
 MAY = dt.date(2026, 5, 1)
 APR = dt.date(2026, 4, 1)

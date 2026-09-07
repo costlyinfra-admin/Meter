@@ -10,9 +10,9 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-from annapurna.reconciliation import engine, flag, imports, report
-from annapurna.reconciliation.common import money, tenant_conn
-from annapurna.reconciliation.flag import ReconciliationError
+from meter.reconciliation import engine, flag, imports, report
+from meter.reconciliation.common import money, tenant_conn
+from meter.reconciliation.flag import ReconciliationError
 
 MAY = dt.date(2026, 5, 1)
 
@@ -223,7 +223,7 @@ def test_enabling_and_disabling_keeps_the_history(app_env, tenant_id):
 def test_the_operator_kill_switch_disables_it_everywhere(app_env, tenant_id, monkeypatch):
     _enable(tenant_id)
     assert flag.is_enabled(tenant_id) is True
-    monkeypatch.setenv("ANNAPURNA_RECONCILIATION", "off")
+    monkeypatch.setenv("METER_RECONCILIATION", "off")
     assert flag.is_enabled(tenant_id) is False
     assert flag.settings(tenant_id)["available"] is False
 
@@ -280,7 +280,7 @@ def test_the_tolerances_in_force_are_stored_on_the_run(app_env, tenant_id):
     assert engine.run_detail(tenant_id, run["id"])["tolerance_abs"] == 5.0
 
 
-def test_provider_usage_missing_from_annapurna(app_env, tenant_id):
+def test_provider_usage_missing_from_meter(app_env, tenant_id):
     _enable(tenant_id)
     _track(app_env, tenant_id, MAY, 100)
     imported = _import(
@@ -300,7 +300,7 @@ def test_provider_usage_missing_from_annapurna(app_env, tenant_id):
     assert run["unmatched_provider_count"] == 1
 
 
-def test_annapurna_usage_absent_from_the_statement(app_env, tenant_id):
+def test_meter_usage_absent_from_the_statement(app_env, tenant_id):
     _enable(tenant_id)
     _track(app_env, tenant_id, MAY, 100)
     _track(app_env, tenant_id, dt.date(2026, 5, 2), 25)  # a day the statement skips
@@ -315,7 +315,7 @@ def test_annapurna_usage_absent_from_the_statement(app_env, tenant_id):
         ),
     )
     run = engine.run_detail(tenant_id, engine.calculate(tenant_id, import_id=imported["id"])["id"])
-    extra = [m for m in run["matches"] if m["classification"] == engine.ANNAPURNA_ONLY]
+    extra = [m for m in run["matches"] if m["classification"] == engine.METER_ONLY]
     assert len(extra) == 1 and extra[0]["tracked_amount"] == 25.0
     assert run["unmatched_tracked_count"] == 1
 
@@ -656,7 +656,7 @@ def test_the_report_carries_the_categories_evidence_and_tolerances(app_env, tena
     for expected in [
         "Provider usage subtotal",
         "Provider tax",
-        "Annapurna tracked usage",
+        "Meter tracked usage",
         "Tolerance (absolute)",
         "Classification",
         "Confidence",
@@ -700,8 +700,8 @@ PASSWORD = "correct horse battery"
 
 @pytest.fixture
 def client(admin_conn, admin_conninfo, app_conninfo, monkeypatch):
-    from annapurna.api import create_app
     from fastapi.testclient import TestClient
+    from meter.api import create_app
 
     monkeypatch.setenv("APP_SECRET_KEY", "unit-test-secret-key")
     monkeypatch.setenv("DATABASE_URL", admin_conninfo)
@@ -719,8 +719,8 @@ ONE_ROW = "date,model,category,cost,currency\n2026-05-01,claude-sonnet-4-6,usage
 
 
 def test_signed_out_callers_reach_nothing(admin_conn, admin_conninfo, app_conninfo, monkeypatch):
-    from annapurna.api import create_app
     from fastapi.testclient import TestClient
+    from meter.api import create_app
 
     monkeypatch.setenv("APP_SECRET_KEY", "unit-test-secret-key")
     monkeypatch.setenv("DATABASE_URL", admin_conninfo)
@@ -784,7 +784,7 @@ def test_the_whole_flow_over_http(client, app_env):
     assert export.status_code == 200
     assert export.headers["content-type"].startswith("text/csv")
     assert "attachment" in export.headers["content-disposition"]
-    assert "Annapurna reconciliation report" in export.text
+    assert "Meter reconciliation report" in export.text
 
 
 def test_an_unsupported_provider_is_refused(client):

@@ -1,18 +1,18 @@
 [project]
-name = "annapurna-meter"
-version = "0.4.0"
-description = "Annapurna metering hook — emit per-call LLM usage events for per-feature cost attribution."
+name = "costlyinfra-meter"
+version = "1.0.0"
+description = "Meter — emit per-call LLM usage events for per-feature cost attribution."
 readme = "README.md"
 requires-python = ">=3.9"
 # Apache-2.0 (permissive) so customers can embed the SDK in proprietary apps.
-# The Annapurna server stays AGPL-3.0; only this client SDK is permissive.
+# The Meter server stays AGPL-3.0; only this client SDK is permissive.
 license = { text = "Apache-2.0" }
-authors = [{ name = "Annapurna" }]
+authors = [{ name = "Costly Infra" }]
 dependencies = []  # stdlib only — keep the customer's footprint tiny
 
 [project.urls]
-Homepage = "https://github.com/costlyinfra-admin/Annapurna"
-Source = "https://github.com/costlyinfra-admin/Annapurna/tree/main/sdk/python"
+Homepage = "https://github.com/costlyinfra-admin/Meter"
+Source = "https://github.com/costlyinfra-admin/Meter/tree/main/sdk/python"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
@@ -23,7 +23,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["annapurna_meter*"]
+include = ["costlyinfra_meter*"]
 
 [tool.ruff]
 target-version = "py39"

@@ -7,8 +7,8 @@ Usage (with DATABASE_URL set to a Postgres instance):
 
 Credentials are configurable via env (defaults shown):
     DEMO_TENANT_NAME="Acme Security"
-    DEMO_USER_EMAIL="demo@annapurna.com"
-    DEMO_USER_PASSWORD="annapurna-demo"
+    DEMO_USER_EMAIL="demo@costlyinfra.com"
+    DEMO_USER_PASSWORD="meter-demo"
 
 Runs as the bootstrap/admin role. Without --reset it is idempotent: if the demo
 user already exists, it does nothing. With --reset (or DEMO_RESET=1) it deletes
@@ -22,14 +22,14 @@ from __future__ import annotations
 import argparse
 import os
 
-from annapurna.auth import hash_password
-from annapurna.db import admin_dsn, connect
-from annapurna.migrations import apply_migrations
-from annapurna.sampledata import create_tenant, insert_sample_data
+from meter.auth import hash_password
+from meter.db import admin_dsn, connect
+from meter.migrations import apply_migrations
+from meter.sampledata import create_tenant, insert_sample_data
 
 DEMO_TENANT_NAME = os.environ.get("DEMO_TENANT_NAME", "Acme Security")
-DEMO_USER_EMAIL = os.environ.get("DEMO_USER_EMAIL", "demo@annapurna.com").strip().lower()
-DEMO_USER_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "annapurna-demo")
+DEMO_USER_EMAIL = os.environ.get("DEMO_USER_EMAIL", "demo@costlyinfra.com").strip().lower()
+DEMO_USER_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "meter-demo")
 
 
 def main(reset: bool = False) -> None:

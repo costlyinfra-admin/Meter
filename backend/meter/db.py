@@ -1,9 +1,9 @@
-"""Database access helpers for Annapurna.
+"""Database access helpers for Meter.
 
 Two connection roles:
   * **bootstrap/admin** — the role that owns the schema (a superuser locally).
     Used by migrations and seeding. Bypasses RLS, so it can load many tenants.
-  * **app** (`annapurna_app`) — the non-privileged role the running app uses.
+  * **app** (`meter_app`) — the non-privileged role the running app uses.
     RLS policies apply to it; every request must set the tenant context.
 
 The tenant context is a transaction-local Postgres setting, `app.current_tenant`.
@@ -23,7 +23,7 @@ import psycopg
 import psycopg.conninfo
 
 #: The non-privileged role the application connects as (see migration 0002).
-APP_ROLE = "annapurna_app"
+APP_ROLE = "meter_app"
 
 #: Transaction-local Postgres setting that drives the RLS policies.
 TENANT_GUC = "app.current_tenant"
@@ -39,8 +39,8 @@ def app_dsn() -> str:
 
     Resolution order:
       1. DATABASE_APP_URL if set (explicit, used by tests and advanced setups).
-      2. Otherwise, if ANNAPURNA_APP_DB_PASSWORD is set, derive from DATABASE_URL
-         by swapping in the `annapurna_app` role + that password. This is the
+      2. Otherwise, if METER_APP_DB_PASSWORD is set, derive from DATABASE_URL
+         by swapping in the `meter_app` role + that password. This is the
          production default: you set one DB URL and one app-role password, and
          the app connects as the RLS-enforced role automatically.
       3. Otherwise fall back to DATABASE_URL (fine for single-user local dev).
@@ -48,7 +48,7 @@ def app_dsn() -> str:
     explicit = os.environ.get("DATABASE_APP_URL")
     if explicit:
         return explicit
-    app_password = os.environ.get("ANNAPURNA_APP_DB_PASSWORD")
+    app_password = os.environ.get("METER_APP_DB_PASSWORD")
     if app_password:
         params = psycopg.conninfo.conninfo_to_dict(os.environ["DATABASE_URL"])
         params["user"] = APP_ROLE

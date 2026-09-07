@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from annapurna import auth, crypto
-from annapurna.api import create_app
 from fastapi.testclient import TestClient
+from meter import auth, crypto
+from meter.api import create_app
 
 GOOD_PASSWORD = "correct horse battery"
 

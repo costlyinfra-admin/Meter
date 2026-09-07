@@ -40,7 +40,7 @@ import { compact, money, num } from "../format";
 type OverviewTab = "features" | "providers" | "developers" | "customers";
 
 /** Notify the app shell (which owns the alerts badge) to re-poll alert state. */
-export const REFRESH_ALERTS_EVENT = "annapurna:refresh-alerts";
+export const REFRESH_ALERTS_EVENT = "meter:refresh-alerts";
 
 /** What the month-over-month delta is compared against, per selected range. */
 const DELTA_LABEL: Record<RangeKind, string> = {

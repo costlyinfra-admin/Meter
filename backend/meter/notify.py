@@ -131,7 +131,7 @@ def _deliver(dest: dict, payload: dict) -> tuple[str, Optional[str], int]:
 
 def _slack_body(payload: dict) -> dict:
     """A minimal Slack incoming-webhook body (text only)."""
-    return {"text": payload.get("text", "Annapurna alert")}
+    return {"text": payload.get("text", "Meter alert")}
 
 
 def _email_body(to: str, payload: dict) -> dict:
@@ -140,7 +140,7 @@ def _email_body(to: str, payload: dict) -> dict:
     kind = {"resolved": "Resolved", "test": "Test"}.get(payload.get("event_type"), "Triggered")
     metric = payload.get("metric", "AI cost")
     subject = f"[{org}] Alert {kind}: {metric}"
-    text = payload.get("text", "Annapurna alert")
+    text = payload.get("text", "Meter alert")
     return {
         "from": ALERT_EMAIL_FROM,
         "to": [to],

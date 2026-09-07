@@ -1,6 +1,6 @@
-# Contributing to Annapurna
+# Contributing to Meter
 
-Thanks for your interest! Annapurna is open source (AGPL-3.0) — bug reports, fixes,
+Thanks for your interest! Meter is open source (AGPL-3.0) — bug reports, fixes,
 features, docs, and forks are all welcome. This guide gets you from clone to first PR.
 
 - [Ways to contribute](#ways-to-contribute)
@@ -38,8 +38,8 @@ If a change is large or changes product behavior, open an issue to discuss it fi
 **Install & run**
 
 ```bash
-git clone https://github.com/costlyinfra-admin/Annapurna.git
-cd Annapurna
+git clone https://github.com/costlyinfra-admin/Meter.git
+cd Meter
 
 make install     # backend virtualenv (backend/.venv) + web npm deps
 make demo        # one-command local app: throwaway seeded DB + API + web
@@ -56,7 +56,7 @@ printed login. `make help` lists every target.
 
 | Path | What lives here |
 |---|---|
-| `backend/annapurna/` | The Python package: API, ingest, attribution, reconciliation. |
+| `backend/meter/` | The Python package: API, ingest, attribution, reconciliation. |
 | `backend/migrations/` | Plain SQL migrations, applied in filename order (`0001_…`, `0002_…`). |
 | `backend/tests/` | pytest suite (runs against an ephemeral Postgres). |
 | `backend/seed.py` | Seeds the demo tenant + login. |
@@ -66,7 +66,7 @@ printed login. `make help` lists every target.
 | `deploy/` | `release.sh` (migrations + app-role password) and `start.sh` (entrypoint). |
 | `docs/` | Design doc, build plan, deploy guide, demo script. |
 
-Key backend modules (`backend/annapurna/`):
+Key backend modules (`backend/meter/`):
 
 | Module | Responsibility |
 |---|---|
@@ -114,7 +114,7 @@ a real Postgres, so they exercise actual SQL and RLS, not mocks.
 
 - **Two database roles.** Migrations, auth, and seeding run as the **owner/admin**
   role (which can act across tenants). The running app connects as a separate,
-  non-privileged **app role** (`annapurna_app`) for which Row-Level Security is
+  non-privileged **app role** (`meter_app`) for which Row-Level Security is
   always in force. Each request sets `app.current_tenant`; RLS filters every query.
 - **Attribution → confidence → evidence.** Spend is matched to a feature via signals
   (`feature_signal` rows). Each cost row records a `confidence`; the drill-down traces
@@ -124,7 +124,7 @@ a real Postgres, so they exercise actual SQL and RLS, not mocks.
   provider totals) or `hook` (per-call metered). Reconciliation compares them and
   routes the gap to Unattributed — no double-counting.
 - **One deployable.** In production the FastAPI app also serves the built web app
-  (`ANNAPURNA_STATIC_DIR`), so it's a single image on one domain.
+  (`METER_STATIC_DIR`), so it's a single image on one domain.
 
 ## Coding conventions
 

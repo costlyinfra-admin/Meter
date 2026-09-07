@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.error
 
-from annapurna_meter import (
+from costlyinfra_meter import (
     Meter,
     _detect_provider,  # noqa: PLC2701  (tested on purpose)
     wrap,

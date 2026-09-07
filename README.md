@@ -1,24 +1,24 @@
 <div align="center">
 
-# Annapurna
+# Meter
 
 **Know what every feature cost you — to *build* and to *run*.**
 
-Annapurna takes a company's blended AI bill and shows exactly which **features**
+Meter takes a company's blended AI bill and shows exactly which **features**
 consumed it: what each feature cost to **build** (AI coding tools) and to **run**
 (LLM inference) — so a CTO/CFO can decide whether the AI investment was worth it.
 
-[![CI](https://github.com/costlyinfra-admin/Annapurna/actions/workflows/ci.yml/badge.svg)](https://github.com/costlyinfra-admin/Annapurna/actions/workflows/ci.yml)
+[![CI](https://github.com/costlyinfra-admin/Meter/actions/workflows/ci.yml/badge.svg)](https://github.com/costlyinfra-admin/Meter/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Node](https://img.shields.io/badge/node-18%2B-green)
 ![Postgres](https://img.shields.io/badge/postgres-16-blue)
 
-[**Live demo**](https://annapurna.costlyinfra.com) · [Design doc](docs/annapurna-design-doc.md) · [Testing with real accounts](docs/testing-with-real-accounts.md) · [Deploy guide](docs/deploy.md) · [Contributing](CONTRIBUTING.md)
+[**Live demo**](https://meter.costlyinfra.com) · [Design doc](docs/meter-design-doc.md) · [Testing with real accounts](docs/testing-with-real-accounts.md) · [Deploy guide](docs/deploy.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
-> **Try it in 5 seconds:** open the [live demo](https://annapurna.costlyinfra.com)
+> **Try it in 5 seconds:** open the [live demo](https://meter.costlyinfra.com)
 > and click **“View the demo”** on the login screen — no signup required.
 
 ---
@@ -26,7 +26,7 @@ consumed it: what each feature cost to **build** (AI coding tools) and to **run*
 ## Table of contents
 
 - [The problem](#the-problem)
-- [What Annapurna does](#what-annapurna-does)
+- [What Meter does](#what-meter-does)
 - [Core concepts](#core-concepts)
 - [Screens](#screens)
 - [Architecture](#architecture)
@@ -58,16 +58,16 @@ blended number that mixes:
 
 The CTO can't answer the board's simplest question: *“Is the AI money paying off?”*
 They can't tell which features that spend built or runs, so they can't tell which
-were worth shipping. Annapurna answers the one number they actually ask for:
+were worth shipping. Meter answers the one number they actually ask for:
 
 > **“What did it cost to ship — and to run — this feature?”**
 
 Not a dashboard full of vanity metrics. One credible, **defensible** number per
 feature, with enough backup that a CFO trusts it and an auditor can challenge it.
 
-## What Annapurna does
+## What Meter does
 
-For every **feature** a company ships, Annapurna reports:
+For every **feature** a company ships, Meter reports:
 
 1. **Build cost** — AI coding-tool spend attributed to the developers and PRs that built it.
 2. **Inference cost** — LLM API spend the deployed feature consumes in production.
@@ -177,8 +177,8 @@ Postgres; an optional SDK and a scheduled job feed it.
 **Get it running**
 
 ```bash
-git clone https://github.com/costlyinfra-admin/Annapurna.git
-cd Annapurna
+git clone https://github.com/costlyinfra-admin/Meter.git
+cd Meter
 
 make install     # backend virtualenv + web dependencies
 make demo        # spins up a throwaway seeded DB, starts API + web, prints a login
@@ -203,8 +203,8 @@ Postgres plus two environment variables.
 
 ```bash
 # 1. A database
-createdb annapurna
-export DATABASE_URL="postgresql://localhost:5432/annapurna"
+createdb meter
+export DATABASE_URL="postgresql://localhost:5432/meter"
 export APP_SECRET_KEY="dev-secret-change-me"   # local only — see Configuration
 
 # 2. Schema + (optional) demo data
@@ -241,12 +241,12 @@ host's secret store (Render env vars / GitHub Actions secrets), never in the rep
 |---|---|---|
 | `DATABASE_URL` | **yes** | Postgres connection for the owner/admin role (migrations, auth, seeding). |
 | `APP_SECRET_KEY` | **yes** (API) | Signs session cookies **and** encrypts stored connector credentials. **Keep it stable** — changing it makes saved credentials undecryptable. |
-| `ANNAPURNA_APP_DB_PASSWORD` | prod | Password for the RLS-enforced app role. When set, the app derives its DB connection from `DATABASE_URL` automatically. |
+| `METER_APP_DB_PASSWORD` | prod | Password for the RLS-enforced app role. When set, the app derives its DB connection from `DATABASE_URL` automatically. |
 | `DATABASE_APP_URL` | optional | Explicit app-role connection (overrides the derivation above). |
-| `ANNAPURNA_SECURE_COOKIES` | prod | Set `true` behind HTTPS to mark the session cookie `Secure`. |
-| `ANNAPURNA_STATIC_DIR` | optional | When set, the API also serves the built web app (the Docker image sets this). |
+| `METER_SECURE_COOKIES` | prod | Set `true` behind HTTPS to mark the session cookie `Secure`. |
+| `METER_STATIC_DIR` | optional | When set, the API also serves the built web app (the Docker image sets this). |
 | `ANTHROPIC_API_KEY` | optional | Enables Claude-powered feature discovery; falls back to a heuristic if unset. |
-| `ANNAPURNA_LOG_LEVEL` | optional | Backend log level (default `INFO`). |
+| `METER_LOG_LEVEL` | optional | Backend log level (default `INFO`). |
 
 > Connector credentials (GitHub token, provider admin keys, coding-tool exports)
 > are **not** environment variables — customers enter their own in the app, and
@@ -290,8 +290,8 @@ with or without it.
 
 ```python
 # Python — pip install ./sdk/python (or publish it)
-from annapurna_meter import Meter
-meter = Meter(feature_id="feature-threat-triage")   # reads ANNAPURNA_INGEST_URL/TOKEN
+from costlyinfra_meter import Meter
+meter = Meter(feature_id="feature-threat-triage")   # reads METER_INGEST_URL/TOKEN
 
 resp = anthropic_client.messages.create(model="claude-sonnet-4-6", ...)
 meter.record_anthropic(resp)        # one line — that's the whole hook
@@ -303,7 +303,7 @@ See [`sdk/`](sdk) for the Python and Node packages.
 
 ## Deploy your own instance
 
-Annapurna ships as a **single Docker image** that serves the API and the web app,
+Meter ships as a **single Docker image** that serves the API and the web app,
 backed by a managed Postgres. The repo includes everything to deploy on a **free**
 stack reachable at your own subdomain:
 
@@ -343,7 +343,7 @@ The connector path is the shippable core; the metering hook is additive precisio
 
 ## Documentation
 
-- [`docs/annapurna-design-doc.md`](docs/annapurna-design-doc.md) — the canonical spec (intent, data model, attribution, screens).
+- [`docs/meter-design-doc.md`](docs/meter-design-doc.md) — the canonical spec (intent, data model, attribution, screens).
 - [`docs/build-plan.md`](docs/build-plan.md) — the ordered milestones (M0–M8) with acceptance criteria.
 - [`docs/deploy.md`](docs/deploy.md) — deploy-your-own-instance guide.
 - [`docs/demo-script.md`](docs/demo-script.md) — a start-to-finish demo narrative.
@@ -358,7 +358,7 @@ Please run `make test && make lint` before opening a PR.
 
 ## License
 
-Annapurna is licensed under the **GNU Affero General Public License v3.0**
+Meter is licensed under the **GNU Affero General Public License v3.0**
 (AGPL-3.0) — see [`LICENSE`](LICENSE). You're free to use, modify, and self-host it;
 if you run a **modified** version as a network service, the AGPL requires you to make
 your source available to its users. For different (commercial/closed) terms, that's a

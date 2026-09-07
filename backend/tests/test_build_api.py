@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from annapurna import discovery
-from annapurna.api import create_app
-from annapurna.github import PullRequest
 from fastapi.testclient import TestClient
+from meter import discovery
+from meter.api import create_app
+from meter.github import PullRequest
 
 PASSWORD = "correct horse battery"
 

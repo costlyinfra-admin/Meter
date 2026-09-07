@@ -1,4 +1,4 @@
-# Annapurna — single production image: builds the web app and serves it from the
+# Meter — single production image: builds the web app and serves it from the
 # FastAPI backend (one service, one domain). See docs/deploy.md.
 
 # ---- Stage 1: build the React/Vite frontend ----
@@ -24,8 +24,8 @@ COPY deploy/ /app/deploy/
 
 # Bundle the built frontend and tell the API to serve it.
 COPY --from=web /web/dist /app/web/dist
-ENV ANNAPURNA_STATIC_DIR=/app/web/dist \
-    ANNAPURNA_SECURE_COOKIES=true \
+ENV METER_STATIC_DIR=/app/web/dist \
+    METER_SECURE_COOKIES=true \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app/backend

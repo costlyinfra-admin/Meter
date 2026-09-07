@@ -7,8 +7,8 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from annapurna import credentials, cursorspend, discovery
-from annapurna.github import PullRequest
+from meter import credentials, cursorspend, discovery
+from meter.github import PullRequest
 
 PERIOD = dt.date(2026, 5, 1)
 

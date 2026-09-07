@@ -28,7 +28,7 @@ from . import budgets, notify
 from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .providers import month_start
 
-logger = logging.getLogger("annapurna.alerts")
+logger = logging.getLogger("meter.alerts")
 
 _ACTIVE = "(environment IS NULL OR environment <> 'ignore')"
 
@@ -425,7 +425,7 @@ def send_test(tenant_id: str, alert_id: str) -> dict:
     payload = {
         "org": _org_name(tenant_id),
         "event_type": "test",
-        "text": "Annapurna test notification.",
+        "text": "Meter test notification.",
     }
     results = notify.dispatch(tenant_id, alert_id, str(event_id), payload)
     return {"ok": True, "deliveries": results}

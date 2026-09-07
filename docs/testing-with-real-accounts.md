@@ -1,16 +1,16 @@
-# Testing Annapurna with real accounts
+# Testing Meter with real accounts
 
 A practical, forwardable checklist for connecting a real company's sources so you
 can see actual per-feature cost — not the demo data.
 
-> **App:** <https://annapurna.costlyinfra.com> → **Create an account** (your data
+> **App:** <https://meter.costlyinfra.com> → **Create an account** (your data
 > lives in its own isolated workspace).
 >
 > **Safety:** every connector is **read-only** and stored **encrypted at rest**.
-> Annapurna never writes to your systems. Use short-lived tokens and revoke them
+> Meter never writes to your systems. Use short-lived tokens and revoke them
 > after testing (see [Cleanup](#after-testing-cleanup)).
 
-Annapurna splits a blended AI bill into **per-feature build cost** (what each
+Meter splits a blended AI bill into **per-feature build cost** (what each
 feature cost to *create*) and **inference cost** (what it costs to *run*), kept
 separate, each traced to evidence. Onboarding mirrors that in four steps:
 
@@ -88,7 +88,7 @@ surface few features (expected, not a bug).
 
 ## 2. Build cost sources — connect what you use
 
-Each source produces per-developer spend, which Annapurna allocates to features
+Each source produces per-developer spend, which Meter allocates to features
 by **who authored which PRs**. Pick the connectors matching your tools; the rest
 you can ignore. Precision ladder, most precise first:
 
@@ -128,7 +128,7 @@ Claude bill) and the **Claude Code** build-cost connector (§2).
 1. <https://console.anthropic.com> → **Settings** → **Admin Keys** (visible to org
    **owners/admins** only).
 2. **Create Admin Key** → copy the `sk-ant-admin-…`.
-3. In Annapurna, connect **Anthropic** on the **Inference cost sources** step (or
+3. In Meter, connect **Anthropic** on the **Inference cost sources** step (or
    paste the key inline in the *Sync Claude Code* action) and click **Sync**.
 
 > **Build vs run hygiene:** this key sees *all* Anthropic spend — Claude Code
@@ -136,7 +136,7 @@ Claude bill) and the **Claude Code** build-cost connector (§2).
 > per-developer **Claude Code analytics** (build side); the inference connector
 > reads the **cost report** and attributes by API-key/project → feature (run
 > side). For the cleanest split, use **distinct API keys or workspaces** for
-> Claude Code vs production, and map the production keys to features in Annapurna.
+> Claude Code vs production, and map the production keys to features in Meter.
 
 ---
 
@@ -154,7 +154,7 @@ Connect on the **Inference cost sources** step, then **Sync**:
 
 > **Not AI cost → not tracked:** plain app hosting/compute (e.g. **Vercel**, or
 > Modal/EC2 when they're *not* running LLMs) isn't a build or inference cost, so
-> Annapurna doesn't ingest it.
+> Meter doesn't ingest it.
 
 ### Provider coverage — how much to trust each number
 
@@ -170,7 +170,7 @@ totals against a provider's own console, expect this:
 Two things make a "token-priced" or "estimated" total drift from the real bill,
 and both are **visible, never silent**:
 
-- **Price-book drift.** Per-token and per-seat rates live in `backend/annapurna/pricing.py`
+- **Price-book drift.** Per-token and per-seat rates live in `backend/meter/pricing.py`
   and `seatpricing.py`. If a vendor changed prices, the number is off until the
   table is updated — send the current rate and it's a one-line fix.
 - **Reconciliation gap.** Where we can compare a computed total to an
@@ -223,7 +223,7 @@ so you can connect sources incrementally.
 - **Anthropic / OpenAI / Cursor / Okta / AWS:** revoke the key/token in that
   provider's console.
 
-Annapurna stores credentials encrypted, but revoking removes any lingering access
+Meter stores credentials encrypted, but revoking removes any lingering access
 once you're done.
 
 ---

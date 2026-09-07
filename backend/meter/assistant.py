@@ -1,4 +1,4 @@
-"""The in-app support assistant: answers grounded in the Annapurna handbook.
+"""The in-app support assistant: answers grounded in the Meter handbook.
 
 The assistant is deliberately **not** a general chatbot. It answers a customer's
 support and technical questions from the knowledge base (`web/src/help`) and
@@ -15,9 +15,9 @@ documentation that no longer matches the product. Retrieval at the source cannot
 drift. The trade-off is that the excerpts are client-supplied, so they are capped
 here (`MAX_PASSAGES`, `MAX_PASSAGE_CHARS`) and the endpoint is rate limited: a
 caller who sends their own text is only steering their own answer, and cannot
-turn Annapurna's LLM budget into free general-purpose inference.
+turn Meter's LLM budget into free general-purpose inference.
 
-**Whose key.** Annapurna's own endpoint (ANNAPURNA_DISCOVERY_*), never the
+**Whose key.** Meter's own endpoint (METER_DISCOVERY_*), never the
 tenant's BYOK configuration. BYOK is scoped to feature discovery, which is work
 the tenant asked for on their own data; billing them for a support conversation
 would be a surprise.
@@ -75,12 +75,12 @@ def check_rate(tenant_id: str, *, now: Optional[float] = None) -> None:
     seen.append(now)
 
 
-SYSTEM = """You are the Annapurna assistant: in-app support for Annapurna, a \
+SYSTEM = """You are the Meter assistant: in-app support for Meter, a \
 product that takes a company's blended AI bill and splits it into per-feature \
 cost — what each feature cost to BUILD (AI coding tools) and to RUN (inference). \
 The people asking are CTOs, CFOs and their engineers.
 
-You will be given HANDBOOK excerpts from Annapurna's own documentation. Those \
+You will be given HANDBOOK excerpts from Meter's own documentation. Those \
 excerpts are your only source of truth.
 
 Rules:

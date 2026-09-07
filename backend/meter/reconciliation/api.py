@@ -25,7 +25,7 @@ from .flag import ReconciliationError
 from .imports import MAX_BYTES
 
 #: Providers a statement can be imported for. Deliberately the ones whose spend
-#: Annapurna already tracks — importing a bill with nothing to compare it to
+#: Meter already tracks — importing a bill with nothing to compare it to
 #: would produce a page of "incomplete data" and no insight.
 PROVIDERS = (
     "anthropic",

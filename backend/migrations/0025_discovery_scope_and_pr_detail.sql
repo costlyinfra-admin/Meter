@@ -17,7 +17,7 @@ CREATE TABLE discovery_scope (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_scope TO annapurna_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON discovery_scope TO meter_app;
 
 ALTER TABLE discovery_scope ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON discovery_scope

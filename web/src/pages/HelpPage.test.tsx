@@ -49,7 +49,7 @@ describe("HelpPage", () => {
   });
 
   it("reads straight through: every topic offers the next one", () => {
-    renderHelp("/help/getting-started/what-annapurna-does");
+    renderHelp("/help/getting-started/what-meter-does");
     expect(screen.getByText(/Setting up →/)).toBeInTheDocument();
   });
 
