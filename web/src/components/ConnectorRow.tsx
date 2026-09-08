@@ -76,7 +76,10 @@ export function ConnectorRow({
           <ConnectorMark type={connector.type} name={connector.name} />
           <span className="connector-text">
             <span className="connector-name">{connector.name}</span>
-            <span className="connector-category">
+            {/* The bare category is a raw enum value ("build_activity") and is
+                capitalized by CSS to read as a label. A `hint` is authored
+                prose — a sentence, or a date — and must be left alone. */}
+            <span className={hint ? "connector-category" : "connector-category enum"}>
               {hint ?? connector.category.replace("_", " ")}
             </span>
           </span>

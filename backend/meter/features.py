@@ -22,7 +22,11 @@ class FeatureNotFound(Exception):
 
 
 # Signals a user can attach by hand to drive cost attribution (design §7.1).
-MANUAL_SIGNAL_TYPES = {"api_key", "service", "repo", "branch"}
+# `usage_tag` is a cloud cost-allocation tag VALUE (e.g. the "triage" in
+# feature=triage). It was already a valid signal_type in the schema but could
+# not be attached by hand; the infrastructure connector attributes by it, and a
+# cloud tag is not an API key, so it should not have to pretend to be one.
+MANUAL_SIGNAL_TYPES = {"api_key", "service", "repo", "branch", "usage_tag"}
 
 
 def _signals(conn: psycopg.Connection, feature_id: str) -> list[dict]:
