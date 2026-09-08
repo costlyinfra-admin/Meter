@@ -735,7 +735,7 @@ def run_discovery(
         raise
 
     pr_by_ref = {pr.ref: pr for pr in prs}
-    _persist_proposals(tenant_id, proposals, pr_by_ref)
+    _persist_proposals(tenant_id, proposals, pr_by_ref, window=(covered_from, today))
     _save_scope(tenant_id, owner, selected)
     # Regenerating proposals deletes the old ones, and build_cost.feature_id is
     # ON DELETE SET NULL — so previously-attributed build spend would silently fall
@@ -1078,7 +1078,11 @@ def _match_existing(conn) -> tuple[dict, dict, set]:
 
 
 def _persist_proposals(
-    tenant_id: str, proposals: list[Proposal], pr_by_ref: Optional[dict] = None
+    tenant_id: str,
+    proposals: list[Proposal],
+    pr_by_ref: Optional[dict] = None,
+    *,
+    window: Optional[tuple[dt.date, dt.date]] = None,
 ) -> None:
     """Persist regenerated proposals, REUSING existing proposed features' ids.
 
@@ -1086,13 +1090,44 @@ def _persist_proposals(
     churned on each analysis: bookmarked /features/<id> links broke, feature-scoped
     alerts detached, and cost rows were orphaned (build_cost.feature_id is
     ON DELETE SET NULL). Instead we match each new proposal to an existing feature
-    — by branch pattern, else by name — and update it in place. Only proposals that
-    truly disappeared from the analysis window are deleted. Confirmed features are
-    never touched, as before.
+    — by branch pattern, else by name — and update it in place. Confirmed features
+    are never touched, as before.
+
+    A run is authoritative ONLY for the window it fetched. It asked GitHub for
+    pull requests merged in ``window``, so it can say what those months contain
+    and nothing about any other month. Evidence from outside the window is left
+    alone, and a proposed feature is deleted only when the run could actually see
+    all of its evidence and still did not produce it.
+
+    Without that rule, running discovery for a single month wiped every earlier
+    month: the features whose pull requests all predated the window looked like
+    they had disappeared, and the surviving ones lost their older signals. The
+    "Engineering activity" table then read as though nobody had shipped anything
+    before this month.
     """
     pr_by_ref = pr_by_ref or {}
+    refs = list(pr_by_ref)
+    # No window given (a caller that has not been updated): fall back to treating
+    # the run as authoritative for everything, which is the old behaviour.
+    lo, hi = window or (dt.date.min, dt.date.max)
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         by_branch, by_name, stale = _match_existing(conn)
+
+        # Clear the evidence this run is entitled to replace, across every
+        # proposed feature: what it saw (by merge date) plus anything it fetched
+        # that carries no date. Re-added below from the new clustering, so a pull
+        # request that moved between features does not end up in both — there is
+        # no unique constraint on (feature_id, external_ref) to catch that.
+        conn.execute(
+            """
+            DELETE FROM feature_signal
+            WHERE signal_type = 'pr'
+              AND feature_id IN (SELECT id FROM feature WHERE status = 'proposed')
+              AND ((merged_at IS NOT NULL AND merged_at >= %s AND merged_at <= %s)
+                   OR external_ref = ANY(%s))
+            """,
+            (lo, hi, refs),
+        )
         for prop in proposals:
             key_branch = prop.branch_pattern
             key_name = prop.name.strip().lower()
@@ -1134,8 +1169,13 @@ def _persist_proposals(
                         feature_id,
                     ),
                 )
-                # Signals are regenerated wholesale — the PR set may have changed.
-                conn.execute("DELETE FROM feature_signal WHERE feature_id = %s", (feature_id,))
+                # Its PR signals for this window are already gone (above); the
+                # branch signal is regenerated below. Anything merged outside the
+                # window stays — this run never looked at those months.
+                conn.execute(
+                    "DELETE FROM feature_signal WHERE feature_id = %s AND signal_type = 'branch'",
+                    (feature_id,),
+                )
             else:
                 feature_id = conn.execute(
                     """
@@ -1183,9 +1223,26 @@ def _persist_proposals(
                     url=getattr(pr, "url", None),
                 )
 
-        # Proposals that no longer appear in the analysis window are dropped.
+        # A proposal the run did not produce is dropped only when no pull-request
+        # evidence is left to justify it. A feature whose pull requests all
+        # predate the window still holds its evidence and is real work — it is
+        # not "gone", it is simply outside what this run asked about.
+        #
+        # Only PR signals count here. The branch signal is an identity marker for
+        # matching a feature across runs, not evidence that anything shipped, and
+        # treating it as evidence would keep every emptied proposal alive forever.
         if stale:
-            conn.execute("DELETE FROM feature WHERE id = ANY(%s)", (list(stale),))
+            conn.execute(
+                """
+                DELETE FROM feature f
+                WHERE f.id = ANY(%s)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM feature_signal s
+                      WHERE s.feature_id = f.id AND s.signal_type = 'pr'
+                  )
+                """,
+                (list(stale),),
+            )
 
 
 def _add_signal(

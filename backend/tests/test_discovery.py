@@ -224,13 +224,19 @@ def test_rerun_updates_in_place_without_duplicating_signals(tenant_id, monkeypat
 
 
 def test_rerun_drops_proposals_that_left_the_window(tenant_id, monkeypatch):
+    # Both runs name the window explicitly, because the fixture's pull requests
+    # carry a fixed merge date (2026-05-01) that a relative lookback drifts past.
+    # Dropping a proposal now requires the run to have actually covered its
+    # evidence — a run cannot retire a feature it never looked at — so a window
+    # that excludes these dates would (correctly) keep everything.
+    window = dt.date(2026, 1, 1)
     monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(MCS_PRS))
-    discovery.run_discovery(tenant_id, "transilienceai", "tok")
+    discovery.run_discovery(tenant_id, "transilienceai", "tok", since=window)
     kept_id = {f["name"]: f["id"] for f in features.list_features(tenant_id, status="proposed")}
 
-    # A narrower window yields only the first PR's cluster.
+    # The same window, but the analysis now yields only the first PR's cluster.
     monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub([MCS_PRS[0]]))
-    discovery.run_discovery(tenant_id, "transilienceai", "tok")
+    discovery.run_discovery(tenant_id, "transilienceai", "tok", since=window)
     proposed = features.list_features(tenant_id, status="proposed")
 
     assert len(proposed) == 1  # the vanished proposals are gone

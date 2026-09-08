@@ -50,6 +50,15 @@ class _FakeGitHub:
         return self._prs
 
 
+def _pr_signals(tenant_id):
+    """Every PR signal in the tenant — the evidence the activity table reads."""
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        rows = conn.execute(
+            "SELECT external_ref, merged_at FROM feature_signal WHERE signal_type = 'pr'"
+        ).fetchall()
+    return [{"external_ref": r[0], "merged_at": r[1]} for r in rows]
+
+
 @pytest.fixture
 def gh(monkeypatch):
     monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub())
@@ -131,6 +140,89 @@ def test_run_history_is_newest_first(tenant_id, gh):
     discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 2, 1))
     history = discovery.run_history(tenant_id)
     assert [r["covered_from"] for r in history] == ["2026-02-01", "2026-01-01"]
+
+
+# ---------------------------------------------------------------------------
+# A run only speaks for the window it fetched
+# ---------------------------------------------------------------------------
+def _prs_merged(*specs):
+    """PullRequests at given (number, repo, branch, merged-date) tuples."""
+    return [
+        _pr(n, repo, f"{branch} work", branch, merged=f"{day}T00:00:00Z")
+        for n, repo, branch, day in specs
+    ]
+
+
+def test_a_narrow_rerun_keeps_evidence_from_months_it_never_looked_at(tenant_id, monkeypatch):
+    # The reported bug: running discovery for the current month from the By
+    # Developer screen blanked every earlier month. A run asks GitHub for pull
+    # requests merged since a date; it can speak for those months and no others.
+    march = _prs_merged((1, "acme/core", "feature/reporting", "2026-03-04"))
+    may = _prs_merged((2, "acme/core", "feature/alerting", "2026-05-06"))
+
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(march + may))
+    discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 3, 1))
+
+    before = _pr_signals(tenant_id)
+    assert {r["external_ref"] for r in before} == {"acme/core#1", "acme/core#2"}
+
+    # Now re-run for May only — exactly what the "Run discovery back to May"
+    # button does. March was never fetched, so it must survive untouched.
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(may))
+    discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 5, 1))
+
+    after = _pr_signals(tenant_id)
+    assert {r["external_ref"] for r in after} == {"acme/core#1", "acme/core#2"}, (
+        "a run for May deleted evidence from March"
+    )
+    # And March's feature is still there, not swept as "no longer proposed".
+    assert any(r["merged_at"] == dt.date(2026, 3, 4) for r in after)
+
+
+def test_a_narrow_rerun_does_not_duplicate_a_pull_request(tenant_id, monkeypatch):
+    # There is no unique constraint on (feature_id, external_ref), so re-adding
+    # what a run fetched has to be preceded by clearing it.
+    may = _prs_merged((2, "acme/core", "feature/alerting", "2026-05-06"))
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(may))
+
+    for _ in range(3):
+        discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 5, 1))
+
+    refs = [r["external_ref"] for r in _pr_signals(tenant_id)]
+    assert refs.count("acme/core#2") == 1, f"duplicated on re-run: {refs}"
+
+
+def test_a_wide_rerun_still_drops_a_feature_it_could_see_and_did_not_produce(
+    tenant_id, monkeypatch
+):
+    # The pruning that made the old code destructive is still correct when the
+    # run genuinely covers the evidence: a feature whose PRs are all inside the
+    # window, and which the clustering no longer produces, is gone.
+    old = _prs_merged((1, "acme/core", "feature/reporting", "2026-05-02"))
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(old))
+    discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 5, 1))
+    assert _pr_signals(tenant_id)
+
+    # Same window, but that pull request has vanished from GitHub's answer.
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub([]))
+    discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 5, 1))
+    assert _pr_signals(tenant_id) == []
+
+
+def test_a_confirmed_feature_is_never_touched_by_a_rerun(tenant_id, monkeypatch):
+    may = _prs_merged((2, "acme/core", "feature/alerting", "2026-05-06"))
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(may))
+    discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 5, 1))
+
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute("UPDATE feature SET status = 'confirmed'")
+
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub([]))
+    discovery.run_discovery(tenant_id, "acme", "tok", since=dt.date(2026, 5, 1))
+
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        rows = conn.execute("SELECT count(*) FROM feature WHERE status = 'confirmed'").fetchone()
+    assert rows[0] == 1
 
 
 # ---------------------------------------------------------------------------
