@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+     stroke="#1a1c17" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <title>Meter setup CLI</title>
+  <rect x="2.5" y="4" width="19" height="16" rx="2.5" />
+  <path d="M7 10l2.5 2.5L7 15" />
+  <path d="M12.5 15.5h4.5" />
+</svg>

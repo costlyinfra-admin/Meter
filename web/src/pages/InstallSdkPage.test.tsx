@@ -1,82 +1,309 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "../api";
+import { api, ApiError, type Feature } from "../api";
+import { AuthProvider } from "../auth/AuthContext";
 import { InstallSdkPage } from "./InstallSdkPage";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
   return {
     ...actual,
-    api: { createHookToken: vi.fn(), listFeatures: vi.fn() },
+    api: {
+      me: vi.fn(),
+      createHookToken: vi.fn(),
+      listFeatures: vi.fn(),
+      recentHookEvent: vi.fn(),
+    },
   };
 });
 
-const renderPage = () =>
+const renderPage = (route = "/install-sdk") =>
   render(
-    <MemoryRouter>
-      <InstallSdkPage />
+    <MemoryRouter initialEntries={[route]}>
+      <AuthProvider>
+        <InstallSdkPage />
+      </AuthProvider>
     </MemoryRouter>,
   );
 
-describe("InstallSdkPage", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(api.listFeatures).mockResolvedValue([]);
+const feature = (id: string, name: string) => ({ id, name }) as Feature;
+
+/** The tab in a named tablist — the page has two, so they must be told apart. */
+const tabIn = (listName: string, name: RegExp | string) =>
+  within(screen.getByRole("tablist", { name: listName })).getByRole("tab", { name });
+
+/** The prompt inside one guide's panel. Every panel stays mounted — that is how
+ *  switching tabs avoids losing state and shifting layout — so a bare text
+ *  query would match all three at once. */
+const promptFor = (guide: string) =>
+  document.getElementById(`guide-panel-${guide}`)!.querySelector(".agent-prompt")!.textContent!;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(api.me).mockResolvedValue({ id: "u1", tenant_id: "t-123", email: "cto@acme.com" });
+  vi.mocked(api.listFeatures).mockResolvedValue([]);
+  vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
+});
+
+describe("InstallSdkPage — structure", () => {
+  it("opens on Setup with AI, showing the Setup CLI guide", async () => {
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Install SDK" })).toBeInTheDocument();
+
+    expect(tabIn("Installation method", "Setup with AI")).toHaveAttribute("aria-selected", "true");
+    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "Install Meter automatically" })).toBeVisible();
   });
 
-  it("renders the install instructions and the snippet", async () => {
+  it("offers the four assistants in order, each with a logo", async () => {
     renderPage();
-    expect(screen.getByRole("heading", { name: "Install SDK" })).toBeInTheDocument();
-    // Published on PyPI and npm.
+    const list = screen.getByRole("tablist", { name: "Setup assistant" });
+    const tabs = within(list).getAllByRole("tab");
+    expect(tabs.map((t) => t.getAttribute("aria-label"))).toEqual([
+      "Setup CLI",
+      "Claude Code",
+      "Cursor",
+      "Codex",
+    ]);
+    // A mark before every label, all rendered by the app's own icon component.
+    for (const tab of tabs) expect(tab.querySelector(".connector-mark")).toBeInTheDocument();
+  });
+
+  it("wires the tabs to their panels both ways", async () => {
+    renderPage();
+    const tab = tabIn("Installation method", "Setup with AI");
+    const panel = document.getElementById(tab.getAttribute("aria-controls")!)!;
+    expect(panel).toHaveAttribute("role", "tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(tab.id);
+  });
+});
+
+describe("InstallSdkPage — the Setup CLI tab is a preview, not an instruction", () => {
+  it("shows the planned command without offering to copy it", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Install Meter automatically" });
+
+    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    expect(screen.getByText("Planned command")).toBeInTheDocument();
+
+    // The package is not published. Showing it is fine; handing someone a copy
+    // button for a command that 404s is not.
+    const command = screen.getByText("npx @costlyinfra/meter-setup");
+    expect(command).toHaveClass("snippet-disabled");
+    expect(command.closest(".snippet-wrap")).toBeNull(); // no Snippet, no Copy
+
+    for (const step of ["Detect the project language and package manager", "Send a test event"]) {
+      expect(screen.getByText(new RegExp(step))).toBeInTheDocument();
+    }
+  });
+});
+
+describe("InstallSdkPage — keyboard", () => {
+  it("moves between assistants with the arrow keys, and wraps", async () => {
+    renderPage();
+    const list = screen.getByRole("tablist", { name: "Setup assistant" });
+
+    fireEvent.keyDown(list, { key: "ArrowRight" });
+    expect(tabIn("Setup assistant", /Claude Code/)).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(list, { key: "ArrowLeft" });
+    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
+
+    // Left from the first wraps to the last, as the tab pattern expects.
+    fireEvent.keyDown(list, { key: "ArrowLeft" });
+    expect(tabIn("Setup assistant", /Codex/)).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("jumps to the ends with Home and End", async () => {
+    renderPage();
+    const list = screen.getByRole("tablist", { name: "Setup assistant" });
+
+    fireEvent.keyDown(list, { key: "End" });
+    expect(tabIn("Setup assistant", /Codex/)).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(list, { key: "Home" });
+    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("is one tab stop: only the selected tab is reachable by Tab", async () => {
+    renderPage();
+    const tabs = within(screen.getByRole("tablist", { name: "Setup assistant" })).getAllByRole(
+      "tab",
+    );
+    expect(tabs.filter((t) => t.getAttribute("tabindex") === "0")).toHaveLength(1);
+    expect(tabs[0]).toHaveAttribute("tabindex", "0");
+  });
+});
+
+describe("InstallSdkPage — the URL carries the tab", () => {
+  it("opens the guide named in the query string", async () => {
+    renderPage("/install-sdk?tab=ai&guide=cursor");
+    expect(await screen.findByRole("heading", { name: "Install with Cursor" })).toBeVisible();
+    expect(tabIn("Setup assistant", /Cursor/)).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("falls back to the defaults when the query string is nonsense", async () => {
+    renderPage("/install-sdk?tab=sideways&guide=emacs");
+    expect(tabIn("Installation method", "Setup with AI")).toHaveAttribute("aria-selected", "true");
+    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("opens the manual route directly", async () => {
+    renderPage("/install-sdk?tab=manual");
+    expect(await screen.findByRole("heading", { name: "1. Install the package" })).toBeVisible();
+  });
+});
+
+describe("InstallSdkPage — manual route", () => {
+  it("shows one package manager's command at a time", async () => {
+    renderPage("/install-sdk?tab=manual");
+    await screen.findByRole("heading", { name: "1. Install the package" });
+
+    expect(screen.getByText("npm install costlyinfra-meter")).toBeInTheDocument();
+    expect(screen.queryByText("pnpm add costlyinfra-meter")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "pnpm" }));
+    expect(screen.getByText("pnpm add costlyinfra-meter")).toBeInTheDocument();
+    expect(screen.queryByText("npm install costlyinfra-meter")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "bun" }));
+    expect(screen.getByText("bun add costlyinfra-meter")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "bun" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps the Python instructions and their two known failure modes", async () => {
+    renderPage("/install-sdk?tab=manual");
+    await screen.findByRole("heading", { name: "1. Install the package" });
     expect(screen.getByText(/python3 -m pip install "costlyinfra-meter/)).toBeInTheDocument();
-    expect(screen.getByText(/npm install costlyinfra-meter/)).toBeInTheDocument();
-    // Both required env vars are documented (the URL was previously missing).
-    expect(screen.getAllByText(/METER_INGEST_URL=/).length).toBeGreaterThan(0);
-    await waitFor(() => expect(api.listFeatures).toHaveBeenCalled());
-  });
-
-  it("warns about the two ways a plain install goes wrong", async () => {
-    // Both are things a real user hits: PEP 668 outside a virtualenv, and
-    // require() against an ESM-only package.
-    renderPage();
     expect(screen.getByText(/externally-managed-environment/)).toBeInTheDocument();
     expect(screen.getByText(/ESM only/)).toBeInTheDocument();
-    await waitFor(() => expect(api.listFeatures).toHaveBeenCalled());
   });
+});
 
-  it("generates an ingest token on demand", async () => {
-    vi.mocked(api.createHookToken).mockResolvedValue({ token: "ingest_abc123" });
-    renderPage();
-    fireEvent.click(screen.getByRole("button", { name: "Generate ingest token" }));
-    await waitFor(() => expect(api.createHookToken).toHaveBeenCalled());
-    expect(await screen.findByText(/ingest_abc123/)).toBeInTheDocument();
-  });
-
-  it("offers a prompt naming this workspace's real features", async () => {
-    vi.mocked(api.listFeatures).mockResolvedValue([
-      { id: "feat-123", name: "AI threat triage" } as never,
-    ]);
+describe("InstallSdkPage — the token", () => {
+  it("mints one on request and marks it for masking in session replay", async () => {
+    vi.mocked(api.createHookToken).mockResolvedValue({ token: "hk_live_secret" });
     renderPage();
 
-    expect(await screen.findByText(/feat-123\s+AI threat triage/)).toBeInTheDocument();
-    // Confirmed features only: a proposed one has no id worth metering against.
-    expect(api.listFeatures).toHaveBeenCalledWith("confirmed");
+    fireEvent.click(await screen.findByRole("button", { name: "Generate ingest token" }));
+    const shown = await screen.findByText(/METER_INGEST_TOKEN=hk_live_secret/);
+    expect(shown.closest("[data-dd-privacy='mask']")).not.toBeNull();
   });
 
-  it("copies the prompt to the clipboard", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  it("says so when the token cannot be minted", async () => {
+    vi.mocked(api.createHookToken).mockRejectedValue(new ApiError(500, "boom"));
     renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Generate ingest token" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not generate/);
+  });
+});
 
-    fireEvent.click(screen.getByRole("button", { name: /copy prompt/i }));
-    await waitFor(() => expect(writeText).toHaveBeenCalled());
-    expect(writeText.mock.calls[0][0]).toContain("Add Meter metering to this codebase.");
-    expect(await screen.findByRole("button", { name: /copied/i })).toBeInTheDocument();
+describe("InstallSdkPage — generated prompts carry no secrets", () => {
+  it("never puts the ingest token in a prompt, even after minting one", async () => {
+    vi.mocked(api.createHookToken).mockResolvedValue({ token: "hk_live_secret" });
+    vi.mocked(api.listFeatures).mockResolvedValue([feature("f-1", "AI threat triage")]);
+    renderPage("/install-sdk?guide=claude-code");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Generate ingest token" }));
+    await screen.findByText(/METER_INGEST_TOKEN=hk_live_secret/);
+
+    const prompt = promptFor("claude-code");
+    expect(prompt).not.toContain("hk_live_secret");
+    // It tells the agent to ask for the token rather than carrying one.
+    expect(prompt).toContain("METER_INGEST_TOKEN=<ask me for this; it is a secret>");
+    // The real feature id is there, because a guessed one misattributes money.
+    expect(prompt).toContain("f-1");
   });
 
-  it("says so when there is nothing to attribute to yet", async () => {
+  it("uses only environment variables the SDK actually reads", async () => {
+    vi.mocked(api.listFeatures).mockResolvedValue([feature("f-1", "AI threat triage")]);
     renderPage();
-    expect(await screen.findByText(/Confirm your features first/)).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Install SDK" });
+    for (const guide of ["claude-code", "cursor", "codex"]) {
+      const prompt = promptFor(guide);
+      expect(prompt).toContain("METER_INGEST_URL");
+      expect(prompt).toContain("METER_INGEST_TOKEN");
+      // Neither of these exists. METER_TOKEN is not what the SDK reads, and
+      // there is no feature-id environment variable at all — feature_id is an
+      // argument to wrap()/Meter().
+      expect(prompt).not.toMatch(/METER_TOKEN\b/);
+      expect(prompt).not.toContain("METER_FEATURE_ID");
+    }
+  });
+
+  it("gives each assistant its own closing instructions", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Install SDK" });
+    expect(promptFor("cursor")).toMatch(/Show me the changes you propose/);
+    expect(promptFor("codex")).toMatch(/report every file you changed/);
+    expect(promptFor("claude-code")).toMatch(/Read the repository before you edit it/);
+  });
+});
+
+describe("InstallSdkPage — verification", () => {
+  it("waits, then reports what arrived", async () => {
+    vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
+    renderPage();
+    expect(await screen.findByText(/Waiting for your first Meter event/)).toBeInTheDocument();
+
+    vi.mocked(api.recentHookEvent).mockResolvedValue({
+      event: {
+        feature_id: "f-1",
+        feature_name: "AI threat triage",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        received_at: "2026-05-21T09:00:00Z",
+        requests: 3,
+      },
+    });
+    // Polling picks it up without a reload.
+    expect(await screen.findByText("Events received", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.getByText("AI threat triage")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet-4-6")).toBeInTheDocument();
+  }, 15000);
+
+  it("names the Unattributed bucket rather than showing a blank feature", async () => {
+    vi.mocked(api.recentHookEvent).mockResolvedValue({
+      event: {
+        feature_id: null,
+        feature_name: null,
+        provider: "openai",
+        model: null,
+        received_at: "2026-05-21T09:00:00Z",
+        requests: 1,
+      },
+    });
+    renderPage();
+    const verify = (await screen.findByText("Events received")).closest("section")!;
+    expect(within(verify).getByText("Unattributed")).toBeInTheDocument();
+  });
+
+  it("survives the tab switching that happens above it", async () => {
+    vi.mocked(api.recentHookEvent).mockResolvedValue({
+      event: {
+        feature_id: "f-1",
+        feature_name: "AI threat triage",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        received_at: "2026-05-21T09:00:00Z",
+        requests: 3,
+      },
+    });
+    renderPage();
+    await screen.findByText("Events received");
+
+    fireEvent.click(tabIn("Installation method", "Manual via package manager"));
+    // The panel lives outside the tabs, so switching cannot reset it.
+    expect(screen.getByText("Events received")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "1. Install the package" })).toBeVisible();
+  });
+
+  it("stops polling on an expired session instead of hammering a 401", async () => {
+    vi.mocked(api.recentHookEvent).mockRejectedValue(new ApiError(401, "Not authenticated"));
+    renderPage();
+    await waitFor(() => expect(api.recentHookEvent).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(api.recentHookEvent).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Waiting for your first Meter event/)).toBeInTheDocument();
   });
 });

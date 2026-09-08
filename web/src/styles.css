@@ -5260,6 +5260,180 @@ button.kpi-note-link:active {
   line-height: 1.5;
 }
 
+/* ---- Install SDK: guided installer ---- */
+.install-page .install-tabs {
+  margin-top: 1.75rem;
+}
+
+/* The assistant row sits inside the AI panel, so it reads as a level down. */
+.install-page .guide-tabs {
+  gap: 0.15rem;
+  margin: 1rem 0 0;
+  flex-wrap: wrap;
+}
+
+.install-page .guide-tabs .tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+}
+
+/* One size for all four marks, whatever shape the logo inside is. */
+.install-page .guide-tabs .connector-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+
+.install-page .guide-tabs .connector-mark img {
+  width: 14px;
+  height: 14px;
+}
+
+.guide-head {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.guide-head h2 {
+  margin: 0;
+}
+
+.badge-soon {
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* A command that cannot be run yet: shown, deliberately not offered. No copy
+   button, and it reads as inactive rather than as something to reach for. */
+.snippet-disabled {
+  opacity: 0.55;
+  border-style: dashed;
+  user-select: none;
+}
+
+.cli-steps {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  line-height: 1.7;
+}
+
+/* Package-manager switch: one command visible at a time. */
+.pm-switch {
+  display: inline-flex;
+  gap: 0.2rem;
+  padding: 0.2rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface-alt);
+}
+
+button.pm-option {
+  padding: 0.28rem 0.7rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.pm-option:hover {
+  background: var(--card);
+  color: var(--ink);
+}
+
+button.pm-option.active {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: var(--shadow-xs);
+}
+
+button.pm-option:active {
+  transform: none;
+}
+
+/* Verification. */
+.verify-state {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  font-weight: 650;
+}
+
+.verify-state.ok {
+  color: var(--good);
+}
+
+.verify-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+  /* Still waiting — a slow pulse says "listening", not "broken". */
+  animation: verify-pulse 1.8s ease-in-out infinite;
+}
+
+.verify-dot.ok {
+  background: var(--good);
+  animation: none;
+}
+
+@keyframes verify-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verify-dot {
+    animation: none;
+  }
+}
+
+.verify-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 0 0 0.9rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+}
+
+.verify-facts dt {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.verify-facts dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 /* The footnote about undated PRs sits under the main explanation. */
 .activity-gap-note {
   margin-top: 0.6rem;

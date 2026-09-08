@@ -234,3 +234,105 @@ def test_hook_salt_endpoint_is_stable_and_token_gated(client):
     # Stable across calls (generated once, then reused).
     again = client.get("/api/hook/salt", headers={"Authorization": f"Bearer {token}"})
     assert again.json()["salt"] == salt
+
+
+# --------------------------------------------------------------------------
+# GET /api/hook/recent — the Install SDK page's "is it reporting yet" check
+# --------------------------------------------------------------------------
+def _post_event(client, token, **over):
+    event = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "tokens_in": 1000,
+        "tokens_out": 100,
+    }
+    event.update(over)
+    return client.post(
+        "/api/hook/events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"events": [event]},
+    )
+
+
+def test_recent_reports_nothing_before_the_sdk_has_sent_anything(client):
+    body = client.get("/api/hook/recent").json()
+    # An explicit null, not an empty object or a 404 — "no events yet" is a state
+    # the page renders, not an error it has to interpret.
+    assert body == {"event": None}
+
+
+def test_recent_reports_the_newest_event_and_only_what_confirms_the_install(client):
+    feature = client.post("/api/features", json={"name": "AI threat triage"}).json()
+    token = client.post("/api/hook/token").json()["token"]
+    assert _post_event(client, token, feature_id=feature["id"]).status_code == 200
+
+    event = client.get("/api/hook/recent").json()["event"]
+    assert event["provider"] == "anthropic"
+    assert event["model"] == "claude-sonnet-4-6"
+    assert event["feature_id"] == feature["id"]
+    assert event["feature_name"] == "AI threat triage"
+    assert event["received_at"]
+    assert event["requests"] == 1
+
+    # Nothing else comes back. The panel needs to identify the report, and this
+    # endpoint is reachable from the browser, so it carries no cost, no tokens,
+    # no ingest credential and nothing from the call itself.
+    assert set(event) == {
+        "feature_id",
+        "feature_name",
+        "provider",
+        "model",
+        "received_at",
+        "requests",
+    }
+    assert "token" not in str(event).lower()
+
+
+def test_recent_follows_the_latest_report_not_the_first(client):
+    # Both events land on the same monthly row, because ingest aggregates. The
+    # timestamp still has to move, or someone re-installing is shown the moment
+    # of their first ever event and told it is their latest.
+    token = client.post("/api/hook/token").json()["token"]
+    _post_event(client, token)
+    first = client.get("/api/hook/recent").json()["event"]["received_at"]
+
+    _post_event(client, token, model="claude-haiku-4-5")
+    latest = client.get("/api/hook/recent").json()["event"]
+    assert latest["received_at"] >= first
+    assert latest["model"] == "claude-haiku-4-5"
+
+
+def test_recent_reports_an_unattributed_event_rather_than_hiding_it(client):
+    # No feature id: the event is real and worth confirming, it simply landed in
+    # the Unattributed bucket. Saying "nothing received" would be wrong.
+    token = client.post("/api/hook/token").json()["token"]
+    _post_event(client, token)
+
+    event = client.get("/api/hook/recent").json()["event"]
+    assert event["feature_id"] is None
+    assert event["feature_name"] is None
+    assert event["provider"] == "anthropic"
+
+
+def test_recent_requires_a_session(client):
+    client.post("/api/auth/logout")
+    assert client.get("/api/hook/recent").status_code == 401
+    # And an ingest token is not a substitute: this route is session-only.
+    client.post("/api/auth/signup", json={"email": "other@acme.com", "password": PASSWORD})
+    token = client.post("/api/hook/token").json()["token"]
+    client.post("/api/auth/logout")
+    assert (
+        client.get("/api/hook/recent", headers={"Authorization": f"Bearer {token}"}).status_code
+        == 401
+    )
+
+
+def test_recent_never_shows_another_tenants_events(client):
+    token = client.post("/api/hook/token").json()["token"]
+    _post_event(client, token)
+    assert client.get("/api/hook/recent").json()["event"] is not None
+    client.post("/api/auth/logout")
+
+    # A second organization sees its own empty state, not the first one's event.
+    client.post("/api/auth/signup", json={"email": "cto@other.com", "password": PASSWORD})
+    assert client.get("/api/hook/recent").json() == {"event": None}

@@ -214,6 +214,19 @@ export interface RepoList {
   repos: string[];
 }
 
+/** The newest thing the SDK has reported, for the Install SDK verification
+ *  panel. Null until one arrives. Deliberately thin — enough to confirm an
+ *  install and nothing from the call itself. */
+export interface HookEvent {
+  /** Null when the event carried no feature: the Unattributed bucket. */
+  feature_id: string | null;
+  feature_name: string | null;
+  provider: string;
+  model: string | null;
+  received_at: string;
+  requests: number | null;
+}
+
 export interface DiscoveryScope {
   owner: string | null;
   repos: string[];
@@ -1149,6 +1162,8 @@ export const api = {
       // "cover March and April" travels as the window itself.
       body: JSON.stringify({ owner, repos, days, since: since ?? null }),
     }),
+
+  recentHookEvent: () => request<{ event: HookEvent | null }>("/hook/recent"),
 
   discoveryRuns: () =>
     request<{ runs: DiscoveryRun[]; coverage: DiscoveryCoverage }>("/discovery/runs"),

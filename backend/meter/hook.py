@@ -381,7 +381,10 @@ def _upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry
             SET amount = amount + %s, tokens_in = COALESCE(tokens_in, 0) + %s,
                 tokens_out = COALESCE(tokens_out, 0) + %s,
                 request_count = COALESCE(request_count, 0) + %s,
-                latency_ms_sum = COALESCE(latency_ms_sum, 0) + %s
+                latency_ms_sum = COALESCE(latency_ms_sum, 0) + %s,
+                -- Moves with the row, so "last reported" means it. created_at
+                -- would still be pointing at this row's first ever batch.
+                updated_at = now()
             WHERE id = %s
             """,
             (entry["amount"], entry["tin"], entry["tout"], entry["count"], latency, existing[0]),
@@ -391,8 +394,9 @@ def _upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry
             """
             INSERT INTO inference_cost
                 (tenant_id, feature_id, provider, model, amount, period,
-                 tokens_in, tokens_out, request_count, latency_ms_sum, source, confidence)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hook', 'high')
+                 tokens_in, tokens_out, request_count, latency_ms_sum, source, confidence,
+                 updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hook', 'high', now())
             """,
             (
                 tenant_id,
@@ -407,6 +411,46 @@ def _upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry
                 latency,
             ),
         )
+
+
+# --------------------------------------------------------------------------
+# "Is my SDK reporting?" — the Install SDK page's verification panel
+# --------------------------------------------------------------------------
+def recent_event(tenant_id: str) -> Optional[dict]:
+    """The newest thing the SDK has reported for this tenant, or None.
+
+    Deliberately thin. Its whole job is to answer "did my install work", so it
+    returns what identifies the report and nothing else: no tokens, no prompts,
+    no responses, no amounts. Events are aggregated into monthly rows on the way
+    in, so this is the newest hook ROW rather than a single call — which is the
+    honest thing to show, and why the timestamp is `updated_at`.
+
+    Runs through the app role inside the tenant's own transaction, so RLS scopes
+    it; the tenant is never a parameter the caller chooses.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            """
+            SELECT i.feature_id, f.name, i.provider, i.model, i.updated_at, i.request_count
+            FROM inference_cost i
+            LEFT JOIN feature f ON f.id = i.feature_id
+            WHERE i.source = 'hook'
+            ORDER BY i.updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "feature_id": str(row[0]) if row[0] else None,
+        # Null when the event carried no feature, or one this tenant does not
+        # have — the Unattributed bucket, which is a real answer worth showing.
+        "feature_name": row[1],
+        "provider": row[2],
+        "model": row[3],
+        "received_at": row[4].isoformat(),
+        "requests": int(row[5]) if row[5] is not None else None,
+    }
 
 
 # --------------------------------------------------------------------------

@@ -996,6 +996,16 @@ def create_app() -> FastAPI:
             tenant_id, [e.model_dump() for e in body.events], batch_id=body.batch_id
         )
 
+    @app.get("/api/hook/recent")
+    def hook_recent(user: CurrentUser) -> dict:
+        """Has the SDK reported yet? Drives the Install SDK verification panel.
+
+        Session-authenticated, unlike the ingest routes above, which the SDK
+        calls with a bearer token. The tenant comes from the session — there is
+        no tenant parameter to pass — and the query runs under RLS.
+        """
+        return {"event": hook.recent_event(user["tenant_id"])}
+
     @app.get("/api/hook/salt")
     def hook_salt(request: Request) -> dict:
         # The SDK's optimize mode fetches its per-tenant fingerprint salt once.
