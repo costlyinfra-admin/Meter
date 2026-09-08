@@ -2357,6 +2357,7 @@ a.exec-value:hover {
 
 .method-card:hover {
   border-color: var(--line-strong);
+  box-shadow: var(--shadow-sm);
 }
 
 .method-card.open {
@@ -2364,7 +2365,12 @@ a.exec-value:hover {
   box-shadow: var(--shadow-sm);
 }
 
-.method-head {
+/* The whole head of the card is the click target, so it must not look like a
+   button at all. Typed as `button.method-head` so it outweighs the global
+   `button:hover` — a filled pill, which painted this row as a black slab. The
+   inference side's equivalent (`.connector-info-toggle`) is chromeless the same
+   way and only underlines its title on hover; this matches it. */
+button.method-head {
   width: 100%;
   display: flex;
   align-items: center;
@@ -2373,10 +2379,23 @@ a.exec-value:hover {
   padding: 0.85rem 1.1rem;
   background: none;
   border: none;
+  border-radius: inherit;
+  box-shadow: none;
   cursor: pointer;
   text-align: left;
   font: inherit;
   color: inherit;
+}
+
+button.method-head:hover,
+button.method-head:focus-visible {
+  background: none;
+  color: inherit;
+  box-shadow: none;
+}
+
+button.method-head:hover .method-title {
+  text-decoration: underline;
 }
 
 .method-text {
