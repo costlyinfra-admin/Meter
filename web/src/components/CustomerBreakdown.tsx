@@ -73,15 +73,21 @@ export function CustomerBreakdown({
                   Top customers · {money(data.total)} metered
                   {data.customers.length > TOP_N && ` of ${data.customers.length} customers`}
                 </span>
-                <SpendBars
-                  verbatim
-                  rows={data.customers.slice(0, TOP_N).map((c) => ({
-                    label: c.customer_id,
-                    amount: c.amount,
-                    pct: c.pct,
-                    meta: c.requests ? `${compact(c.requests)} calls` : undefined,
-                  }))}
-                />
+                {/* Same reason as the table below: these bar labels are the
+                    customers' own identifiers. Masked here rather than inside
+                    SpendBars, which also draws providers and tools — those are
+                    vendor names and carry nothing private. */}
+                <div data-dd-privacy="mask">
+                  <SpendBars
+                    verbatim
+                    rows={data.customers.slice(0, TOP_N).map((c) => ({
+                      label: c.customer_id,
+                      amount: c.amount,
+                      pct: c.pct,
+                      meta: c.requests ? `${compact(c.requests)} calls` : undefined,
+                    }))}
+                  />
+                </div>
               </div>
             </div>
           </section>
@@ -105,7 +111,12 @@ export function CustomerBreakdown({
               <tbody>
                 {data.customers.map((c) => (
                   <tr key={c.customer_id}>
-                    <td>{c.customer_id}</td>
+                    {/* The identifier is whatever the customer's own privacy
+                        setting stores — possibly a real name. Session replay
+                        records the DOM, so it is masked at the cell rather than
+                        left to the "mask user input" default, which only covers
+                        form fields. */}
+                    <td data-dd-privacy="mask">{c.customer_id}</td>
                     <td className="num">{money(c.amount)}</td>
                     <td className="num">{c.pct.toFixed(c.pct >= 10 ? 0 : 1)}%</td>
                     <td className="num">{num(c.requests)}</td>

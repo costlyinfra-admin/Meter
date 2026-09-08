@@ -45,7 +45,7 @@ echo "▶ Migrating + seeding the Acme Security demo tenant…"
 make db-seed
 
 echo "▶ Starting API on http://localhost:8000 …"
-( cd backend && .venv/bin/uvicorn --factory meter.api:create_app --port 8000 --log-level warning ) &
+( cd backend && .venv/bin/python -m uvicorn --factory meter.api:create_app --port 8000 --log-level warning ) &
 UVPID=$!
 
 echo ""

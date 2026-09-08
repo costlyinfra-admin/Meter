@@ -37,12 +37,20 @@ export function Snippet({
   children,
   className = "",
   copyLabel = "Copy",
+  sensitive = false,
 }: {
   /** The snippet's text — what is shown, and what is copied. */
   children: string;
   className?: string;
   /** Say what is being copied when the block is one of several on a page. */
   copyLabel?: string;
+  /**
+   * This block renders a live secret. Session replay records the DOM, and the
+   * "mask user input" default only covers form fields — text like an ingest
+   * token would be captured verbatim. Marking the element masks its whole
+   * subtree, whatever the default is set to.
+   */
+  sensitive?: boolean;
 }) {
   const [state, setState] = useState<State>("idle");
   const timer = useRef<ReturnType<typeof setTimeout>>();
@@ -63,7 +71,7 @@ export function Snippet({
   }
 
   return (
-    <div className="snippet-wrap">
+    <div className="snippet-wrap" data-dd-privacy={sensitive ? "mask" : undefined}>
       <pre className={className ? `snippet ${className}` : "snippet"}>{children}</pre>
       <button
         type="button"

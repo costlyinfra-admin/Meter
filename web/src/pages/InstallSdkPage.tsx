@@ -77,7 +77,7 @@ export function InstallSdkPage() {
         )}
         {token ? (
           <>
-            <Snippet className="token">{`METER_INGEST_URL=${ingestUrl}
+            <Snippet className="token" sensitive>{`METER_INGEST_URL=${ingestUrl}
 METER_INGEST_TOKEN=${token}`}</Snippet>
             <p className="muted">Copy the token now — it isn't shown again. Keep it secret.</p>
           </>
@@ -139,8 +139,8 @@ costlyinfra-meter>=1.0`}</Snippet>
         <Snippet>{`npm install costlyinfra-meter`}</Snippet>
         <p className="muted">
           The Node package is <strong>ESM only</strong>: use <code>import</code>. In a CommonJS
-          project, load it with <code>{`const { wrap } = await import("costlyinfra-meter")`}</code> —{" "}
-          <code>require()</code> will not work.
+          project, load it with <code>{`const { wrap } = await import("costlyinfra-meter")`}</code>{" "}
+          — <code>require()</code> will not work.
         </p>
       </section>
 

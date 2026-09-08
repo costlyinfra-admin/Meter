@@ -40,7 +40,7 @@ install-web:
 test: test-backend test-web
 
 test-backend:
-	cd $(BACKEND) && .venv/bin/pytest
+	cd $(BACKEND) && .venv/bin/python -m pytest
 
 test-web:
 	cd $(WEB) && npm test
@@ -55,14 +55,14 @@ test-sdk:
 lint: lint-backend lint-web
 
 lint-backend:
-	cd $(BACKEND) && .venv/bin/ruff check .
+	cd $(BACKEND) && .venv/bin/python -m ruff check .
 
 lint-web:
 	cd $(WEB) && npm run lint
 
 # ---- format --------------------------------------------------------------
 format:
-	cd $(BACKEND) && .venv/bin/ruff format .
+	cd $(BACKEND) && .venv/bin/python -m ruff format .
 	cd $(WEB) && npm run format
 
 # ---- database ------------------------------------------------------------
@@ -83,7 +83,7 @@ ingest:
 # ---- run -----------------------------------------------------------------
 # Needs DATABASE_URL + APP_SECRET_KEY in the environment (see .env.example).
 api:
-	cd $(BACKEND) && .venv/bin/uvicorn --factory meter.api:create_app --reload --port 8000
+	cd $(BACKEND) && .venv/bin/python -m uvicorn --factory meter.api:create_app --reload --port 8000
 
 web:
 	cd $(WEB) && npm run dev
