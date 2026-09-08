@@ -169,6 +169,50 @@ export interface ConnectorActionResult {
   finished_at: string;
 }
 
+/** One infrastructure (cloud) provider on the Cost sources tab. */
+export interface InfraProvider {
+  type: string;
+  name: string;
+  short: string;
+  /** "available" — connectable today. "coming_soon" — listed, not built yet. */
+  status: "available" | "coming_soon";
+  note: string;
+  connected: boolean;
+  last_sync: InfraSyncRun | null;
+  /** Non-secret settings only. Access keys are never sent to the browser. */
+  config: InfraConfig | null;
+}
+
+export interface InfraSyncRun {
+  status: "success" | "error";
+  started_at: string | null;
+  finished_at: string | null;
+  items: number;
+  amount: number;
+  error_message: string | null;
+}
+
+export interface InfraConfig {
+  tag: string;
+  metric: string;
+  granularity: string;
+  region: string;
+  group_by: string[];
+}
+
+export interface InfraSummary {
+  provider: string;
+  month: string;
+  total: number;
+  attributed: number;
+  unattributed: number;
+  /** Recorded but owned by another connector (Bedrock). Never in `total`. */
+  excluded: number;
+  rows: number;
+  by_category: { category: string; amount: number }[];
+  services: { service: string; amount: number; attributed: number }[];
+}
+
 export interface ConnectorStatus {
   type: string;
   name: string;
@@ -1379,6 +1423,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ period, pool_id: poolId }),
     }),
+
+  // ---- Infrastructure cost (cloud bill) ----
+  infraProviders: () => request<InfraProvider[]>("/infrastructure/providers"),
+
+  /** Re-read the bill. Cloud costs are restated for days, so a sync re-reads
+   *  history rather than appending to it; the backend is idempotent. */
+  syncInfrastructure: (provider: string, months?: number) =>
+    request<{
+      provider: string;
+      items: number;
+      infrastructure: number;
+      excluded: number;
+      attributed: number;
+      unattributed: number;
+      by_category: Record<string, number>;
+    }>("/infrastructure/ingest", {
+      method: "POST",
+      body: JSON.stringify({ provider, months }),
+    }),
+
+  infraSummary: (provider = "aws", period?: string) =>
+    request<InfraSummary>(
+      `/infrastructure/summary?provider=${encodeURIComponent(provider)}` +
+        (period ? `&period=${encodeURIComponent(period)}` : ""),
+    ),
 
   // ---- Metering hook (M7, optional precision tier) ----
   createHookToken: () => request<{ token: string }>("/hook/token", { method: "POST" }),

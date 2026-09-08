@@ -108,6 +108,23 @@ export const CONNECTOR_GUIDES: Record<string, ConnectorGuide> = {
     multiline: true,
     docUrl: "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-api.html",
   },
+  aws: {
+    blurb:
+      "Read-only. We read your whole AWS bill through Cost Explorer and split it " +
+      "into infrastructure, model serving and build cost — one category per line item.",
+    steps: [
+      "Create an IAM user or role whose only permission is ce:GetCostAndUsage, and generate an access key. That permission reads billing totals and nothing else — it cannot see your data or your resources.",
+      "In Billing → Cost allocation tags, activate the tag you use to mark which feature a resource belongs to (e.g. “feature”). AWS only reports activated tags, and only from the day you activate them onward.",
+      "Tag the resources you want attributed. Untagged spend is not guessed at — it lands in Unattributed.",
+      "Paste the credentials below as JSON. `tag` names the tag used for feature attribution; `metric` (default UnblendedCost) and `granularity` (DAILY or MONTHLY) are optional.",
+      "AWS billing data lags by up to 24–48 hours and is restated for a few days after, so today's figure will move. Each sync re-reads recent history rather than adding to it.",
+      "Amazon Bedrock is already imported by the “Amazon Bedrock (AWS cost)” connector on the Inference tab, which stays its source of truth. Bedrock line items seen here are recorded but never added to infrastructure totals, so nothing is counted twice.",
+    ],
+    placeholder:
+      '{"access_key_id":"AKIA…","secret_access_key":"…","region":"us-east-1","tag":"feature"}',
+    multiline: true,
+    docUrl: "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-api.html",
+  },
   azure: {
     blurb:
       "Read-only. Azure OpenAI spend lives in Azure Cost Management; we read it, filter to Cognitive Services, and split by a cost-allocation tag.",

@@ -18,7 +18,8 @@ import datetime as dt
 import hashlib
 import hmac
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional
 
@@ -727,6 +728,253 @@ def _parse_bedrock(payload: dict, period: dt.date):
                 currency=(metrics.get("UnblendedCost") or {}).get("Unit", "USD"),
                 api_key_ref=tag_value or None,  # empty tag -> Unattributed
             )
+
+
+# --------------------------------------------------------------------------
+# Amazon Web Services — whole-bill connector (AWS Cost Explorer)
+# --------------------------------------------------------------------------
+# The Bedrock client above reads Cost Explorer filtered to ONE service. This one
+# reads the same API with no service filter at all: every line item AWS will
+# give us for the window, at the tenant's chosen metric and granularity. There
+# is deliberately no allowlist of "infrastructure services" — AWS ships new
+# services faster than any such list could be maintained, and a missing entry
+# would silently drop money from the bill.
+#
+# Cost Explorer accepts at most two GroupBy keys per call, so the group-by pair
+# is configuration rather than a constant, and ONE call is the source of dollars
+# for a window. Running extra passes over other dimensions would return the same
+# money sliced differently, and summing those passes would multiply the bill.
+# Whatever dimensions the configured pass returns are preserved; the rest are
+# stored as NULL, and every raw group key is kept in `dimensions` so a row can
+# be reprocessed later.
+_CE_METRICS = (
+    "UnblendedCost",
+    "AmortizedCost",
+    "NetUnblendedCost",
+    "NetAmortizedCost",
+    "BlendedCost",
+)
+_CE_GRANULARITIES = ("DAILY", "MONTHLY")
+#: Cost Explorer's own GroupBy dimensions we know how to map onto a line item.
+_CE_DIMENSIONS = (
+    "SERVICE",
+    "USAGE_TYPE",
+    "OPERATION",
+    "LINKED_ACCOUNT",
+    "REGION",
+    "INSTANCE_TYPE",
+    "RECORD_TYPE",
+    "PURCHASE_TYPE",
+)
+#: Two group-bys, chosen because they answer the two questions this connector
+#: exists to answer: what service was it, and which feature owns it.
+_DEFAULT_GROUP_BY = ("SERVICE", "TAG")
+
+
+@dataclass
+class AwsCostItem:
+    """One AWS billing line item, as billed.
+
+    Not a ``CostRecord``: that shape is per-token inference spend (models, token
+    counts, api keys) and none of it applies to a NAT gateway. Dimensions absent
+    from the configured group-by stay None rather than being guessed at.
+    """
+
+    period: dt.date  # the day (DAILY) or month anchor (MONTHLY) billed
+    amount: Decimal
+    currency: str = "USD"
+    service: str = ""
+    usage_type: Optional[str] = None
+    operation: Optional[str] = None
+    account_id: Optional[str] = None
+    region: Optional[str] = None
+    tag_key: Optional[str] = None
+    tag_value: Optional[str] = None
+    #: Every group key exactly as returned, keyed by dimension, for reprocessing.
+    dimensions: dict = field(default_factory=dict)
+
+
+#: The error codes Cost Explorer returns for a credential problem. AWS reports
+#: these with HTTP 400, which is otherwise how it reports a malformed query.
+_AWS_CREDENTIAL_ERRORS = re.compile(
+    r"UnrecognizedClientException|InvalidClientTokenId|SignatureDoesNotMatch"
+    r"|InvalidSignatureException|AccessDenied|ExpiredToken|MissingAuthenticationToken",
+    re.IGNORECASE,
+)
+
+
+class AwsCostExplorerClient(_BaseCostClient):
+    """Read-only whole-bill reader for AWS Cost Explorer.
+
+    JSON cred: ``{access_key_id, secret_access_key, region?, tag?, metric?,
+    granularity?, group_by?}``. Needs exactly one IAM permission,
+    ``ce:GetCostAndUsage`` — read-only, and it can read nothing but billing
+    aggregates. Signed with SigV4 by hand, like the Bedrock client, to keep
+    boto3 out of the dependency tree.
+    """
+
+    base_url = f"https://{_CE_HOST}"
+
+    def __init__(self, admin_key: str, **kwargs):
+        super().__init__(admin_key, **kwargs)
+        creds = _json_cred(
+            admin_key,
+            '{"access_key_id":…, "secret_access_key":…, "region":…, "tag":"feature"}',
+        )
+        self._access = creds.get("access_key_id") or creds.get("access_key")
+        self._secret = creds.get("secret_access_key") or creds.get("secret_key")
+        if not self._access or not self._secret:
+            raise ProviderError(
+                "AWS credentials need access_key_id and secret_access_key "
+                "(an IAM identity with ce:GetCostAndUsage)."
+            )
+        self.tag = (creds.get("tag") or "feature").strip() or "feature"
+        self.metric = (creds.get("metric") or "UnblendedCost").strip()
+        if self.metric not in _CE_METRICS:
+            raise ProviderError(f"metric must be one of {', '.join(_CE_METRICS)}.")
+        self.granularity = (creds.get("granularity") or "DAILY").strip().upper()
+        if self.granularity not in _CE_GRANULARITIES:
+            raise ProviderError("granularity must be DAILY or MONTHLY.")
+        group_by = creds.get("group_by") or list(_DEFAULT_GROUP_BY)
+        if not isinstance(group_by, list) or not 1 <= len(group_by) <= 2:
+            raise ProviderError("group_by must be a list of one or two dimensions.")
+        for key in group_by:
+            if key != "TAG" and key not in _CE_DIMENSIONS:
+                raise ProviderError(
+                    f"Unsupported group_by '{key}'. Use TAG or one of: {', '.join(_CE_DIMENSIONS)}."
+                )
+        self.group_by = [str(k) for k in group_by]
+
+    # -- the query ---------------------------------------------------------
+    def _group_by_spec(self) -> list[dict]:
+        return [
+            {"Type": "TAG", "Key": self.tag} if k == "TAG" else {"Type": "DIMENSION", "Key": k}
+            for k in self.group_by
+        ]
+
+    def fetch_items(self, start: dt.date, end: dt.date) -> list[AwsCostItem]:
+        """Every line item AWS reports for ``[start, end)``. No service filter.
+
+        Cost Explorer paginates with ``NextPageToken``; a real month grouped by
+        service and tag runs to several pages, so following them is not
+        optional — stopping at page one would quietly under-report the bill.
+        """
+        items: list[AwsCostItem] = []
+        token: Optional[str] = None
+        for _ in range(100):  # a hard stop; 100 pages is far beyond any real bill
+            payload = {
+                "TimePeriod": {"Start": start.isoformat(), "End": end.isoformat()},
+                "Granularity": self.granularity,
+                "Metrics": [self.metric],
+                "GroupBy": self._group_by_spec(),
+            }
+            if token:
+                payload["NextPageToken"] = token
+            data = self._call(json.dumps(payload).encode())
+            items.extend(_parse_aws_cost(data, self.metric, self.group_by, self.tag))
+            token = data.get("NextPageToken")
+            if not token:
+                break
+        return items
+
+    def _call(self, body: bytes) -> dict:
+        headers = _sigv4_headers(
+            self._secret, self._access, _CE_TARGET, body, dt.datetime.now(dt.timezone.utc)
+        )
+        resp = self._client.post(f"{self._base}/", content=body, headers=headers)
+        # AWS answers a bad access key with 400 and an error CODE, not 401 — so
+        # status alone would report "provider error" for the one failure a
+        # customer can actually fix. Match the code as well.
+        if resp.status_code in (401, 403) or (
+            resp.status_code == 400 and _AWS_CREDENTIAL_ERRORS.search(resp.text or "")
+        ):
+            raise ProviderError(
+                "AWS rejected the credentials. Check the access key, and that the IAM "
+                "identity has the ce:GetCostAndUsage permission.",
+                401,
+            )
+        if resp.status_code >= 400:
+            # Truncated: a Cost Explorer error body echoes the request, and the
+            # request is not secret, but there is no reason to carry it around.
+            raise ProviderError(
+                f"Cost Explorer error {resp.status_code}: {resp.text[:200]}", resp.status_code
+            )
+        return resp.json()
+
+
+def _parse_group_key(raw: str, dimension: str, tag_key: str) -> tuple[str, Optional[str]]:
+    """(dimension, value) for one group key. TAG keys arrive as "feature$triage"."""
+    if dimension == "TAG":
+        value = raw.split("$", 1)[1] if "$" in raw else raw
+        return f"TAG:{tag_key}", (value or None)
+    return dimension, (raw or None)
+
+
+#: Where each Cost Explorer dimension lands on an AwsCostItem.
+_DIMENSION_FIELD = {
+    "SERVICE": "service",
+    "USAGE_TYPE": "usage_type",
+    "OPERATION": "operation",
+    "LINKED_ACCOUNT": "account_id",
+    "REGION": "region",
+}
+
+
+def _parse_aws_cost(
+    payload: dict, metric: str, group_by: list[str], tag_key: str
+) -> list[AwsCostItem]:
+    """Line items from a GetCostAndUsage response.
+
+    A window with no GroupBy (or a total alongside groups) reports its money in
+    ``Total`` instead of ``Groups``; that is still real spend and is emitted as
+    an item with no service, so the bill stays whole. Zero-dollar rows are
+    dropped — AWS emits a great many of them and they carry no information.
+    """
+    out: list[AwsCostItem] = []
+    for window in payload.get("ResultsByTime", []):
+        period = _window_start(window)
+        if period is None:
+            continue
+        groups = window.get("Groups") or []
+        for group in groups:
+            keys = group.get("Keys") or []
+            metrics = group.get("Metrics", {}) or {}
+            cell = metrics.get(metric) or {}
+            amount = _to_decimal(cell.get("Amount"))
+            if amount is None or amount == 0:
+                continue
+            item = AwsCostItem(
+                period=period, amount=amount, currency=cell.get("Unit", "USD") or "USD"
+            )
+            for raw, dimension in zip(keys, group_by):
+                name, value = _parse_group_key(raw, dimension, tag_key)
+                item.dimensions[name] = value
+                if dimension == "TAG":
+                    item.tag_key, item.tag_value = tag_key, value
+                elif dimension in _DIMENSION_FIELD:
+                    field_name = _DIMENSION_FIELD[dimension]
+                    setattr(item, field_name, value if field_name != "service" else (value or ""))
+            out.append(item)
+        if not groups:
+            total = (window.get("Total") or {}).get(metric) or {}
+            amount = _to_decimal(total.get("Amount"))
+            if amount is not None and amount != 0:
+                out.append(
+                    AwsCostItem(
+                        period=period, amount=amount, currency=total.get("Unit", "USD") or "USD"
+                    )
+                )
+    return out
+
+
+def _window_start(window: dict) -> Optional[dt.date]:
+    raw = (window.get("TimePeriod") or {}).get("Start")
+    if not raw:
+        return None
+    try:
+        return dt.date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
 
 
 # --------------------------------------------------------------------------

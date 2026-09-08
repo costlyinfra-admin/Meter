@@ -19,7 +19,8 @@ from .crypto import decrypt, encrypt
 from .db import app_dsn, connect, tenant_tx
 
 #: Connectors offered in the onboarding wizard. category drives how they're
-#: grouped in the UI; "build_activity" feeds build cost, "inference" feeds run cost.
+#: grouped in the UI; "build_activity" feeds build cost, "inference" feeds run cost,
+#: "infrastructure" feeds cloud cost.
 KNOWN_CONNECTORS = [
     # "features": powers feature discovery (the spine). The same credential also
     # serves the Copilot seat sync on the build side; category is presentational.
@@ -50,6 +51,10 @@ KNOWN_CONNECTORS = [
     # More gateways/proxies that aggregate spend across providers.
     {"type": "portkey", "name": "Portkey (gateway)", "category": "inference"},
     {"type": "helicone", "name": "Helicone (gateway)", "category": "inference"},
+    # Cloud infrastructure: the whole bill, not just its model services. Ingested
+    # by infrastructure.py, which classifies each line item and hands Bedrock's
+    # dollars to the connector above rather than counting them twice.
+    {"type": "aws", "name": "Amazon Web Services", "category": "infrastructure"},
     {"type": "cursor", "name": "Cursor for Teams", "category": "build_activity"},
     # Identity provider for SSO/SCIM seat rosters (Cursor, Tabnine, Cody, …).
     {"type": "okta", "name": "Okta (SSO seats)", "category": "build_activity"},

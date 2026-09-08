@@ -15,7 +15,7 @@ import os
 from collections import defaultdict
 from typing import Optional
 
-from . import credentials, discovery, inference, optimize_measured
+from . import credentials, discovery, inference, infrastructure, optimize_measured
 from .db import admin_dsn, connect
 from .github import GitHubClient
 from .providers import make_cost_client, month_start
@@ -214,6 +214,13 @@ def test_connection(tenant_id: str, connector_type: str) -> dict:
             with GitHubClient(secret) as gh:
                 repos = gh._list_accessible_repos()
             return _log_sync(tenant_id, connector_type, "test", "success", records=len(repos))
+        if connector_type in infrastructure.LIVE_PROVIDERS:
+            # A one-day window: enough for AWS to accept or reject the credential,
+            # without paying for a full bill read just to test it.
+            today = dt.date.today()
+            with infrastructure.make_client(connector_type, secret) as client:
+                items = client.fetch_items(today - dt.timedelta(days=1), today)
+            return _log_sync(tenant_id, connector_type, "test", "success", records=len(items))
         with make_cost_client(connector_type, secret) as client:
             client.fetch_costs(month_start(dt.date.today()))
         return _log_sync(tenant_id, connector_type, "test", "success")
@@ -239,11 +246,14 @@ def sync_now(tenant_id: str, connector_type: str) -> dict:
                 )
             result = discovery.run_discovery(tenant_id, owner, secret)
             records = int(result.get("proposals", 0))
+        elif connector_type in infrastructure.LIVE_PROVIDERS:
+            # Infrastructure connectors read a cloud bill, not a model provider's
+            # cost API, so they must not go down the inference path below.
+            result = infrastructure.run_infra_sync(tenant_id, connector_type, secret)
+            records = int(result.get("items", 0))
         else:
             # Manual sync backfills a year of history (not just the current month).
-            result = inference.run_inference_backfill(
-                tenant_id, connector_type, secret, months=12
-            )
+            result = inference.run_inference_backfill(tenant_id, connector_type, secret, months=12)
             records = int(result.get("rows", 0))
         return _log_sync(tenant_id, connector_type, "sync", "success", records=records)
     except Exception as exc:

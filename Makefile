@@ -9,7 +9,8 @@ PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
 .PHONY: help install install-backend install-web test test-backend test-web test-sdk \
-        lint lint-backend lint-web format db-migrate db-seed db-reset api web clean
+        lint lint-backend lint-web format db-migrate db-seed db-reset api web clean \
+        ingest ingest-infra
 
 help:
 	@echo "Meter make targets:"
@@ -79,6 +80,13 @@ db-reset:
 # Scheduled inference-cost ingest (run on a cadence in production).
 ingest:
 	cd $(BACKEND) && .venv/bin/python -m meter.inference
+
+# Scheduled cloud-bill refresh, for every tenant with an infrastructure
+# connector. Re-reads the current month rather than appending: cloud providers
+# restate recent days, and the ingest is idempotent. The 12-month backfill stays
+# behind "Sync now" on Cost sources.
+ingest-infra:
+	cd $(BACKEND) && .venv/bin/python -m meter.infrastructure
 
 # ---- run -----------------------------------------------------------------
 # Needs DATABASE_URL + APP_SECRET_KEY in the environment (see .env.example).

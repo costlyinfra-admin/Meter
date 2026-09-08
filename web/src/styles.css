@@ -698,6 +698,20 @@ select {
   margin: 0.4rem 0 1.5rem;
 }
 
+/* Cost sources carries four tabs, and four tab labels are wider than a phone.
+   The row scrolls itself rather than pushing the whole page sideways, which is
+   what happened otherwise. Scoped to this tablist: the app's other tablists are
+   narrower and are not this page's to change. */
+.tabs.tabs-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tabs.tabs-scroll .tab {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .tab {
   background: none;
   border: none;
@@ -1465,6 +1479,12 @@ select {
 .connector-category {
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+/* Only the raw category enum is capitalized — "build_activity" -> "Build
+   Activity". Prose passed as a hint keeps its own casing, or a sentence comes
+   out looking like a headline. */
+.connector-category.enum {
   text-transform: capitalize;
 }
 
@@ -5750,4 +5770,70 @@ button.provider-toggle:focus-visible {
 .savings-cell {
   color: var(--good);
   font-weight: 600;
+}
+
+/* ---------- Infrastructure cost detail ---------- */
+/* The panel under a connected cloud provider. Same rhythm as the inference
+   source detail, but a cloud bill has services and tags where a model bill has
+   keys and models, so it gets its own small layout rather than bending that
+   one into a shape it was not built for. */
+.infra-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.infra-config code {
+  font-size: 0.82rem;
+}
+
+/* The Bedrock note. Set apart because it explains a number that is deliberately
+   NOT in the total above it — the easiest thing on this panel to misread. */
+.infra-excluded {
+  padding: 0.6rem 0.75rem;
+  border-left: 2px solid var(--line-strong);
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
+  font-size: 0.83rem;
+}
+
+.infra-categories {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.5rem;
+}
+
+.infra-categories li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  font-size: 0.8rem;
+}
+
+.infra-category-name {
+  color: var(--muted);
+}
+
+.infra-category-amount {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Long service names ("Amazon Elastic Container Service for Kubernetes") make
+   this table the widest thing on the tab; it scrolls itself rather than the page. */
+.infra-services {
+  display: block;
+  overflow-x: auto;
+}
+
+.infra-services td:not(:first-child),
+.infra-services th:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }

@@ -1,12 +1,15 @@
 /**
  * Cost sources — connect and sync everything that feeds per-feature cost.
- * Inference (provider cost APIs + self-hosted pools) and build (coding-tool
- * spend) live here, reusing the same action panels as the rest of the app.
+ * Inference (provider cost APIs + self-hosted pools), infrastructure (the cloud
+ * bill) and build (coding-tool spend) live here, reusing the same action panels
+ * as the rest of the app.
  */
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, ApiError, type ConnectorStatus } from "../api";
 import { BuildCostActions, type FeatureOption } from "../components/BuildCostActions";
 import { ConnectorRow } from "../components/ConnectorRow";
+import { InfrastructureSources } from "../components/InfrastructureSources";
 import { SelfHostedPools } from "../components/SelfHostedPools";
 import { SourceDetail } from "../components/SourceDetail";
 import { money } from "../format";
@@ -14,12 +17,30 @@ import { money } from "../format";
 const TABS = [
   { id: "inference", label: "Inference cost" },
   { id: "self-hosted", label: "Self-hosted models" },
+  { id: "infrastructure", label: "Infrastructure cost" },
   { id: "build", label: "Build cost" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
+function isTab(value: string | null): value is TabId {
+  return TABS.some((t) => t.id === value);
+}
+
 export function CostSourcesPage() {
-  const [tab, setTab] = useState<TabId>("inference");
+  // The selected tab lives in the URL, so a link to one lands on it and a
+  // refresh stays where you were, rather than snapping back to Inference.
+  const [params, setParams] = useSearchParams();
+  const tabParam = params.get("tab");
+  const tab: TabId = isTab(tabParam) ? tabParam : "inference";
+
+  // Replace rather than push: flicking between tabs should not fill the back
+  // button, while a link straight to one still works.
+  const setTab = (next: TabId) => {
+    const merged = new URLSearchParams(params);
+    merged.set("tab", next);
+    setParams(merged, { replace: true });
+  };
+
   const [connectors, setConnectors] = useState<ConnectorStatus[] | null>(null);
   const [features, setFeatures] = useState<FeatureOption[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +84,7 @@ export function CostSourcesPage() {
         </p>
       )}
 
-      <div className="tabs" role="tablist" aria-label="Cost source types">
+      <div className="tabs tabs-scroll" role="tablist" aria-label="Cost source types">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -127,6 +148,8 @@ export function CostSourcesPage() {
           </div>
         </section>
       )}
+
+      {tab === "infrastructure" && <InfrastructureSources />}
 
       {tab === "build" && (
         <section className="source-section" role="tabpanel">

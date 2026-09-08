@@ -41,6 +41,7 @@ from . import (
     features,
     hook,
     inference,
+    infrastructure,
     okta,
     optimize_measured,
     resources,
@@ -284,6 +285,19 @@ class IngestRequest(BaseModel):
     # How many months to pull, ending at `period` (or this month). 1 = single month
     # (nightly refresh); >1 backfills history (the manual "Sync now" pulls 12).
     months: int = Field(default=1, ge=1, le=24)
+
+
+class InfraIngestRequest(BaseModel):
+    """A "Sync now" on an infrastructure connector.
+
+    `provider` is validated against the registry rather than a pattern so a new
+    provider becomes syncable by being added to infrastructure.PROVIDERS.
+    """
+
+    provider: str = Field(default="aws", max_length=20)
+    # How many months of bill to re-read, ending today. Cloud bills are restated
+    # for days after the fact, so a sync always re-reads rather than appending.
+    months: int = Field(default=infrastructure.DEFAULT_BACKFILL_MONTHS, ge=1, le=24)
 
 
 class BuildImportRequest(BaseModel):
@@ -843,6 +857,62 @@ def create_app() -> FastAPI:
         period: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
     ) -> dict:
         return inference.inference_summary(user["tenant_id"], _parse_period(period))
+
+    # ---- Infrastructure cost (cloud bill) -------------------------------
+    # Phase 1: the Cost sources tab only. Nothing here feeds Overview, the
+    # features table, or any product total yet — that is Phase 2.
+    @app.get("/api/infrastructure/providers")
+    def infrastructure_providers(user: CurrentUser) -> list[dict]:
+        # Connection state, last sync and non-secret settings. Never a credential.
+        return infrastructure.provider_status(user["tenant_id"])
+
+    @app.post("/api/infrastructure/ingest")
+    def ingest_infrastructure(body: InfraIngestRequest, user: CurrentUser) -> dict:
+        try:
+            infrastructure.provider(body.provider)
+        except infrastructure.InfraError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        secret = credentials.get_secret(user["tenant_id"], body.provider)
+        if not secret:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Connect {body.provider} before syncing infrastructure cost.",
+            )
+        try:
+            return infrastructure.run_infra_sync(
+                user["tenant_id"], body.provider, secret, months=body.months
+            )
+        except infrastructure.InfraError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except ProviderError as exc:
+            if exc.status in (401, 403):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "AWS rejected the credentials. Check the access key and that "
+                        "it has ce:GetCostAndUsage."
+                    ),
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Provider error: {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not reach AWS Cost Explorer. Check the credentials and retry.",
+            ) from exc
+
+    @app.get("/api/infrastructure/summary")
+    def infrastructure_summary(
+        user: CurrentUser,
+        provider: str = Query(default="aws", max_length=20),
+        period: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    ) -> dict:
+        try:
+            infrastructure.provider(provider)
+        except infrastructure.InfraError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return infrastructure.summary(user["tenant_id"], provider, _parse_period(period))
 
     # ---- Cost-source resource detail + classification (shared across providers) ----
     @app.get("/api/cost-sources/{provider}/detail")

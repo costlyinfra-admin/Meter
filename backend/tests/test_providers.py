@@ -868,3 +868,231 @@ def test_anthropic_fetch_api_keys_resolves_names_and_workspace():
     keys = client.fetch_api_keys()
     assert keys["apikey_a"] == {"name": "service-a-prod", "workspace_id": "wrkspc_mcs"}
     assert keys["apikey_b"]["name"] == "experimental"
+
+
+# --------------------------------------------------------------------------
+# AWS Cost Explorer — the whole-bill (infrastructure) connector
+# --------------------------------------------------------------------------
+def _aws_creds(**overrides) -> str:
+    import json
+
+    return json.dumps({"access_key_id": "AKIA", "secret_access_key": "secret", **overrides})
+
+
+def _aws_client(handler, **overrides):
+    from meter.providers import AwsCostExplorerClient
+
+    return AwsCostExplorerClient(
+        _aws_creds(**overrides), client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+
+def _window(day: str, groups: list) -> dict:
+    return {"TimePeriod": {"Start": day, "End": day}, "Groups": groups}
+
+
+def _group(keys: list, amount: str, metric: str = "UnblendedCost") -> dict:
+    return {"Keys": keys, "Metrics": {metric: {"Amount": amount, "Unit": "USD"}}}
+
+
+def test_aws_reads_the_whole_bill_with_no_service_filter():
+    import json
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.update(body)
+        assert request.headers["Authorization"].startswith("AWS4-HMAC-SHA256")
+        assert request.headers["X-Amz-Target"].endswith("GetCostAndUsage")
+        return httpx.Response(
+            200,
+            json={
+                "ResultsByTime": [
+                    _window(
+                        "2026-05-04",
+                        [
+                            _group(["Amazon Simple Storage Service", "feature$triage"], "12.50"),
+                            _group(["AWS Brand New Service", "feature$"], "3.00"),
+                        ],
+                    )
+                ]
+            },
+        )
+
+    items = _aws_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+    # No Filter at all: an allowlist would silently drop services AWS adds later.
+    assert "Filter" not in seen
+    assert seen["Granularity"] == "DAILY"
+    assert seen["Metrics"] == ["UnblendedCost"]
+    assert seen["GroupBy"] == [
+        {"Type": "DIMENSION", "Key": "SERVICE"},
+        {"Type": "TAG", "Key": "feature"},
+    ]
+    assert [(i.service, i.amount, i.tag_value) for i in items] == [
+        ("Amazon Simple Storage Service", Decimal("12.50"), "triage"),
+        ("AWS Brand New Service", Decimal("3.00"), None),  # untagged -> Unattributed
+    ]
+    assert items[0].period == dt.date(2026, 5, 4)
+    assert items[0].dimensions == {
+        "SERVICE": "Amazon Simple Storage Service",
+        "TAG:feature": "triage",
+    }
+
+
+def test_aws_follows_pagination_rather_than_under_reporting():
+    pages = iter(
+        [
+            {
+                "ResultsByTime": [_window("2026-05-04", [_group(["Amazon S3", "f$a"], "10.00")])],
+                "NextPageToken": "page-2",
+            },
+            {"ResultsByTime": [_window("2026-05-05", [_group(["Amazon EC2", "f$b"], "20.00")])]},
+        ]
+    )
+    tokens = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        tokens.append(json.loads(request.content).get("NextPageToken"))
+        return httpx.Response(200, json=next(pages))
+
+    items = _aws_client(handler, tag="f").fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+    assert tokens == [None, "page-2"]
+    assert sum(i.amount for i in items) == Decimal("30.00")
+
+
+def test_aws_preserves_the_dimensions_the_query_asked_for():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "ResultsByTime": [
+                    _window(
+                        "2026-05-04",
+                        [_group(["Amazon EC2", "USE1-BoxUsage:p4d.24xlarge"], "800.00")],
+                    )
+                ]
+            },
+        )
+
+    (item,) = _aws_client(handler, group_by=["SERVICE", "USAGE_TYPE"]).fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+    assert (item.service, item.usage_type) == ("Amazon EC2", "USE1-BoxUsage:p4d.24xlarge")
+    # Dimensions the query did not ask for stay None rather than being guessed.
+    assert (item.region, item.account_id, item.tag_value) == (None, None, None)
+
+
+def test_aws_keeps_ungrouped_window_totals_so_the_bill_stays_whole():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "ResultsByTime": [
+                    {
+                        "TimePeriod": {"Start": "2026-05-04", "End": "2026-05-05"},
+                        "Total": {"UnblendedCost": {"Amount": "7.00", "Unit": "USD"}},
+                    }
+                ]
+            },
+        )
+
+    (item,) = _aws_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+    assert item.amount == Decimal("7.00")
+    assert item.service == ""  # no service dimension -> classified 'unclassified'
+
+
+def test_aws_honours_a_configured_metric_and_granularity():
+    import json
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "ResultsByTime": [
+                    _window("2026-05-01", [_group(["Amazon S3", "f$a"], "5.00", "AmortizedCost")])
+                ]
+            },
+        )
+
+    client = _aws_client(handler, metric="AmortizedCost", granularity="monthly", tag="f")
+    (item,) = client.fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+    assert seen["Metrics"] == ["AmortizedCost"]
+    assert seen["Granularity"] == "MONTHLY"
+    assert item.amount == Decimal("5.00")
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"access_key_id": None}, "access_key_id"),
+        ({"metric": "MadeUpCost"}, "metric must be"),
+        ({"granularity": "HOURLY"}, "granularity must be"),
+        ({"group_by": ["SERVICE", "REGION", "OPERATION"]}, "one or two"),
+        ({"group_by": ["NONSENSE"]}, "Unsupported group_by"),
+    ],
+)
+def test_aws_configuration_is_validated_before_any_call(overrides, message):
+    from meter.providers import AwsCostExplorerClient, ProviderError
+
+    with pytest.raises(ProviderError, match=message):
+        AwsCostExplorerClient(_aws_creds(**overrides))
+
+
+def test_aws_requires_json_credentials():
+    from meter.providers import AwsCostExplorerClient, ProviderError
+
+    with pytest.raises(ProviderError, match="must be JSON"):
+        AwsCostExplorerClient("AKIA-not-json")
+
+
+@pytest.mark.parametrize(
+    "status, body",
+    [
+        (403, {"__type": "AccessDeniedException"}),
+        (401, {"__type": "MissingAuthenticationTokenException"}),
+        # The one that matters: AWS answers a bad access key with 400, so status
+        # alone would report this as a generic provider error rather than the
+        # one failure the customer can actually fix.
+        (
+            400,
+            {
+                "__type": "UnrecognizedClientException",
+                "message": "The security token included in the request is invalid.",
+            },
+        ),
+        (400, {"__type": "SignatureDoesNotMatch"}),
+    ],
+)
+def test_aws_credential_failures_say_what_to_fix_and_leak_nothing(status, body):
+    from meter.providers import ProviderError
+
+    def handler(_request):
+        return httpx.Response(status, json=body)
+
+    with pytest.raises(ProviderError) as exc:
+        _aws_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+    assert "ce:GetCostAndUsage" in str(exc.value)
+    assert exc.value.status == 401  # so the API turns it into a 400, not a 502
+    assert "secret" not in str(exc.value)  # the credential is never echoed back
+
+
+def test_a_malformed_query_is_not_reported_as_a_credential_problem():
+    from meter.providers import ProviderError
+
+    def handler(_request):
+        return httpx.Response(400, json={"__type": "ValidationException"})
+
+    with pytest.raises(ProviderError) as exc:
+        _aws_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+    assert "ce:GetCostAndUsage" not in str(exc.value)
