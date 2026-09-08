@@ -125,6 +125,43 @@ export const CONNECTOR_GUIDES: Record<string, ConnectorGuide> = {
     multiline: true,
     docUrl: "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-api.html",
   },
+  azure_cloud: {
+    blurb:
+      "Read-only. We read your whole Azure subscription through Cost Management and " +
+      "split it into infrastructure, model serving and build cost — one category per line item.",
+    steps: [
+      "In Microsoft Entra ID, register an application and create a client secret. This is the service principal we authenticate as.",
+      "In the subscription's Access control (IAM), assign it the Cost Management Reader role. That role reads billing aggregates only — it cannot see your data, your resources, or anything outside cost.",
+      "Under Cost Management → Configuration, make sure the tag you use to mark which feature a resource belongs to (e.g. “feature”) is applied to your resources. Azure reports tags on the resources that carry them; untagged spend is not guessed at and lands in Unattributed.",
+      "Paste the credentials below as JSON. `tag` names the tag used for feature attribution; `metric` (ActualCost or AmortizedCost) and `granularity` (Daily or Monthly) are optional.",
+      "Azure cost data lags by up to 24–48 hours and is restated for a few days after, so today's figure will move. Each sync re-reads recent history rather than adding to it.",
+      "Azure OpenAI is already imported by the “Azure OpenAI (Azure cost)” connector on the Inference tab, which stays its source of truth. Azure OpenAI line items seen here are recorded but never added to infrastructure totals, so nothing is counted twice.",
+    ],
+    placeholder:
+      '{"tenant_id":"…","client_id":"…","client_secret":"…","subscription_id":"…","tag":"feature"}',
+    multiline: true,
+    docUrl:
+      "https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/understand-work-scopes",
+  },
+  gcp: {
+    blurb:
+      "Read-only. Google publishes no cost API, so we read the BigQuery billing export — " +
+      "the only place GCP reports what you actually spent.",
+    steps: [
+      "In the Cloud console, go to Billing → Billing export and enable Detailed usage cost export to BigQuery. Note the dataset, and the table name it creates (gcp_billing_export_v1_<BILLING_ACCOUNT_ID>).",
+      "Important: the export is not backfilled. There is no data for any period before you switch it on, so historical months will be empty until it has been running.",
+      "Create a service account and grant it exactly two roles: BigQuery Job User on the project, and BigQuery Data Viewer on the billing export dataset. Neither can write, and neither can read anything outside that dataset.",
+      "Create a JSON key for that service account and download it.",
+      "Paste the key file below as JSON, and add `dataset`, `table`, and `tag` (the resource label naming which feature a resource belongs to). Untagged spend is not guessed at — it lands in Unattributed.",
+      "GCP billing data lags by several hours and is restated for a few days after, so recent figures will move. Each sync re-reads recent history rather than adding to it.",
+      "Vertex AI is model inference, not infrastructure. Those line items are recorded but never added to infrastructure totals, so they can never be counted twice against a model-provider connector.",
+    ],
+    placeholder:
+      '{"type":"service_account","client_email":"…","private_key":"…","project_id":"…",' +
+      '"dataset":"billing_export","table":"gcp_billing_export_v1_…","tag":"feature"}',
+    multiline: true,
+    docUrl: "https://cloud.google.com/billing/docs/how-to/export-data-bigquery-setup",
+  },
   azure: {
     blurb:
       "Read-only. Azure OpenAI spend lives in Azure Cost Management; we read it, filter to Cognitive Services, and split by a cost-allocation tag.",

@@ -73,8 +73,8 @@ describe("CostSourcesPage", () => {
         type: "azure_cloud",
         name: "Microsoft Azure",
         short: "Azure",
-        status: "coming_soon",
-        note: "Azure Cost Management ingestion is not built yet.",
+        status: "available",
+        note: "Reads Azure Cost Management — the whole subscription, read-only.",
         connected: false,
         last_sync: null,
         config: null,
@@ -206,7 +206,7 @@ describe("CostSourcesPage", () => {
 
     expect(await screen.findByText("Amazon Web Services")).toBeInTheDocument();
     expect(screen.getByText("Microsoft Azure")).toBeInTheDocument();
-    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
   });
 
   it("opens straight onto a tab named in the URL", async () => {

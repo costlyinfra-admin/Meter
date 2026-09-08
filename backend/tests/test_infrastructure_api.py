@@ -69,17 +69,15 @@ def _fake(monkeypatch, items=None, error=None):
 
 
 # --- the registry ----------------------------------------------------------
-def test_providers_lists_aws_live_and_the_rest_coming_soon(client):
+def test_providers_lists_every_cloud_as_connectable(client):
     providers = client.get("/api/infrastructure/providers").json()
-    by_type = {p["type"]: p for p in providers}
 
     # "azure_cloud", not "azure": that id belongs to the Azure OpenAI inference
     # connector, and the two must not be confused for one another.
     assert [p["type"] for p in providers] == ["aws", "azure_cloud", "gcp"]
-    assert by_type["aws"]["status"] == "available"
-    assert by_type["azure_cloud"]["status"] == by_type["gcp"]["status"] == "coming_soon"
-    assert by_type["aws"]["connected"] is False
-    assert by_type["aws"]["last_sync"] is None
+    assert all(p["status"] == "available" for p in providers)
+    assert all(p["connected"] is False for p in providers)
+    assert all(p["last_sync"] is None for p in providers)
 
 
 def test_the_aws_connector_appears_under_the_infrastructure_category(client):
@@ -136,24 +134,78 @@ def test_a_repeated_sync_does_not_double_the_bill(client, monkeypatch):
     assert summary["rows"] == 1
 
 
-def test_a_rejected_credential_is_a_400_naming_the_missing_permission(client, monkeypatch):
+@pytest.mark.parametrize(
+    "provider, message",
+    [
+        ("aws", "AWS rejected the credentials. Needs ce:GetCostAndUsage."),
+        ("azure_cloud", "Azure rejected the request. Needs Cost Management Reader."),
+        ("gcp", "Google rejected the request. Needs BigQuery Data Viewer."),
+    ],
+)
+def test_a_rejected_credential_is_a_400_in_that_cloud_s_own_words(
+    client, monkeypatch, provider, message
+):
+    # Each cloud names its own roles and consoles. A generic sentence — or worse,
+    # another provider's — sends someone to the wrong place to fix it.
+    r = client.post(f"/api/connectors/{provider}/credential", json={"secret": CREDENTIAL})
+    assert r.status_code == 204
+    _fake(monkeypatch, error=ProviderError(message, 401))
+
+    r = client.post("/api/infrastructure/ingest", json={"provider": provider})
+    assert r.status_code == 400
+    assert r.json()["detail"] == message
+
+
+def test_an_unusable_credential_is_a_400_not_a_bad_gateway(client, monkeypatch):
+    # A key we cannot even parse is the customer's to fix. Reporting it as 502
+    # says "the provider is broken", which sends them to the wrong place.
     _connect(client)
-    _fake(monkeypatch, error=ProviderError("AWS rejected the credentials.", 403))
+    _fake(monkeypatch, error=ProviderError("The private key could not be read.", 401))
 
     r = client.post("/api/infrastructure/ingest", json={"provider": "aws"})
     assert r.status_code == 400
-    assert "ce:GetCostAndUsage" in r.json()["detail"]
 
 
-def test_a_provider_that_is_not_built_yet_is_refused(client):
+def test_an_unreachable_provider_is_named_correctly(client, monkeypatch):
+    import httpx as _httpx
+
+    r = client.post("/api/connectors/gcp/credential", json={"secret": CREDENTIAL})
+    assert r.status_code == 204
+    _fake(monkeypatch, error=_httpx.ConnectError("no route"))
+
     r = client.post("/api/infrastructure/ingest", json={"provider": "gcp"})
-    # No credential for GCP, so the connect check fires first — either way it is
-    # a clean 400, never a 500 or a partial import.
-    assert r.status_code == 400
+    assert r.status_code == 502
+    assert "Google Cloud Platform" in r.json()["detail"]
+    assert "AWS" not in r.json()["detail"]
 
+
+def test_an_unknown_cloud_is_refused(client):
     r = client.post("/api/infrastructure/ingest", json={"provider": "digitalocean"})
     assert r.status_code == 400
     assert "Unknown infrastructure provider" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("provider", ["azure_cloud", "gcp"])
+def test_every_cloud_syncs_through_the_same_route(client, monkeypatch, provider):
+    r = client.post(f"/api/connectors/{provider}/credential", json={"secret": CREDENTIAL})
+    assert r.status_code == 204
+    _fake(monkeypatch, [_item("Some Service", "12.00"), _item("Vertex AI", "900.00")])
+
+    body = client.post("/api/infrastructure/ingest", json={"provider": provider}).json()
+    assert body["provider"] == provider
+    assert body["items"] == 2
+
+    summary = client.get(f"/api/infrastructure/summary?provider={provider}").json()
+    assert summary["provider"] == provider
+
+
+def test_every_cloud_appears_under_the_infrastructure_category(client):
+    connectors = client.get("/api/connectors").json()
+    infra = {c["type"] for c in connectors if c["category"] == "infrastructure"}
+    assert infra == {"aws", "azure_cloud", "gcp"}
+    # The Azure OpenAI connector stays where it was, on the inference side.
+    azure_openai = next(c for c in connectors if c["type"] == "azure")
+    assert azure_openai["category"] == "inference"
 
 
 # --- state shown on the card ----------------------------------------------

@@ -18,12 +18,29 @@ describe("ConnectorMark", () => {
     expect(logo()).toHaveAttribute("alt", "");
   });
 
+  // Connectors we knowingly ship without a mark, and why. An entry here is a
+  // debt, not a decision: it costs the row its logo, so it should be short.
+  // "gcp": Google Cloud's own mark is not in the repo, and google.svg is
+  // Gemini's sparkle — the wrong product's logo beside "Google Cloud Platform"
+  // is worse than the monogram, so GCP shows "GC" until the real mark lands.
+  const NO_LOGO_YET = new Set(["gcp"]);
+
   it("has a logo for every provider with a setup guide", () => {
     // The list is derived from src/logos, so a missing file is a missing logo
     // and shows up here rather than as one grey tile in a list of two dozen.
     for (const type of Object.keys(CONNECTOR_GUIDES)) {
+      if (NO_LOGO_YET.has(type)) continue;
       const { unmount } = render(<ConnectorMark type={type} name={type} />);
       expect(logo(), `no logo file for ${type}`).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("falls back to a readable monogram for a connector still owed its mark", () => {
+    for (const type of NO_LOGO_YET) {
+      const { unmount } = render(<ConnectorMark type={type} name="Google Cloud Platform" />);
+      expect(logo()).toBeNull();
+      expect(mark()).toHaveTextContent("GC");
       unmount();
     }
   });

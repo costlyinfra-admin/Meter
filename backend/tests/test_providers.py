@@ -1096,3 +1096,437 @@ def test_a_malformed_query_is_not_reported_as_a_credential_problem():
         _aws_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
 
     assert "ce:GetCostAndUsage" not in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# Microsoft Azure — the whole-subscription (infrastructure) connector
+# --------------------------------------------------------------------------
+# A secret that could not appear in an error message by coincidence — a
+# one-character placeholder makes "the secret is not echoed back" trivially true.
+_AZ_SECRET = "Xq7~aB9c.Dz2EfGh-4IjKlMnOpQrStUv"
+_AZ_CRED = {
+    "tenant_id": "00000000-1111-2222-3333-444444444444",
+    "client_id": "55555555-6666-7777-8888-999999999999",
+    "client_secret": _AZ_SECRET,
+    "subscription_id": "sub-1",
+    "tag": "feature",
+}
+
+
+def _az_cred(**overrides) -> str:
+    import json
+
+    merged = {**_AZ_CRED, **overrides}
+    return json.dumps({k: v for k, v in merged.items() if v is not None})
+
+
+def _az_columns(*names) -> list:
+    return [{"name": n} for n in names]
+
+
+def _az_client(handler, **overrides):
+    from meter.providers import AzureCloudCostClient
+
+    return AzureCloudCostClient(
+        _az_cred(**overrides), client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+
+def _az_handler(pages, seen=None):
+    import json
+
+    it = iter(pages)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "login.microsoftonline.com" in str(request.url):
+            return httpx.Response(200, json={"access_token": "tok"})
+        assert request.headers["Authorization"] == "Bearer tok"
+        if seen is not None:
+            seen.update(json.loads(request.content))
+            seen["url"] = str(request.url)
+        return httpx.Response(200, json=next(it))
+
+    return handler
+
+
+def test_azure_reads_the_whole_subscription_with_no_service_filter():
+    seen = {}
+    page = {
+        "properties": {
+            "columns": _az_columns(
+                "Cost", "UsageDate", "ServiceName", "TagKey", "TagValue", "Currency"
+            ),
+            "rows": [
+                [12.5, 20260504, "Storage", "feature", "triage", "USD"],
+                [3.0, 20260504, "Azure Thing From Next Year", "feature", "", "USD"],
+            ],
+        }
+    }
+    items = _az_client(_az_handler([page], seen)).fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+
+    # No filter: an allowlist would drop services Azure adds later.
+    assert "filter" not in seen["dataset"]
+    assert seen["type"] == "ActualCost"
+    assert seen["dataset"]["granularity"] == "Daily"
+    assert seen["dataset"]["grouping"] == [
+        {"type": "Dimension", "name": "ServiceName"},
+        {"type": "TagKey", "name": "feature"},
+    ]
+    # Azure's window is inclusive at both ends; ours is half-open.
+    assert seen["timePeriod"] == {"from": "2026-05-01", "to": "2026-05-31"}
+    assert [(i.service, i.amount, i.tag_value) for i in items] == [
+        ("Storage", Decimal("12.5"), "triage"),
+        ("Azure Thing From Next Year", Decimal("3.0"), None),
+    ]
+    assert items[0].period == dt.date(2026, 5, 4)
+
+
+def test_azure_matches_columns_by_name_not_position():
+    # The same data with the columns in a different order must parse the same.
+    # A positional parser reads the wrong field the moment a grouping changes.
+    page = {
+        "properties": {
+            "columns": _az_columns(
+                "ServiceName", "TagValue", "UsageDate", "Currency", "Cost", "TagKey"
+            ),
+            "rows": [["Storage", "triage", 20260504, "USD", 12.5, "feature"]],
+        }
+    }
+    (item,) = _az_client(_az_handler([page])).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+    assert (item.service, item.amount, item.tag_value) == ("Storage", Decimal("12.5"), "triage")
+    assert item.period == dt.date(2026, 5, 4)
+
+
+def test_azure_follows_next_link_rather_than_under_reporting():
+    pages = [
+        {
+            "properties": {
+                "columns": _az_columns("Cost", "UsageDate", "ServiceName"),
+                "rows": [[10.0, 20260504, "Storage"]],
+                "nextLink": "https://management.azure.com/next-page",
+            }
+        },
+        {
+            "properties": {
+                "columns": _az_columns("Cost", "UsageDate", "ServiceName"),
+                "rows": [[20.0, 20260505, "Bandwidth"]],
+            }
+        },
+    ]
+    seen = {}
+    items = _az_client(_az_handler(pages, seen)).fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+    assert sum(i.amount for i in items) == Decimal("30.0")
+    assert seen["url"] == "https://management.azure.com/next-page"
+
+
+def test_azure_handles_a_monthly_iso_bucket():
+    page = {
+        "properties": {
+            "columns": _az_columns("Cost", "BillingMonth", "ServiceName"),
+            "rows": [[99.0, "2026-05-01T00:00:00", "Storage"]],
+        }
+    }
+    (item,) = _az_client(_az_handler([page]), granularity="Monthly").fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+    assert item.period == dt.date(2026, 5, 1)
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"subscription_id": None}, "subscription_id"),
+        ({"client_secret": None}, "client_secret"),
+        ({"metric": "MadeUpCost"}, "metric must be"),
+        ({"granularity": "Hourly"}, "granularity must be"),
+        ({"group_by": ["ServiceName", "Nonsense"]}, "Unsupported group_by"),
+    ],
+)
+def test_azure_configuration_is_validated_before_any_call(overrides, message):
+    from meter.providers import AzureCloudCostClient, ProviderError
+
+    with pytest.raises(ProviderError, match=message):
+        AzureCloudCostClient(_az_cred(**overrides))
+
+
+def test_azure_credential_rejection_names_the_role_and_leaks_nothing():
+    from meter.providers import ProviderError
+
+    def handler(request):
+        return httpx.Response(401, json={"error": "invalid_client"})
+
+    with pytest.raises(ProviderError) as exc:
+        _az_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+    assert "Cost Management Reader" in str(exc.value)
+    assert _AZ_SECRET not in str(exc.value)
+    assert exc.value.status == 401  # so the API answers 400, not 502
+
+
+# --------------------------------------------------------------------------
+# Google Cloud — the BigQuery billing-export (infrastructure) connector
+# --------------------------------------------------------------------------
+# GCP publishes no cost API, so this connector queries the customer's billing
+# export. Auth is a locally-signed service-account JWT; the tests below verify
+# that signature against the matching public key rather than assuming the bytes
+# are shaped right.
+_GCP_PRIVATE_KEY = None
+
+
+def _gcp_keypair():
+    """One RSA key for the whole module — generation is slow, reuse is fine."""
+    global _GCP_PRIVATE_KEY
+    if _GCP_PRIVATE_KEY is None:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        _GCP_PRIVATE_KEY = (key, pem)
+    return _GCP_PRIVATE_KEY
+
+
+def _gcp_cred(**overrides) -> str:
+    import json
+
+    _, pem = _gcp_keypair()
+    base = {
+        "type": "service_account",
+        "client_email": "meter@proj.iam.gserviceaccount.com",
+        "private_key": pem,
+        "private_key_id": "kid1",
+        "project_id": "my-proj",
+        "dataset": "billing_export",
+        "table": "gcp_billing_export_v1_0123AB_4567CD_89EFGH",
+        "tag": "feature",
+    }
+    base.update(overrides)
+    return json.dumps({k: v for k, v in base.items() if v is not None})
+
+
+_GCP_FIELDS = [
+    "service",
+    "sku",
+    "project_id",
+    "region",
+    "day",
+    "currency",
+    "tag_value",
+    "total_cost",
+]
+
+
+def _gcp_page(rows: list, **extra) -> dict:
+    return {
+        "jobComplete": True,
+        "schema": {"fields": [{"name": n} for n in _GCP_FIELDS]},
+        "rows": [{"f": [{"v": v} for v in row]} for row in rows],
+        **extra,
+    }
+
+
+def _gcp_handler(pages, seen=None):
+    import json
+
+    it = iter(pages)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2.googleapis.com" in str(request.url):
+            if seen is not None:
+                seen["assertion"] = _form_value(request.content.decode(), "assertion")
+            return httpx.Response(200, json={"access_token": "ya29.tok"})
+        assert request.headers["Authorization"] == "Bearer ya29.tok"
+        if seen is not None and request.content:
+            seen.update(json.loads(request.content))
+        if seen is not None:
+            seen.setdefault("urls", []).append(str(request.url))
+        return httpx.Response(200, json=next(it))
+
+    return handler
+
+
+def _form_value(body: str, key: str) -> str:
+    import urllib.parse
+
+    return urllib.parse.parse_qs(body)[key][0]
+
+
+def _gcp_client(handler, **overrides):
+    from meter.providers import GcpBillingCostClient
+
+    return GcpBillingCostClient(
+        _gcp_cred(**overrides), client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+
+def test_gcp_signs_a_real_rs256_assertion_for_a_read_only_scope():
+    import base64
+    import json as _json
+
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    key, _ = _gcp_keypair()
+    seen = {}
+    _gcp_client(_gcp_handler([_gcp_page([])], seen)).fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+
+    header_b64, claims_b64, sig_b64 = seen["assertion"].split(".")
+
+    def unpad(s):
+        return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+    # The signature must actually verify — not merely be the right length.
+    key.public_key().verify(
+        unpad(sig_b64),
+        f"{header_b64}.{claims_b64}".encode(),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
+    )
+    assert _json.loads(unpad(header_b64))["alg"] == "RS256"
+    claims = _json.loads(unpad(claims_b64))
+    # Read-only, and never broader: this token cannot write or run a load job.
+    assert claims["scope"] == "https://www.googleapis.com/auth/bigquery.readonly"
+    assert claims["iss"] == "meter@proj.iam.gserviceaccount.com"
+    assert claims["exp"] > claims["iat"]
+
+
+def test_gcp_reads_the_whole_bill_with_bound_parameters():
+    seen = {}
+    rows = [
+        [
+            "Cloud SQL",
+            "DB standard",
+            "my-proj",
+            "us-central1",
+            "2026-05-04",
+            "USD",
+            "triage",
+            "214.50",
+        ],
+        ["Brand New Google Thing", "SKU", "my-proj", None, "2026-05-05", "USD", None, "3.00"],
+        ["Cloud Storage", "Class A", "my-proj", "us", "2026-05-05", "USD", None, "0"],
+    ]
+    items = _gcp_client(_gcp_handler([_gcp_page(rows)], seen)).fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+
+    # The window and the tag are bound parameters, never interpolated.
+    assert [(p["name"], p["parameterValue"]["value"]) for p in seen["queryParameters"]] == [
+        ("tag", "feature"),
+        ("start", "2026-05-01"),
+        ("end", "2026-06-01"),
+    ]
+    assert seen["useLegacySql"] is False
+    # No service filter, and the customer's own export table.
+    assert "my-proj.billing_export.gcp_billing_export_v1_0123AB_4567CD_89EFGH" in seen["query"]
+    assert [(i.service, i.amount, i.tag_value) for i in items] == [
+        ("Cloud SQL", Decimal("214.50"), "triage"),
+        ("Brand New Google Thing", Decimal("3.00"), None),  # unknown -> kept
+    ]
+    # The SKU is what the GCP classifier reads for accelerator detection.
+    assert items[0].usage_type == "DB standard"
+    assert items[0].region == "us-central1"
+
+
+def test_gcp_follows_page_tokens_rather_than_under_reporting():
+    seen = {}
+    pages = [
+        _gcp_page(
+            [["Cloud SQL", "s", "p", "r", "2026-05-04", "USD", None, "10"]],
+            pageToken="tok-2",
+            jobReference={"jobId": "job-1"},
+        ),
+        _gcp_page([["Cloud Run", "s", "p", "r", "2026-05-05", "USD", None, "20"]]),
+    ]
+    items = _gcp_client(_gcp_handler(pages, seen)).fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+    assert sum(i.amount for i in items) == Decimal("30")
+    assert any("job-1" in u and "tok-2" in u for u in seen["urls"])
+
+
+def test_gcp_reports_an_unfinished_query_instead_of_zero_spend():
+    from meter.providers import ProviderError
+
+    def handler(request):
+        if "oauth2.googleapis.com" in str(request.url):
+            return httpx.Response(200, json={"access_token": "ya29.tok"})
+        return httpx.Response(200, json={"jobComplete": False})
+
+    # "The query timed out" must never be indistinguishable from "no spend".
+    with pytest.raises(ProviderError, match="did not finish"):
+        _gcp_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+
+def test_gcp_monthly_granularity_buckets_to_the_month():
+    seen = {}
+    _gcp_client(_gcp_handler([_gcp_page([])], seen), granularity="MONTHLY").fetch_items(
+        dt.date(2026, 5, 1), dt.date(2026, 6, 1)
+    )
+    assert "DATE_TRUNC(DATE(usage_start_time), MONTH)" in seen["query"]
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"table": None}, "table"),
+        ({"dataset": None}, "dataset"),
+        ({"private_key": None}, "client_email and private_key"),
+        # The table is the one part of the query that cannot be a bound
+        # parameter, so it is validated as an identifier rather than trusted.
+        ({"table": "t`; DROP TABLE x; --"}, "letters, digits"),
+        ({"dataset": "a.b"}, "letters, digits"),
+        ({"granularity": "HOURLY"}, "granularity must be"),
+    ],
+)
+def test_gcp_configuration_is_validated_before_any_call(overrides, message):
+    from meter.providers import GcpBillingCostClient, ProviderError
+
+    with pytest.raises(ProviderError, match=message):
+        GcpBillingCostClient(_gcp_cred(**overrides))
+
+
+def test_gcp_rejects_an_unreadable_private_key_clearly():
+    from meter.providers import GcpBillingCostClient, ProviderError
+
+    client = GcpBillingCostClient(_gcp_cred(private_key="-----BEGIN PRIVATE KEY-----\nnope\n"))
+    with pytest.raises(ProviderError, match="private key could not be read"):
+        client.fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+
+def test_gcp_missing_export_table_says_what_to_check():
+    from meter.providers import ProviderError
+
+    def handler(request):
+        if "oauth2.googleapis.com" in str(request.url):
+            return httpx.Response(200, json={"access_token": "ya29.tok"})
+        return httpx.Response(404, json={"error": {"message": "Not found: Table"}})
+
+    with pytest.raises(ProviderError, match="gcp_billing_export_v1"):
+        _gcp_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+
+def test_gcp_rejection_names_the_roles_and_leaks_no_key():
+    from meter.providers import ProviderError
+
+    def handler(request):
+        if "oauth2.googleapis.com" in str(request.url):
+            return httpx.Response(200, json={"access_token": "ya29.tok"})
+        return httpx.Response(403, json={"error": {"message": "denied"}})
+
+    with pytest.raises(ProviderError) as exc:
+        _gcp_client(handler).fetch_items(dt.date(2026, 5, 1), dt.date(2026, 6, 1))
+
+    assert "BigQuery Data Viewer" in str(exc.value)
+    assert "BEGIN PRIVATE KEY" not in str(exc.value)
+    assert exc.value.status == 401

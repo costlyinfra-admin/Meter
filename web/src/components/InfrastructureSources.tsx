@@ -7,21 +7,38 @@
  * spend by service, how much of it reached a feature, and what was deliberately
  * left out.
  *
- * "Deliberately left out" is the part worth reading. Amazon Bedrock's dollars
- * already arrive through the Bedrock connector on the Inference tab. They are
- * recorded here and then excluded from every infrastructure total, and the
- * panel says so with the number, because a customer comparing this page against
- * their AWS console should be able to see exactly where the difference went.
+ * "Deliberately left out" is the part worth reading. Every cloud bills one model
+ * service that a dedicated connector already owns — Bedrock on AWS, Azure OpenAI
+ * on Azure, Vertex AI on GCP. Those dollars are recorded here and then excluded
+ * from every infrastructure total, and the panel says so WITH the number and the
+ * service's name, because a customer comparing this page against their cloud
+ * console has to be able to see exactly where the difference went.
  *
- * Providers come from the backend registry rather than a list in this file, so
- * Azure and GCP appear as "coming soon" today and become connectable when their
- * ingestion lands — no change here.
+ * Providers come from the backend registry rather than a list in this file, so a
+ * fourth cloud is a backend entry plus a client — no change here.
  */
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type InfraProvider, type InfraSummary } from "../api";
 import { money } from "../format";
-import { ConnectorMark } from "./ConnectorMark";
 import { ConnectorRow } from "./ConnectorRow";
+
+/** The model service each cloud bills that a dedicated connector already owns.
+ *  Naming it matters: "some spend was excluded" is not an explanation, and the
+ *  customer reconciling this page against their cloud console needs to know
+ *  exactly which line items went where. Mirrors the `dedupe_owner` rules in
+ *  backend/meter/infra_classify.py. */
+const DEDUPED_SERVICE: Record<string, string> = {
+  aws: "Amazon Bedrock",
+  azure_cloud: "Azure OpenAI",
+  gcp: "Vertex AI",
+};
+
+/** Where that service's dollars are counted instead. */
+const DEDUPE_OWNER_TAB: Record<string, string> = {
+  aws: "the Amazon Bedrock connector on the Inference tab",
+  azure_cloud: "the Azure OpenAI connector on the Inference tab",
+  gcp: "the Google connector on the Inference tab",
+};
 
 /** How a category reads in the panel. Matches backend/meter/infra_classify.py. */
 const CATEGORY_LABELS: Record<string, string> = {
@@ -54,24 +71,6 @@ function statusLine(p: InfraProvider): string {
   return `Last synced ${syncedAt(p.last_sync.started_at)}`;
 }
 
-/** A provider we list but cannot connect yet. Shown, deliberately not offered. */
-function ComingSoonRow({ provider }: { provider: InfraProvider }) {
-  return (
-    <li className="connector-row">
-      <div className="connector-head">
-        <span className="connector-info">
-          <ConnectorMark type={provider.type} name={provider.name} />
-          <span className="connector-text">
-            <span className="connector-name">{provider.name}</span>
-            <span className="connector-category">{provider.note}</span>
-          </span>
-        </span>
-        <span className="badge-soon">Coming soon</span>
-      </div>
-    </li>
-  );
-}
-
 /** What a connected provider's last sync actually imported. */
 function InfraDetail({ provider, refreshKey }: { provider: InfraProvider; refreshKey: number }) {
   const [summary, setSummary] = useState<InfraSummary | null>(null);
@@ -94,7 +93,8 @@ function InfraDetail({ provider, refreshKey }: { provider: InfraProvider; refres
       {config && (
         <p className="muted infra-config">
           Attributing by the <code>{config.tag}</code> tag · {config.metric} ·{" "}
-          {config.granularity.toLowerCase()} · {config.region}
+          {config.granularity.toLowerCase()}
+          {config.scope && ` · ${config.scope_label} ${config.scope}`}
         </p>
       )}
       {provider.last_sync?.status === "error" && provider.last_sync.error_message && (
@@ -112,9 +112,10 @@ function InfraDetail({ provider, refreshKey }: { provider: InfraProvider; refres
           </p>
           {summary.excluded > 0 && (
             <p className="muted infra-excluded">
-              {money(summary.excluded)} of Amazon Bedrock spend was recorded but not counted here:
-              the Bedrock connector on the Inference tab remains its source of truth, so it is never
-              counted twice.
+              {money(summary.excluded)} of {DEDUPED_SERVICE[provider.type] ?? "model"} spend was
+              recorded but not counted here:{" "}
+              {DEDUPE_OWNER_TAB[provider.type] ?? "its own connector"} remains its source of truth,
+              so it is never counted twice.
             </p>
           )}
           {summary.by_category.length > 0 && (
@@ -183,10 +184,11 @@ export function InfrastructureSources() {
     <section className="source-section" role="tabpanel">
       <p className="muted">
         What your product costs to run on cloud infrastructure — the databases, storage, networking
-        and compute around your model calls. Connect a provider's cost API and we read the whole
-        bill, classify every line item, and attribute spend to features by an activated
-        cost-allocation tag. Nothing is dropped for being an unfamiliar service, and nothing is
-        guessed: untagged spend lands in Unattributed.
+        and compute around your model calls. Connect a cloud and we read the whole bill, classify
+        every line item, and attribute spend to features by a cost-allocation tag or label. Nothing
+        is dropped for being an unfamiliar service, and nothing is guessed: untagged spend lands in
+        Unattributed. Model services each cloud bills — Bedrock, Azure OpenAI, Vertex AI — stay with
+        their own connectors on the Inference tab and are never counted twice.
       </p>
       {error && (
         <p className="error" role="alert">
@@ -195,48 +197,44 @@ export function InfrastructureSources() {
       )}
       {providers && (
         <ul className="connector-list">
-          {providers.map((p) =>
-            p.status === "available" ? (
-              <ConnectorRow
-                key={p.type}
-                connector={{
-                  type: p.type,
-                  name: p.name,
-                  category: "infrastructure",
-                  connected: p.connected,
-                }}
-                hint={statusLine(p)}
-                onConnected={refresh}
-                expanded={openType === p.type}
-                onToggle={() => setOpenType((t) => (t === p.type ? null : p.type))}
-                detail={<InfraDetail provider={p} refreshKey={detailVersion} />}
-                onSync={async () => {
-                  let r;
-                  try {
-                    r = await api.syncInfrastructure(p.type);
-                  } catch (err) {
-                    // A failed sync is still a sync: the backend recorded the
-                    // run, so re-read the card rather than leaving it claiming
-                    // whatever it said before this attempt.
-                    await refresh();
-                    throw err;
-                  }
+          {providers.map((p) => (
+            <ConnectorRow
+              key={p.type}
+              connector={{
+                type: p.type,
+                name: p.name,
+                category: "infrastructure",
+                connected: p.connected,
+              }}
+              hint={statusLine(p)}
+              onConnected={refresh}
+              expanded={openType === p.type}
+              onToggle={() => setOpenType((t) => (t === p.type ? null : p.type))}
+              detail={<InfraDetail provider={p} refreshKey={detailVersion} />}
+              onSync={async () => {
+                let r;
+                try {
+                  r = await api.syncInfrastructure(p.type);
+                } catch (err) {
+                  // A failed sync is still a sync: the backend recorded the
+                  // run, so re-read the card rather than leaving it claiming
+                  // whatever it said before this attempt.
                   await refresh();
-                  setDetailVersion((v) => v + 1);
-                  const excluded =
-                    r.excluded > 0
-                      ? ` ${money(r.excluded)} of Bedrock spend was excluded — the Bedrock connector already counts it.`
-                      : "";
-                  return (
-                    `Read ${r.items} line ${r.items === 1 ? "item" : "items"}: ` +
-                    `${money(r.infrastructure)} of infrastructure cost.${excluded}`
-                  );
-                }}
-              />
-            ) : (
-              <ComingSoonRow key={p.type} provider={p} />
-            ),
-          )}
+                  throw err;
+                }
+                await refresh();
+                setDetailVersion((v) => v + 1);
+                const excluded =
+                  r.excluded > 0
+                    ? ` ${money(r.excluded)} of ${DEDUPED_SERVICE[p.type] ?? "model"} spend was excluded — its own connector already counts it.`
+                    : "";
+                return (
+                  `Read ${r.items} line ${r.items === 1 ? "item" : "items"}: ` +
+                  `${money(r.infrastructure)} of infrastructure cost.${excluded}`
+                );
+              }}
+            />
+          ))}
         </ul>
       )}
     </section>

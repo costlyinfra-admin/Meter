@@ -42,7 +42,14 @@ from typing import Optional
 from . import credentials
 from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .infra_classify import LineItem, classify
-from .providers import AwsCostExplorerClient, ProviderError, month_start, next_month
+from .providers import (
+    AwsCostExplorerClient,
+    AzureCloudCostClient,
+    GcpBillingCostClient,
+    ProviderError,
+    month_start,
+    next_month,
+)
 
 logger = logging.getLogger("meter.infrastructure")
 
@@ -60,28 +67,29 @@ PROVIDERS: tuple[dict, ...] = (
     # NOTE the id. "azure" is already taken by the Azure OpenAI *inference*
     # connector, and a tenant who connected that must not see this card light up
     # as connected — they are different credentials reading different scopes of
-    # the same bill. When Azure infrastructure ingestion lands it needs its own
-    # connector type; this id is it.
+    # the same bill.
     {
         "type": "azure_cloud",
         "name": "Microsoft Azure",
         "short": "Azure",
-        "status": "coming_soon",
-        "note": "Azure Cost Management ingestion is not built yet.",
+        "status": "available",
+        "note": "Reads Azure Cost Management — the whole subscription, read-only.",
     },
     {
         "type": "gcp",
         "name": "Google Cloud Platform",
         "short": "GCP",
-        "status": "coming_soon",
-        "note": "Cloud Billing export ingestion is not built yet.",
+        "status": "available",
+        # GCP has no cost API; the billing export is the only path to real spend,
+        # and it has no history before the customer switched it on.
+        "note": "Reads the BigQuery billing export — the whole bill, read-only.",
     },
 )
 _BY_TYPE = {p["type"]: p for p in PROVIDERS}
 
 #: Connector types that ingest through this module. Kept separate from PROVIDERS
-#: so a "coming soon" provider can be listed without being syncable.
-LIVE_PROVIDERS = ("aws",)
+#: so a provider can be listed before it is syncable.
+LIVE_PROVIDERS = ("aws", "azure_cloud", "gcp")
 
 #: How far back a manual "Sync now" reaches. Cloud bills are restated for days
 #: after the fact, so a sync always re-reads recent history rather than trusting
@@ -106,6 +114,10 @@ def make_client(provider_type: str, secret: str):
     """The cost client for a provider. Raises for one that isn't live yet."""
     if provider_type == "aws":
         return AwsCostExplorerClient(secret)
+    if provider_type == "azure_cloud":
+        return AzureCloudCostClient(secret)
+    if provider_type == "gcp":
+        return GcpBillingCostClient(secret)
     if provider_type in _BY_TYPE:
         raise InfraError(f"{_BY_TYPE[provider_type]['name']} ingestion is not available yet.")
     raise InfraError(f"Unknown infrastructure provider: {provider_type}")
@@ -116,12 +128,43 @@ def _make_client(provider_type: str, secret: str):
     return make_client(provider_type, secret)
 
 
-def describe_config(secret: str) -> dict:
+#: Per-provider defaults for the settings a customer may omit. Only non-secret
+#: settings appear here; keys, secrets and private keys never leave the backend.
+_CONFIG_DEFAULTS = {
+    "aws": {
+        "metric": "UnblendedCost",
+        "granularity": "DAILY",
+        "group_by": ["SERVICE", "TAG"],
+        "scope_key": "region",
+        "scope_default": "us-east-1",
+    },
+    "azure_cloud": {
+        "metric": "ActualCost",
+        "granularity": "Daily",
+        "group_by": ["ServiceName", "TAG"],
+        "scope_key": "subscription_id",
+        "scope_default": "",
+    },
+    "gcp": {
+        # The export reports one figure — the billed cost — so there is no
+        # metric to choose, and saying "UnblendedCost" here would be a lie
+        # borrowed from another provider's vocabulary.
+        "metric": "cost",
+        "granularity": "DAILY",
+        "group_by": ["service", "sku", "TAG"],
+        "scope_key": "dataset",
+        "scope_default": "",
+    },
+}
+
+
+def describe_config(secret: str, provider_type: str = "aws") -> dict:
     """The non-secret half of a stored credential, for the configuration panel.
 
-    Access key id and secret access key are never returned by this — or by
-    anything else. What a customer needs to see is which tag drives attribution
-    and which metric/granularity their numbers came from.
+    Access keys, client secrets and service-account private keys are never
+    returned by this — or by anything else. What a customer needs to see is
+    which tag drives attribution, and which metric/granularity/scope their
+    numbers came from, in that provider's own vocabulary.
     """
     try:
         raw = json.loads(secret)
@@ -129,12 +172,19 @@ def describe_config(secret: str) -> dict:
         return {}
     if not isinstance(raw, dict):
         return {}
+    d = _CONFIG_DEFAULTS.get(provider_type, _CONFIG_DEFAULTS["aws"])
+    scope = raw.get(d["scope_key"]) or d["scope_default"]
     return {
         "tag": raw.get("tag") or "feature",
-        "metric": raw.get("metric") or "UnblendedCost",
-        "granularity": (raw.get("granularity") or "DAILY").upper(),
-        "region": raw.get("region") or "us-east-1",
-        "group_by": raw.get("group_by") or ["SERVICE", "TAG"],
+        "metric": raw.get("metric") or d["metric"],
+        # Each cloud spells this its own way ("DAILY" on AWS, "Daily" on Azure);
+        # echoing the customer's own setting beats imposing one house style.
+        "granularity": str(raw.get("granularity") or d["granularity"]),
+        # What the numbers are scoped to: an AWS region, an Azure subscription,
+        # a GCP export dataset. One field, because the panel shows one line.
+        "scope": str(scope),
+        "scope_label": d["scope_key"].replace("_", " "),
+        "group_by": raw.get("group_by") or d["group_by"],
     }
 
 
@@ -262,7 +312,8 @@ def persist(
                     region=item.region,
                     account_id=item.account_id,
                     tag_value=item.tag_value,
-                )
+                ),
+                provider_type,
             )
             # A category another connector already owns is recorded, not counted.
             counted = verdict.dedupe_owner is None
@@ -513,9 +564,10 @@ def run_scheduled_infra_sync(months: int = 1) -> list[dict]:
 def provider_status(tenant_id: str) -> list[dict]:
     """Every infrastructure provider with its connection state and last sync.
 
-    Includes the ones that are not built yet, marked as such — a customer asking
-    "can I connect Azure?" deserves an answer on the page rather than the
-    absence of a row.
+    `status` is registry metadata rather than a constant: all three clouds are
+    connectable today, and a provider that is ever listed before it is syncable
+    is marked here rather than left off the page — a customer asking "can I
+    connect this?" deserves an answer on the page, not the absence of a row.
     """
     connected: set[str] = set()
     last_runs: dict[str, dict] = {}
@@ -553,7 +605,7 @@ def provider_status(tenant_id: str) -> list[dict]:
                 "connected": is_connected,
                 "last_sync": last_runs.get(p["type"]),
                 # Non-secret settings only; keys are never returned.
-                "config": describe_config(secret) if secret else None,
+                "config": describe_config(secret, p["type"]) if secret else None,
             }
         )
     return out

@@ -14,11 +14,13 @@ attribution/persistence logic (inference.py) is fully tested against it.
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
 import hmac
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional
@@ -1411,6 +1413,572 @@ def _parse_analytics_cost(payload, provider: str, period: dt.date):
             model=item.get("model"),
             api_key_ref=item.get("metadata") or item.get("user") or item.get("api_key"),
         )
+
+
+# --------------------------------------------------------------------------
+# Microsoft Azure — whole-bill connector (Cost Management)
+# --------------------------------------------------------------------------
+# The AzureCostClient above reads Cost Management filtered to Cognitive
+# Services. This one drops the filter: every line item in the subscription, at
+# the tenant's chosen metric and granularity. Same service principal shape, same
+# read-only posture — the role it needs is Cost Management Reader, which can
+# read billing aggregates and nothing else.
+#
+# Azure returns a column-oriented result (`properties.columns` + rows of
+# values), so the parser maps columns by NAME rather than by position. Position
+# is not stable across groupings — asking for a tag adds two columns — and the
+# existing Cognitive-Services parser above scans a row heuristically for the
+# first short string, which is fine for one grouping and wrong for this.
+_AZ_METRICS = ("ActualCost", "AmortizedCost")
+_AZ_GRANULARITIES = ("Daily", "Monthly")
+#: Cost Management grouping dimensions we know how to map onto a line item.
+_AZ_DIMENSIONS = (
+    "ServiceName",
+    "MeterCategory",
+    "MeterSubCategory",
+    "Meter",
+    "ResourceGroupName",
+    "ResourceLocation",
+    "SubscriptionId",
+    "ResourceId",
+)
+_AZ_DEFAULT_GROUP_BY = ("ServiceName", "TAG")
+
+#: Where each Azure column lands on a line item. Keys are lowercased column names.
+_AZ_FIELD = {
+    "servicename": "service",
+    "meter": "usage_type",
+    "metercategory": "usage_type",
+    "metersubcategory": "operation",
+    "resourcelocation": "region",
+    "resourcegroupname": "operation",
+    "subscriptionid": "account_id",
+}
+
+
+class AzureCloudCostClient(_BaseCostClient):
+    """Read-only whole-subscription reader for Azure Cost Management.
+
+    JSON cred: ``{tenant_id, client_id, client_secret, subscription_id, tag?,
+    metric?, granularity?, group_by?}``. The service principal needs the
+    **Cost Management Reader** role on the subscription — read-only, billing
+    aggregates only.
+    """
+
+    base_url = "https://management.azure.com"
+    _AUTH_HOST = "https://login.microsoftonline.com"
+    _API_VERSION = "2023-03-01"
+
+    def __init__(self, admin_key: str, **kwargs):
+        super().__init__(admin_key, **kwargs)
+        c = _json_cred(
+            admin_key,
+            '{"tenant_id":…, "client_id":…, "client_secret":…, '
+            '"subscription_id":…, "tag":"feature"}',
+        )
+        self._tenant = c.get("tenant_id")
+        self._client_id = c.get("client_id")
+        self._secret = c.get("client_secret")
+        self._sub = c.get("subscription_id")
+        missing = [
+            k
+            for k, v in (
+                ("tenant_id", self._tenant),
+                ("client_id", self._client_id),
+                ("client_secret", self._secret),
+                ("subscription_id", self._sub),
+            )
+            if not v
+        ]
+        if missing:
+            raise ProviderError(
+                "Azure credentials need " + ", ".join(missing) + " (a service principal "
+                "with the Cost Management Reader role on the subscription)."
+            )
+        self.tag = (c.get("tag") or "feature").strip() or "feature"
+        self.metric = (c.get("metric") or "ActualCost").strip()
+        if self.metric not in _AZ_METRICS:
+            raise ProviderError(f"metric must be one of {', '.join(_AZ_METRICS)}.")
+        self.granularity = (c.get("granularity") or "Daily").strip().capitalize()
+        if self.granularity not in _AZ_GRANULARITIES:
+            raise ProviderError("granularity must be Daily or Monthly.")
+        group_by = c.get("group_by") or list(_AZ_DEFAULT_GROUP_BY)
+        if not isinstance(group_by, list) or not 1 <= len(group_by) <= 2:
+            raise ProviderError("group_by must be a list of one or two dimensions.")
+        for key in group_by:
+            if key != "TAG" and key not in _AZ_DIMENSIONS:
+                raise ProviderError(
+                    f"Unsupported group_by '{key}'. Use TAG or one of: {', '.join(_AZ_DIMENSIONS)}."
+                )
+        self.group_by = [str(k) for k in group_by]
+
+    def _token(self) -> str:
+        resp = self._client.post(
+            f"{self._AUTH_HOST}/{self._tenant}/oauth2/v2.0/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self._client_id,
+                "client_secret": self._secret,
+                "scope": "https://management.azure.com/.default",
+            },
+        )
+        if resp.status_code >= 400:
+            # Azure echoes the client_id in its error body but never the secret;
+            # the message is still ours, not theirs, so nothing leaks either way.
+            raise ProviderError(
+                "Azure rejected the service-principal credentials. Check the tenant, "
+                "client id and secret, and that the principal has Cost Management Reader.",
+                401,
+            )
+        token = resp.json().get("access_token", "")
+        if not token:
+            raise ProviderError("Azure returned no access token.", 401)
+        return token
+
+    def _grouping(self) -> list[dict]:
+        return [
+            {"type": "TagKey", "name": self.tag} if k == "TAG" else {"type": "Dimension", "name": k}
+            for k in self.group_by
+        ]
+
+    def fetch_items(self, start: dt.date, end: dt.date) -> list[AwsCostItem]:
+        """Every line item Azure reports for ``[start, end)``. No service filter.
+
+        Returns the same ``AwsCostItem`` shape as the AWS client — despite the
+        name, it is a provider-neutral cloud billing line item, and one shape
+        keeps the ingest and the classifier from growing a per-provider branch.
+        """
+        token = self._token()
+        body = {
+            "type": self.metric,
+            "timeframe": "Custom",
+            # Azure's window is INCLUSIVE at both ends; ours is half-open.
+            "timePeriod": {
+                "from": start.isoformat(),
+                "to": (end - dt.timedelta(days=1)).isoformat(),
+            },
+            "dataset": {
+                "granularity": self.granularity,
+                "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
+                "grouping": self._grouping(),
+            },
+        }
+        url = (
+            f"{self._base}/subscriptions/{self._sub}"
+            f"/providers/Microsoft.CostManagement/query?api-version={self._API_VERSION}"
+        )
+        items: list[AwsCostItem] = []
+        for _ in range(100):  # hard stop; far beyond any real subscription
+            data = self._query(url, body, token)
+            items.extend(_parse_azure_cloud(data, self.tag))
+            url = ((data.get("properties") or data).get("nextLink")) or ""
+            if not url:
+                break
+        return items
+
+    def _query(self, url: str, body: dict, token: str) -> dict:
+        resp = self._client.post(url, json=body, headers={"Authorization": f"Bearer {token}"})
+        if resp.status_code in (401, 403):
+            raise ProviderError(
+                "Azure rejected the request. The service principal needs the "
+                "Cost Management Reader role on this subscription.",
+                401,
+            )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"Azure Cost Management error {resp.status_code}: {resp.text[:200]}",
+                resp.status_code,
+            )
+        return resp.json()
+
+
+def _azure_day(value) -> Optional[dt.date]:
+    """Azure's UsageDate: 20260504 (Daily) or an ISO timestamp (Monthly)."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if raw.isdigit() and len(raw) == 8:
+        try:
+            return dt.date(int(raw[:4]), int(raw[4:6]), int(raw[6:]))
+        except ValueError:
+            return None
+    try:
+        return dt.date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def _cell(row: list, index: Optional[int]):
+    """One cell of a column-oriented result row, or None when absent."""
+    return row[index] if index is not None and index < len(row) else None
+
+
+def _parse_azure_cloud(payload: dict, tag_key: str) -> list[AwsCostItem]:
+    """Line items from a Cost Management query response.
+
+    Columns are matched by name, not position: asking for a tag adds TagKey and
+    TagValue columns, so a positional parser silently reads the wrong field the
+    moment the grouping changes.
+    """
+    props = payload.get("properties") or payload
+    columns = [str((c or {}).get("name", "")) for c in (props.get("columns") or [])]
+    lower = [c.lower() for c in columns]
+
+    def index(*names: str) -> Optional[int]:
+        for name in names:
+            if name in lower:
+                return lower.index(name)
+        return None
+
+    i_cost = index("cost", "costusd", "pretaxcost", "totalcost")
+    i_date = index("usagedate", "billingmonth", "date")
+    i_currency = index("currency", "billingcurrency", "currencycode")
+    i_tag_value = index("tagvalue")
+    i_tag_key = index("tagkey")
+
+    out: list[AwsCostItem] = []
+    for row in props.get("rows") or []:
+        if not isinstance(row, list):
+            continue
+
+        amount = _to_decimal(_cell(row, i_cost))
+        if amount is None or amount == 0:
+            continue
+        day = _azure_day(_cell(row, i_date))
+        if day is None:
+            continue
+        item = AwsCostItem(
+            period=day,
+            amount=amount,
+            currency=str(_cell(row, i_currency) or "USD"),
+        )
+        raw_tag = _cell(row, i_tag_value)
+        if raw_tag is not None or i_tag_key is not None:
+            value = str(raw_tag).strip() if raw_tag not in (None, "") else None
+            item.tag_key = str(_cell(row, i_tag_key) or tag_key)
+            item.tag_value = value
+            item.dimensions[f"TAG:{item.tag_key}"] = value
+        for i, name in enumerate(columns):
+            key = name.lower()
+            field = _AZ_FIELD.get(key)
+            if field is None or i >= len(row):
+                continue
+            value = row[i]
+            value = str(value) if value not in (None, "") else None
+            item.dimensions[name] = value
+            # Don't let a second column overwrite a field an earlier one filled.
+            if getattr(item, field, None) in (None, ""):
+                setattr(item, field, value if field != "service" else (value or ""))
+        out.append(item)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Google Cloud — whole-bill connector (BigQuery billing export)
+# --------------------------------------------------------------------------
+# GCP has no cost API. The Cloud Billing REST API returns the price CATALOG —
+# what a SKU costs — not what you spent; there is no GCP equivalent of Cost
+# Explorer or Cost Management. The only programmatic path to actual spend is the
+# billing export that Google writes into BigQuery, so this connector queries
+# that table.
+#
+# Two consequences the setup guide has to be honest about:
+#   * The export must be enabled before there is anything to read, and it is not
+#     backfilled — there is no history before the day it was switched on.
+#   * The credential is a service account, because BigQuery has no other
+#     non-interactive auth. It needs exactly two read-only roles:
+#     BigQuery Job User (to run the query) and BigQuery Data Viewer (to read the
+#     export dataset). Neither can write, and neither can see anything outside
+#     that dataset.
+#
+# Auth is the documented service-account flow: a short-lived RS256 JWT, signed
+# locally with the key in the credential, exchanged for an access token. Signed
+# with `cryptography`, which the backend already depends on for credential
+# encryption — no new dependency, and no Google SDK.
+_GCP_TOKEN_URI = "https://oauth2.googleapis.com/token"
+_GCP_SCOPE = "https://www.googleapis.com/auth/bigquery.readonly"
+_GCP_JWT_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+#: A BigQuery identifier: letters, digits, underscore, dash. Validated rather
+#: than trusted — the table name is the one part of the query that cannot be a
+#: bound parameter, so it is the one part that could carry SQL if left alone.
+_GCP_IDENT = re.compile(r"^[A-Za-z0-9_-]+$")
+_GCP_GRANULARITIES = ("DAILY", "MONTHLY")
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _service_account_jwt(email: str, private_key: str, key_id: Optional[str], now: int) -> str:
+    """A signed assertion for the OAuth2 service-account grant."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    header = {"alg": "RS256", "typ": "JWT"}
+    if key_id:
+        header["kid"] = key_id
+    claims = {
+        "iss": email,
+        "scope": _GCP_SCOPE,
+        "aud": _GCP_TOKEN_URI,
+        "iat": now,
+        "exp": now + 3600,
+    }
+    signing_input = (
+        _b64url(json.dumps(header, separators=(",", ":")).encode())
+        + "."
+        + _b64url(json.dumps(claims, separators=(",", ":")).encode())
+    ).encode()
+    try:
+        key = serialization.load_pem_private_key(private_key.encode(), password=None)
+    except Exception as exc:  # a malformed or encrypted key
+        raise ProviderError(
+            "The service-account private key could not be read. Paste the JSON key "
+            "file exactly as Google generated it.",
+            # A credential the customer can fix, so the API answers 400, not 502.
+            401,
+        ) from exc
+    signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    return signing_input.decode() + "." + _b64url(signature)
+
+
+#: The export's own column names, mapped onto a line item. `service` is the
+#: service description and `usage_type` the SKU description — the two fields the
+#: GCP classification rules read.
+_GCP_FIELD = {
+    "service": "service",
+    "sku": "usage_type",
+    "project_id": "account_id",
+    "region": "region",
+}
+
+
+class GcpBillingCostClient(_BaseCostClient):
+    """Read-only whole-bill reader for GCP, over the BigQuery billing export.
+
+    JSON cred: the service-account key file as Google generated it, plus
+    ``dataset``, ``table``, and optionally ``tag`` / ``granularity`` /
+    ``billing_project``.
+    """
+
+    base_url = "https://bigquery.googleapis.com"
+
+    def __init__(self, admin_key: str, **kwargs):
+        super().__init__(admin_key, **kwargs)
+        c = _json_cred(
+            admin_key,
+            'the service-account key JSON plus {"dataset":…, "table":…, "tag":"feature"}',
+        )
+        # The key file may be pasted inline or nested under a key of its own.
+        sa = c.get("service_account") or c.get("credentials") or c
+        if isinstance(sa, str):
+            sa = _json_cred(sa, "the service-account key JSON")
+        self._email = sa.get("client_email")
+        self._private_key = sa.get("private_key")
+        self._key_id = sa.get("private_key_id")
+        self._token_uri = sa.get("token_uri") or _GCP_TOKEN_URI
+        if not self._email or not self._private_key:
+            raise ProviderError(
+                "GCP credentials need the service-account key JSON "
+                "(client_email and private_key), plus the billing export dataset and table."
+            )
+        self._project = c.get("billing_project") or c.get("project_id") or sa.get("project_id")
+        self._dataset = c.get("dataset")
+        self._table = c.get("table")
+        for name, value in (
+            ("project_id", self._project),
+            ("dataset", self._dataset),
+            ("table", self._table),
+        ):
+            if not value:
+                raise ProviderError(f"GCP credentials need {name}.")
+            if not _GCP_IDENT.match(str(value)):
+                raise ProviderError(
+                    f"{name} may only contain letters, digits, underscores and dashes."
+                )
+        self.tag = (c.get("tag") or "feature").strip() or "feature"
+        self.granularity = (c.get("granularity") or "DAILY").strip().upper()
+        if self.granularity not in _GCP_GRANULARITIES:
+            raise ProviderError("granularity must be DAILY or MONTHLY.")
+        # Named so the ingest can record what these dollars measure, like the
+        # other two providers. The export reports one figure: the billed cost.
+        self.metric = "cost"
+
+    # -- auth --------------------------------------------------------------
+    def _token(self) -> str:
+        assertion = _service_account_jwt(
+            self._email, self._private_key, self._key_id, int(time.time())
+        )
+        resp = self._client.post(
+            self._token_uri,
+            data={"grant_type": _GCP_JWT_GRANT, "assertion": assertion},
+        )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                "Google rejected the service-account key. Check that the key is current "
+                "and that the account has the BigQuery Job User role.",
+                401,
+            )
+        token = resp.json().get("access_token", "")
+        if not token:
+            raise ProviderError("Google returned no access token.", 401)
+        return token
+
+    # -- the query ---------------------------------------------------------
+    def _sql(self) -> str:
+        """The export query. Everything variable is a bound parameter but the
+        table, which is validated as an identifier in __init__."""
+        table = f"{self._project}.{self._dataset}.{self._table}"
+        # MONTHLY buckets to the first of the month; DAILY keeps the usage day.
+        day = (
+            "DATE_TRUNC(DATE(usage_start_time), MONTH)"
+            if self.granularity == "MONTHLY"
+            else "DATE(usage_start_time)"
+        )
+        return f"""
+SELECT service, sku, project_id, region, day, currency, tag_value,
+       SUM(cost) AS total_cost
+FROM (
+  SELECT
+    service.description AS service,
+    sku.description AS sku,
+    project.id AS project_id,
+    location.region AS region,
+    {day} AS day,
+    currency,
+    cost,
+    COALESCE(
+      (SELECT value FROM UNNEST(labels) WHERE key = @tag LIMIT 1),
+      (SELECT value FROM UNNEST(project.labels) WHERE key = @tag LIMIT 1)
+    ) AS tag_value
+  FROM `{table}`
+  WHERE DATE(usage_start_time) >= @start AND DATE(usage_start_time) < @end
+)
+GROUP BY service, sku, project_id, region, day, currency, tag_value
+HAVING total_cost != 0
+""".strip()
+
+    def fetch_items(self, start: dt.date, end: dt.date) -> list[AwsCostItem]:
+        """Every line item in the export for ``[start, end)``. No service filter."""
+        token = self._token()
+        body = {
+            "query": self._sql(),
+            "useLegacySql": False,
+            "parameterMode": "NAMED",
+            "queryParameters": [
+                _bq_param("tag", "STRING", self.tag),
+                _bq_param("start", "DATE", start.isoformat()),
+                _bq_param("end", "DATE", end.isoformat()),
+            ],
+            # Generous: a year of a large bill is a real query, and a timeout
+            # here would look like "no cloud spend" rather than "ask again".
+            "timeoutMs": 90_000,
+            "maxResults": 5000,
+        }
+        url = f"{self._base}/bigquery/v2/projects/{self._project}/queries"
+        items: list[AwsCostItem] = []
+        page_token = None
+        job_id = None
+        for _ in range(100):  # hard stop, far beyond any real bill
+            if page_token and job_id:
+                data = self._get_results(job_id, page_token, token)
+            else:
+                data = self._post(url, body, token)
+            if not data.get("jobComplete", True):
+                raise ProviderError(
+                    "BigQuery did not finish the billing query in time. Try a shorter "
+                    "window, or re-run the sync.",
+                    504,
+                )
+            items.extend(_parse_gcp_billing(data, self.tag))
+            page_token = data.get("pageToken")
+            job_id = ((data.get("jobReference") or {}).get("jobId")) or job_id
+            if not page_token or not job_id:
+                break
+        return items
+
+    def _get_results(self, job_id: str, page_token: str, token: str) -> dict:
+        resp = self._client.get(
+            f"{self._base}/bigquery/v2/projects/{self._project}/queries/{job_id}",
+            params={"pageToken": page_token, "maxResults": 5000},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return self._checked(resp)
+
+    def _post(self, url: str, body: dict, token: str) -> dict:
+        resp = self._client.post(url, json=body, headers={"Authorization": f"Bearer {token}"})
+        return self._checked(resp)
+
+    def _checked(self, resp) -> dict:
+        if resp.status_code in (401, 403):
+            raise ProviderError(
+                "Google rejected the request. The service account needs BigQuery Job User "
+                "on the project and BigQuery Data Viewer on the billing export dataset.",
+                401,
+            )
+        if resp.status_code == 404:
+            raise ProviderError(
+                "BigQuery could not find that billing export table. Check the dataset and "
+                "table names — the table is usually gcp_billing_export_v1_<BILLING_ACCOUNT_ID>.",
+                404,
+            )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"BigQuery error {resp.status_code}: {resp.text[:200]}", resp.status_code
+            )
+        return resp.json()
+
+
+def _bq_param(name: str, type_: str, value) -> dict:
+    return {
+        "name": name,
+        "parameterType": {"type": type_},
+        "parameterValue": {"value": str(value)},
+    }
+
+
+def _parse_gcp_billing(payload: dict, tag_key: str) -> list[AwsCostItem]:
+    """Line items from a BigQuery query response.
+
+    BigQuery returns every value as a STRING regardless of column type, and
+    columns positionally under `f`, named only in `schema.fields` — so the
+    schema is what says which cell is the cost.
+    """
+    schema = (payload.get("schema") or {}).get("fields") or []
+    fields = [str((f or {}).get("name", "")) for f in schema]
+    out: list[AwsCostItem] = []
+    for row in payload.get("rows") or []:
+        cells = row.get("f") or []
+        values = {
+            name: (cells[i].get("v") if i < len(cells) and isinstance(cells[i], dict) else None)
+            for i, name in enumerate(fields)
+        }
+        amount = _to_decimal(values.get("total_cost"))
+        if amount is None or amount == 0:
+            continue
+        day = values.get("day")
+        try:
+            period = dt.date.fromisoformat(str(day)[:10])
+        except (ValueError, TypeError):
+            continue
+        tag_value = values.get("tag_value")
+        item = AwsCostItem(
+            period=period,
+            amount=amount,
+            currency=str(values.get("currency") or "USD"),
+            tag_key=tag_key,
+            tag_value=str(tag_value) if tag_value not in (None, "") else None,
+        )
+        for name, value in values.items():
+            if name in ("total_cost", "day", "currency"):
+                continue
+            clean = str(value) if value not in (None, "") else None
+            item.dimensions["TAG:" + tag_key if name == "tag_value" else name] = clean
+            field = _GCP_FIELD.get(name)
+            if field:
+                setattr(item, field, clean if field != "service" else (clean or ""))
+        out.append(item)
+    return out
 
 
 def make_cost_client(provider: str, admin_key: str) -> _BaseCostClient:

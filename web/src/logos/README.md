@@ -27,6 +27,7 @@ simple-icons and carries its brand blue as an added `fill`.
 separate logo of its own, and both connectors read an AWS bill, so both are
 identified by the same one. `azure_cloud.svg` is a copy of `azure.svg` for the same reason: the
 Infrastructure tab's Azure provider needs an id of its own, distinct from the
-Azure OpenAI connector's, and the glob keys on the id. Google Cloud has no file
-yet, so the GCP row shows a monogram; it is listed as coming soon and is not
-connectable.
+Azure OpenAI connector's, and the glob keys on the id. Google Cloud still has no file: `google.svg` is Gemini's sparkle, not Google
+Cloud's mark, and the wrong product's logo beside "Google Cloud Platform" reads
+worse than initials — so the GCP row shows a "GC" monogram until the real mark
+is added. `ConnectorMark.test.tsx` records that exception explicitly.

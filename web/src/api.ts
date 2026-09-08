@@ -174,8 +174,11 @@ export interface InfraProvider {
   type: string;
   name: string;
   short: string;
-  /** "available" — connectable today. "coming_soon" — listed, not built yet. */
-  status: "available" | "coming_soon";
+  /** Every listed cloud is connectable. Narrowed to one value on purpose: if a
+   *  future provider is ever listed but not connectable, widening this union is
+   *  what forces the UI to grow a way to show that, rather than silently
+   *  offering a Connect button that cannot work. */
+  status: "available";
   note: string;
   connected: boolean;
   last_sync: InfraSyncRun | null;
@@ -193,10 +196,15 @@ export interface InfraSyncRun {
 }
 
 export interface InfraConfig {
+  /** The cost-allocation tag/label that drives feature attribution. */
   tag: string;
+  /** What the dollars measure, in the provider's own vocabulary. */
   metric: string;
   granularity: string;
-  region: string;
+  /** What the numbers cover: an AWS region, an Azure subscription, a GCP dataset. */
+  scope: string;
+  /** What `scope` is called for this provider ("region", "subscription id", …). */
+  scope_label: string;
   group_by: string[];
 }
 

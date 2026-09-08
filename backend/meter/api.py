@@ -885,21 +885,22 @@ def create_app() -> FastAPI:
         except infrastructure.InfraError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except ProviderError as exc:
-            if exc.status in (401, 403):
+            # A credential problem is the customer's to fix, so it is a 400 and
+            # the message is the CLIENT's own — each cloud names its own roles
+            # and permissions, and a generic (or worse, another provider's)
+            # sentence would send someone to the wrong console.
+            if exc.status in (401, 403, 404):
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "AWS rejected the credentials. Check the access key and that "
-                        "it has ce:GetCostAndUsage."
-                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
                 ) from exc
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Provider error: {exc}"
             ) from exc
         except httpx.HTTPError as exc:
+            name = infrastructure.provider(body.provider)["name"]
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Could not reach AWS Cost Explorer. Check the credentials and retry.",
+                detail=f"Could not reach {name}. Check the credentials and retry.",
             ) from exc
 
     @app.get("/api/infrastructure/summary")

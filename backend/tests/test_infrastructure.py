@@ -343,12 +343,11 @@ def test_an_unexpected_error_is_not_echoed_to_the_user(tenant_id, monkeypatch):
 
 
 # --- the provider registry -------------------------------------------------
-def test_the_registry_lists_aws_live_and_the_others_as_coming_soon(tenant_id):
+def test_no_cloud_reports_connected_before_a_credential_exists(tenant_id):
     by_type = {p["type"]: p for p in infrastructure.provider_status(tenant_id)}
-    assert by_type["aws"]["status"] == "available"
-    assert by_type["azure_cloud"]["status"] == "coming_soon"
-    assert by_type["gcp"]["status"] == "coming_soon"
     assert all(p["connected"] is False for p in by_type.values())
+    assert all(p["config"] is None for p in by_type.values())
+    assert all(p["last_sync"] is None for p in by_type.values())
 
 
 def test_the_azure_openai_connector_does_not_light_up_the_azure_cloud_card(tenant_id):
@@ -362,9 +361,9 @@ def test_the_azure_openai_connector_does_not_light_up_the_azure_cloud_card(tenan
     assert by_type["azure_cloud"]["config"] is None
 
 
-def test_a_provider_that_is_not_built_yet_refuses_to_sync():
-    with pytest.raises(infrastructure.InfraError, match="not available yet"):
-        infrastructure.make_client("gcp", "{}")
+def test_an_unknown_cloud_refuses_to_sync():
+    with pytest.raises(infrastructure.InfraError, match="Unknown infrastructure provider"):
+        infrastructure.make_client("oracle_cloud", "{}")
 
 
 def test_connection_state_and_config_come_back_without_the_secret(tenant_id):
@@ -381,7 +380,9 @@ def test_connection_state_and_config_come_back_without_the_secret(tenant_id):
         "tag": "feature",
         "metric": "AmortizedCost",
         "granularity": "MONTHLY",
-        "region": "us-east-1",
+        # `scope` is what these numbers cover, named in the provider's own terms.
+        "scope": "us-east-1",
+        "scope_label": "region",
         "group_by": ["SERVICE", "TAG"],
     }
     # The keys are nowhere in what the API hands back.
@@ -452,3 +453,168 @@ def test_one_tenant_failing_the_nightly_run_does_not_stop_the_others(
     assert len(results) == 2
     assert sum("error" in r for r in results) == 1
     assert sum(r.get("items") == 1 for r in results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Azure and GCP: the same guarantees as AWS, on their own vocabularies.
+# ---------------------------------------------------------------------------
+def store_for(tenant_id, provider_type, items, metric="cost", granularity="DAILY"):
+    return infrastructure.persist(
+        tenant_id,
+        provider_type,
+        items,
+        start=WINDOW[0],
+        end=WINDOW[1],
+        metric=metric,
+        granularity=granularity,
+    )
+
+
+def rows_for(tenant_id, provider_type):
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        return conn.execute(
+            "SELECT service, amount, category, counted, dedupe_owner, allocation_method "
+            "FROM infra_cost WHERE provider = %s ORDER BY service",
+            (provider_type,),
+        ).fetchall()
+
+
+def test_azure_imports_the_subscription_and_keeps_azure_openai_out(tenant_id):
+    summary = store_for(
+        tenant_id,
+        "azure_cloud",
+        [
+            item("Azure Blob Storage", "120.00"),
+            item("Azure OpenAI", "800.00"),
+            item("Virtual Machines", "500.00", usage_type="Standard_NC24ads_A100_v4"),
+            item("Azure DevOps", "40.00"),
+        ],
+        metric="ActualCost",
+    )
+
+    assert summary["infrastructure"] == 120.0
+    assert summary["excluded"] == 800.0
+    by_service = {r[0]: r for r in rows_for(tenant_id, "azure_cloud")}
+    assert by_service["Azure OpenAI"][2:5] == ("inference", False, "azure")
+    assert by_service["Virtual Machines"][2] == "self_hosted"
+    assert by_service["Azure DevOps"][2] == "build"
+
+
+def test_gcp_imports_the_bill_and_keeps_vertex_out(tenant_id):
+    summary = store_for(
+        tenant_id,
+        "gcp",
+        [
+            item("Cloud SQL", "214.50"),
+            item("Vertex AI", "900.00"),
+            item(
+                "Compute Engine", "640.00", usage_type="Nvidia Tesla A100 GPU running in Americas"
+            ),
+            item("Cloud Build", "18.00"),
+        ],
+    )
+
+    assert summary["infrastructure"] == 214.5
+    assert summary["excluded"] == 900.0
+    by_service = {r[0]: r for r in rows_for(tenant_id, "gcp")}
+    assert by_service["Vertex AI"][2:5] == ("inference", False, "google")
+    assert by_service["Compute Engine"][2] == "self_hosted"
+    assert by_service["Cloud Build"][2] == "build"
+
+
+def test_a_deduped_service_never_reaches_any_provider_s_month_summary(tenant_id):
+    store_for(tenant_id, "aws", [item("Amazon Bedrock", "500"), item("Amazon S3", "10")])
+    store_for(tenant_id, "azure_cloud", [item("Azure OpenAI", "800"), item("Azure Blob", "20")])
+    store_for(tenant_id, "gcp", [item("Vertex AI", "900"), item("Cloud SQL", "30")])
+
+    for provider_type, total, excluded in (
+        ("aws", 10.0, 500.0),
+        ("azure_cloud", 20.0, 800.0),
+        ("gcp", 30.0, 900.0),
+    ):
+        s = infrastructure.summary(tenant_id, provider_type, MONTH)
+        assert s["total"] == total, provider_type
+        assert s["excluded"] == excluded, provider_type
+        assert "inference" not in {c["category"] for c in s["by_category"]}
+
+
+def test_each_provider_s_rows_are_independent(tenant_id):
+    # Three clouds in one tenant. A sync of one must not disturb another's rows.
+    store_for(tenant_id, "aws", [item("Amazon S3", "10")])
+    store_for(tenant_id, "azure_cloud", [item("Azure Blob", "20")])
+    store_for(tenant_id, "gcp", [item("Cloud SQL", "30")])
+    store_for(tenant_id, "aws", [item("Amazon S3", "11")])  # re-sync AWS only
+
+    assert [r[1] for r in rows_for(tenant_id, "aws")] == [Decimal("11.0000")]
+    assert [r[1] for r in rows_for(tenant_id, "azure_cloud")] == [Decimal("20.0000")]
+    assert [r[1] for r in rows_for(tenant_id, "gcp")] == [Decimal("30.0000")]
+
+
+def test_the_same_tag_attributes_across_every_cloud(tenant_id):
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    features.add_signal(tenant_id, triage["id"], "usage_tag", "triage")
+
+    for provider_type, service in (
+        ("aws", "Amazon S3"),
+        ("azure_cloud", "Azure Blob"),
+        ("gcp", "Cloud SQL"),
+    ):
+        s = store_for(tenant_id, provider_type, [item(service, "10.00", tag="triage")])
+        assert s["attributed"] == 10.0, provider_type
+        assert rows_for(tenant_id, provider_type)[0][5] == "direct"
+
+
+def test_the_registry_lists_all_three_clouds_as_available(tenant_id):
+    by_type = {p["type"]: p for p in infrastructure.provider_status(tenant_id)}
+    assert [p["type"] for p in infrastructure.PROVIDERS] == ["aws", "azure_cloud", "gcp"]
+    assert all(by_type[t]["status"] == "available" for t in ("aws", "azure_cloud", "gcp"))
+    assert set(infrastructure.LIVE_PROVIDERS) == {"aws", "azure_cloud", "gcp"}
+
+
+def test_each_cloud_s_config_is_described_in_its_own_vocabulary(tenant_id):
+    credentials.save_credential(
+        tenant_id,
+        "azure_cloud",
+        '{"tenant_id":"t","client_id":"c","client_secret":"VERY-SECRET-VALUE",'
+        '"subscription_id":"sub-1","tag":"feature"}',
+    )
+    credentials.save_credential(
+        tenant_id,
+        "gcp",
+        '{"client_email":"a@b.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----",'
+        '"project_id":"my-proj","dataset":"billing_export","table":"gcp_billing_export_v1_X"}',
+    )
+    by_type = {p["type"]: p for p in infrastructure.provider_status(tenant_id)}
+
+    azure = by_type["azure_cloud"]["config"]
+    assert (azure["metric"], azure["scope_label"], azure["scope"]) == (
+        "ActualCost",
+        "subscription id",
+        "sub-1",
+    )
+    gcp = by_type["gcp"]["config"]
+    # No borrowed vocabulary: the export reports one figure, the billed cost.
+    assert (gcp["metric"], gcp["scope_label"], gcp["scope"]) == (
+        "cost",
+        "dataset",
+        "billing_export",
+    )
+
+    # Neither secret appears anywhere in what the API hands back.
+    blob = repr(by_type)
+    assert "VERY-SECRET-VALUE" not in blob
+    assert "BEGIN PRIVATE KEY" not in blob
+
+
+def test_the_nightly_run_covers_every_cloud_a_tenant_connected(tenant_id, monkeypatch):
+    for connector in ("aws", "azure_cloud", "gcp"):
+        credentials.save_credential(
+            tenant_id, connector, '{"access_key_id":"A","secret_access_key":"B"}'
+        )
+    monkeypatch.setattr(
+        infrastructure, "_make_client", lambda *_: _FakeClient([item("Some Service", "10.00")])
+    )
+
+    results = infrastructure.run_scheduled_infra_sync(months=1)
+
+    assert {r["provider"] for r in results} == {"aws", "azure_cloud", "gcp"}

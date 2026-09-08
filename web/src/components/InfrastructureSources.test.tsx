@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type InfraProvider, type InfraSummary } from "../api";
 import { InfrastructureSources } from "./InfrastructureSources";
@@ -36,7 +36,8 @@ const CONNECTED = provider({
     tag: "feature",
     metric: "UnblendedCost",
     granularity: "DAILY",
-    region: "us-east-1",
+    scope: "us-east-1",
+    scope_label: "region",
     group_by: ["SERVICE", "TAG"],
   },
   last_sync: {
@@ -66,8 +67,8 @@ function summary(over: Partial<InfraSummary> = {}): InfraSummary {
 
 const REGISTRY = [
   provider(),
-  provider({ type: "azure_cloud", name: "Microsoft Azure", short: "Azure", status: "coming_soon" }),
-  provider({ type: "gcp", name: "Google Cloud Platform", short: "GCP", status: "coming_soon" }),
+  provider({ type: "azure_cloud", name: "Microsoft Azure", short: "Azure" }),
+  provider({ type: "gcp", name: "Google Cloud Platform", short: "GCP" }),
 ];
 
 describe("InfrastructureSources", () => {
@@ -77,20 +78,27 @@ describe("InfrastructureSources", () => {
     vi.mocked(api.infraSummary).mockResolvedValue(summary());
   });
 
-  it("lists AWS as connectable and Azure/GCP as coming soon", async () => {
+  it("offers all three clouds as connectable", async () => {
     render(<InfrastructureSources />);
 
     expect(await screen.findByText("Amazon Web Services")).toBeInTheDocument();
     expect(screen.getByText("Microsoft Azure")).toBeInTheDocument();
     expect(screen.getByText("Google Cloud Platform")).toBeInTheDocument();
-    // AWS can be connected; the other two are shown, not offered.
-    expect(screen.getByRole("button", { name: "Connect" })).toBeInTheDocument();
-    expect(screen.getAllByText("Coming soon")).toHaveLength(2);
+    // Every one is connectable — nothing is listed but withheld.
+    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(3);
+    expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
   });
+
+  /** The Connect button on one provider's row. */
+  async function connect(name: string) {
+    const row = (await screen.findByText(name)).closest("li") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "Connect" }));
+    return row;
+  }
 
   it("shows the AWS setup steps, including the permission and the Bedrock rule", async () => {
     render(<InfrastructureSources />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await connect("Amazon Web Services");
 
     expect(screen.getByText(/ce:GetCostAndUsage/)).toBeInTheDocument();
     expect(screen.getByText(/Cost allocation tags/)).toBeInTheDocument();
@@ -101,7 +109,7 @@ describe("InfrastructureSources", () => {
   it("saves the credential through the shared encrypted-credential path", async () => {
     vi.mocked(api.saveCredential).mockResolvedValue(undefined);
     render(<InfrastructureSources />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await connect("Amazon Web Services");
 
     const blob = '{"access_key_id":"AKIA","secret_access_key":"s"}';
     fireEvent.change(screen.getByLabelText(/Amazon Web Services credentials/), {
@@ -159,16 +167,23 @@ describe("InfrastructureSources", () => {
     expect(await screen.findByText(/Read 412 line items/)).toBeInTheDocument();
   });
 
-  it("says how much Bedrock spend was left out, and why", async () => {
-    vi.mocked(api.infraProviders).mockResolvedValue([CONNECTED]);
+  // Each cloud bills one model service another connector owns. The panel must
+  // name THAT service — "some spend was excluded" explains nothing to someone
+  // reconciling this page against their cloud console.
+  it.each([
+    ["aws", "Amazon Bedrock"],
+    ["azure_cloud", "Azure OpenAI"],
+    ["gcp", "Vertex AI"],
+  ])("says how much %s spend was left out, and which service it was", async (type, service) => {
+    vi.mocked(api.infraProviders).mockResolvedValue([provider({ ...CONNECTED, type })]);
     vi.mocked(api.infraSummary).mockResolvedValue(summary({ excluded: 900 }));
     render(<InfrastructureSources />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Configure/ }));
-    // The excluded number is stated, not hidden — someone comparing this against
-    // the AWS console has to be able to see where the difference went.
-    expect(await screen.findByText(/\$900/)).toBeInTheDocument();
-    expect(screen.getByText(/never counted twice/)).toBeInTheDocument();
+    const note = await screen.findByText(/recorded but not counted here/);
+    expect(note).toHaveTextContent("$900");
+    expect(note).toHaveTextContent(service);
+    expect(note).toHaveTextContent(/never counted twice/);
   });
 
   it("breaks the month down by service and by category", async () => {
@@ -228,5 +243,45 @@ describe("InfrastructureSources", () => {
     expect(await screen.findByText("AWS rejected the credentials.")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/Last sync failed/)).toBeInTheDocument());
     expect(screen.queryByText(/Last synced/)).not.toBeInTheDocument();
+  });
+
+  it("shows the Azure setup steps, including the role and the Azure OpenAI rule", async () => {
+    render(<InfrastructureSources />);
+    await connect("Microsoft Azure");
+
+    expect(screen.getByText(/Cost Management Reader/)).toBeInTheDocument();
+    expect(screen.getByText(/cost data lags/)).toBeInTheDocument();
+    expect(screen.getByText(/never added to infrastructure totals/)).toBeInTheDocument();
+  });
+
+  it("is honest that the GCP export has no history before it is switched on", async () => {
+    render(<InfrastructureSources />);
+    await connect("Google Cloud Platform");
+
+    // The one thing that will surprise someone connecting GCP: empty history.
+    expect(screen.getByText(/not backfilled/)).toBeInTheDocument();
+    expect(screen.getByText(/BigQuery Data Viewer/)).toBeInTheDocument();
+    // And why it works this way at all, rather than like the other two clouds.
+    expect(screen.getByText(/Google publishes no cost API/)).toBeInTheDocument();
+  });
+
+  it("syncs each cloud through the same control", async () => {
+    vi.mocked(api.infraProviders).mockResolvedValue([
+      provider({ ...CONNECTED, type: "gcp", name: "Google Cloud Platform" }),
+    ]);
+    vi.mocked(api.syncInfrastructure).mockResolvedValue({
+      provider: "gcp",
+      items: 88,
+      infrastructure: 1200,
+      excluded: 0,
+      attributed: 800,
+      unattributed: 400,
+      by_category: { infrastructure: 1200 },
+    });
+    render(<InfrastructureSources />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sync now" }));
+    await waitFor(() => expect(api.syncInfrastructure).toHaveBeenCalledWith("gcp"));
+    expect(await screen.findByText(/Read 88 line items/)).toBeInTheDocument();
   });
 });

@@ -55,6 +55,10 @@ KNOWN_CONNECTORS = [
     # by infrastructure.py, which classifies each line item and hands Bedrock's
     # dollars to the connector above rather than counting them twice.
     {"type": "aws", "name": "Amazon Web Services", "category": "infrastructure"},
+    # "azure_cloud", not "azure": the latter is the Azure OpenAI connector above,
+    # a different credential reading a narrow slice of the same Azure bill.
+    {"type": "azure_cloud", "name": "Microsoft Azure", "category": "infrastructure"},
+    {"type": "gcp", "name": "Google Cloud Platform", "category": "infrastructure"},
     {"type": "cursor", "name": "Cursor for Teams", "category": "build_activity"},
     # Identity provider for SSO/SCIM seat rosters (Cursor, Tabnine, Cody, …).
     {"type": "okta", "name": "Okta (SSO seats)", "category": "build_activity"},

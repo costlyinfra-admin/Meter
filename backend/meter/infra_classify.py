@@ -112,8 +112,8 @@ def _search(pattern: str, value: Optional[str]) -> bool:
 # else in the bill distinguishes a GPU box from a web server.
 _GPU_FAMILIES = r"(?:^|[-:.])(?:p[2-9][a-z]*|g[3-9][a-z]*|inf[0-9]+|trn[0-9]+|dl[0-9]+)\."
 
-#: The rule table, in priority order. First match wins.
-RULES: tuple[Rule, ...] = (
+#: AWS rules, in priority order. First match wins.
+AWS_RULES: tuple[Rule, ...] = (
     # --- inference -------------------------------------------------------
     Rule(
         name="bedrock-inference",
@@ -178,23 +178,129 @@ RULES: tuple[Rule, ...] = (
 )
 
 
-def classify(item: LineItem) -> Classification:
+# Azure names its accelerator sizes in the meter/SKU rather than the service
+# ("Standard_NC24ads_A100_v4", "ND96asr v4"). The N-series is Azure's GPU family;
+# nothing else in the bill distinguishes a GPU VM from a web server.
+_AZURE_GPU_SIZES = r"\b(?:standard_)?N[CDVP][0-9]+|\bND[0-9]+|\bNC[0-9]+|\bNV[0-9]+"
+
+#: Azure rules. Same three principles as AWS: one category, unknown ->
+#: infrastructure, and no guessing where the bill does not say.
+AZURE_RULES: tuple[Rule, ...] = (
+    Rule(
+        name="azure-openai-inference",
+        category="inference",
+        services=("Azure OpenAI", "Cognitive Services"),
+        dedupe_owner="azure",
+        why=(
+            "Model inference billed through Azure. The existing 'Azure OpenAI "
+            "(Azure cost)' connector is its authoritative ingestion path, so these "
+            "rows are recorded but not counted here."
+        ),
+    ),
+    Rule(
+        name="azure-ml-gpu-endpoint",
+        category="self_hosted",
+        services=("Machine Learning", "Azure ML"),
+        usage_type_pattern=_AZURE_GPU_SIZES,
+        operation_pattern=r"inference|endpoint|online|deploy",
+        why="An Azure ML online endpoint on GPU hardware: a model you run yourself.",
+    ),
+    Rule(
+        name="azure-gpu-vm",
+        category="self_hosted",
+        services=("Virtual Machines", "Azure Kubernetes Service"),
+        usage_type_pattern=_AZURE_GPU_SIZES,
+        why=(
+            "The meter names an N-series (GPU) VM size. A general-purpose VM is "
+            "deliberately NOT matched — the bill does not say what it runs."
+        ),
+    ),
+    Rule(
+        name="azure-developer-tooling",
+        category="build",
+        services=("Azure DevOps", "DevTest Labs", "GitHub Advanced Security"),
+        why="CI/CD and developer tooling: spend that exists to build the product.",
+    ),
+)
+
+# GCP names accelerators in the SKU description ("Nvidia Tesla A100 GPU running
+# in Americas", "Cloud TPU v5e chip-hour"), not in the service.
+_GCP_ACCELERATORS = r"\b(?:GPU|TPU|Nvidia|A100|H100|L4|T4|V100)\b"
+
+#: GCP rules. Line items come from the BigQuery billing export, where `service`
+#: is the service description and `usage_type` is the SKU description.
+GCP_RULES: tuple[Rule, ...] = (
+    Rule(
+        name="vertex-ai-inference",
+        category="inference",
+        services=("Vertex AI", "Generative Language", "AI Platform"),
+        dedupe_owner="google",
+        why=(
+            "Model inference billed through GCP. The Google connector on the "
+            "Inference tab owns these dollars, so they are recorded but not "
+            "counted here — the two paths can never double-count."
+        ),
+    ),
+    Rule(
+        name="gcp-accelerator-compute",
+        category="self_hosted",
+        services=("Compute Engine", "Kubernetes Engine"),
+        usage_type_pattern=_GCP_ACCELERATORS,
+        why=(
+            "The SKU names a GPU or TPU. A CPU instance is deliberately NOT "
+            "matched — nothing in the bill says what it runs."
+        ),
+    ),
+    Rule(
+        name="gcp-developer-tooling",
+        category="build",
+        services=(
+            "Cloud Build",
+            "Artifact Registry",
+            "Container Registry",
+            "Cloud Source Repositories",
+            "Cloud Deploy",
+        ),
+        why="CI/CD and developer tooling: spend that exists to build the product.",
+    ),
+)
+
+#: Which rule table applies to which infrastructure provider. A provider with no
+#: entry gets no rules — every item defaults to `infrastructure`, which is still
+#: a correct answer rather than a dropped row.
+RULES_BY_PROVIDER: dict[str, tuple[Rule, ...]] = {
+    "aws": AWS_RULES,
+    "azure_cloud": AZURE_RULES,
+    "gcp": GCP_RULES,
+}
+
+#: Back-compat alias: the AWS table was `RULES` when AWS was the only provider.
+RULES = AWS_RULES
+
+
+def classify(item: LineItem, provider: str = "aws") -> Classification:
     """The one primary category for a line item, plus the rule that decided it.
 
-    An item with no service name at all is `unclassified` — the bill told us
+    Rules are per provider: "Compute Engine" means nothing on an AWS bill and
+    "Amazon Bedrock" means nothing on a GCP one, so the tables are separate and
+    a provider is never classified by another's vocabulary. A provider with no
+    table yet still classifies — everything defaults to `infrastructure`, which
+    is a correct answer rather than a dropped row.
+
+    An item with no service name at all is `unclassified`: the bill told us
     nothing to classify by, and saying "infrastructure" would be inventing an
     answer. It is still stored, with its dimensions, so it can be reprocessed.
     """
     if not (item.service or "").strip():
         return Classification("unclassified", "no-service-dimension")
-    for rule in RULES:
+    for rule in RULES_BY_PROVIDER.get(provider, ()):
         if rule.matches(item):
             return Classification(rule.category, rule.name, rule.dedupe_owner)
     return Classification(DEFAULT_CATEGORY, DEFAULT_RULE)
 
 
-def rule_table() -> list[dict]:
-    """The rule table as plain data — for docs, tests, and the setup UI."""
+def rule_table(provider: str = "aws") -> list[dict]:
+    """One provider's rules as plain data — for docs, tests, and the setup UI."""
     return [
         {
             "name": r.name,
@@ -205,5 +311,5 @@ def rule_table() -> list[dict]:
             "dedupe_owner": r.dedupe_owner,
             "why": r.why,
         }
-        for r in RULES
+        for r in RULES_BY_PROVIDER.get(provider, ())
     ]
