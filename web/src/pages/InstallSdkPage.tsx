@@ -593,6 +593,48 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
 // ---------------------------------------------------------------------------
 // Verification — shared by both routes
 // ---------------------------------------------------------------------------
+/**
+ * A running hourglass, for the state where Meter is listening and nothing has
+ * arrived yet.
+ *
+ * A pulsing dot reads as a status light, and a status light that is not green
+ * reads as a fault — which is exactly the wrong thing to say to someone whose
+ * install is fine and whose app simply has not made a model call yet. An
+ * hourglass says "waiting", which is the truth.
+ *
+ * Drawn inline rather than as an emoji so it inherits `currentColor` in both
+ * themes and animates: the sand drains from the top bulb into the bottom one,
+ * and the glass turns over to start again. `aria-hidden` because the sentence
+ * beside it already says what is happening — a screen reader announcing a
+ * decorative timer would only interrupt it.
+ */
+function Hourglass() {
+  return (
+    <svg className="verify-hourglass" viewBox="0 0 20 24" aria-hidden focusable="false">
+      <defs>
+        {/* The sand is the bulb shape, revealed through a moving window: the
+            top's window slides down as it empties, the bottom's slides up as
+            it fills. Clipping keeps the sand inside the glass at every frame,
+            which scaling the triangles would not. */}
+        <clipPath id="hg-top-clip">
+          <rect className="hg-drain" x="0" y="3" width="20" height="9" />
+        </clipPath>
+        <clipPath id="hg-bottom-clip">
+          <rect className="hg-fill" x="0" y="21" width="20" height="9" />
+        </clipPath>
+      </defs>
+
+      <polygon className="hg-sand" points="5,4 15,4 10,12" clipPath="url(#hg-top-clip)" />
+      <polygon className="hg-sand" points="5,20 15,20 10,12" clipPath="url(#hg-bottom-clip)" />
+      <line className="hg-stream" x1="10" y1="12" x2="10" y2="19" />
+
+      <path className="hg-glass" d="M5 4 L15 4 L10 12 Z M5 20 L15 20 L10 12 Z" />
+      <line className="hg-glass" x1="4" y1="3" x2="16" y2="3" />
+      <line className="hg-glass" x1="4" y1="21" x2="16" y2="21" />
+    </svg>
+  );
+}
+
 function Verification() {
   const [event, setEvent] = useState<HookEvent | null>(null);
   const [failed, setFailed] = useState(false);
@@ -667,7 +709,7 @@ function Verification() {
       ) : (
         <>
           <p className="verify-state" role="status">
-            <span className="verify-dot" aria-hidden /> Waiting for your first Meter event…
+            <Hourglass /> Waiting for your first Meter event…
           </p>
           <p className="muted">
             Run your app so it makes a real model call. This updates on its own — no need to reload.

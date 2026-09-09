@@ -5533,6 +5533,119 @@ button.pm-option:active {
   }
 }
 
+/* The waiting hourglass. One 3s cycle: the sand drains for the first ~80%,
+   then the glass turns over and it starts again. Every piece takes its colour
+   from `currentColor`, so it follows the sentence beside it in both themes. */
+.verify-hourglass {
+  width: 0.95rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+  color: var(--muted);
+  animation: hg-turn 3s ease-in-out infinite;
+}
+
+.hg-glass {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hg-sand {
+  fill: currentColor;
+}
+
+/* transform-box keeps each clip window's transform relative to its own box
+   rather than the SVG's origin, so the travel distances below are in the same
+   units as the geometry above. */
+.hg-drain,
+.hg-fill {
+  transform-box: view-box;
+}
+
+/* The top empties: its window slides down until it clears the bulb. */
+.hg-drain {
+  animation: hg-drain 3s ease-in-out infinite;
+}
+
+/* The bottom fills: its window slides up until it covers the bulb. */
+.hg-fill {
+  animation: hg-fill 3s ease-in-out infinite;
+}
+
+.hg-stream {
+  stroke: currentColor;
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  animation: hg-stream 3s ease-in-out infinite;
+}
+
+@keyframes hg-drain {
+  0% {
+    transform: translateY(0);
+  }
+  80%,
+  100% {
+    transform: translateY(9px);
+  }
+}
+
+@keyframes hg-fill {
+  0% {
+    transform: translateY(0);
+  }
+  80%,
+  100% {
+    transform: translateY(-9px);
+  }
+}
+
+/* The falling grains stop before the turn, so no sand hangs in mid-air while
+   the glass is upside down. */
+@keyframes hg-stream {
+  0%,
+  78% {
+    opacity: 0.75;
+  }
+  80%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* The turn happens once the top has emptied, and holds so the next cycle
+   starts from a full glass rather than snapping back. */
+@keyframes hg-turn {
+  0%,
+  82% {
+    transform: rotate(0deg);
+  }
+  95%,
+  100% {
+    transform: rotate(180deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Still an hourglass, just not a moving one: the shape carries the meaning,
+     and the sentence beside it says the rest. */
+  .verify-hourglass,
+  .hg-drain,
+  .hg-fill,
+  .hg-stream {
+    animation: none;
+  }
+
+  .hg-drain {
+    transform: translateY(4px);
+  }
+
+  .hg-fill {
+    transform: translateY(-4px);
+  }
+}
+
 .verify-facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));

@@ -268,6 +268,46 @@ describe("InstallSdkPage — verification", () => {
     expect(screen.getByText("claude-sonnet-4-6")).toBeInTheDocument();
   }, 15000);
 
+  it("marks the wait with an hourglass, not a status light", async () => {
+    // A pulsing dot reads as a status light, and a light that is not green
+    // reads as a fault — the wrong thing to say to someone whose install is
+    // fine and whose app simply has not made a model call yet.
+    vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
+    renderPage();
+    await screen.findByText(/Waiting for your first Meter event/);
+
+    const state = screen.getByText(/Waiting for your first Meter event/).closest("p")!;
+    expect(state.querySelector(".verify-hourglass")).not.toBeNull();
+    expect(state.querySelector(".verify-dot")).toBeNull();
+  });
+
+  it("keeps the hourglass out of the accessibility tree", async () => {
+    // The sentence beside it already says what is happening; announcing a
+    // decorative timer as well would only interrupt it.
+    vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
+    renderPage();
+    await screen.findByText(/Waiting for your first Meter event/);
+    expect(document.querySelector(".verify-hourglass")).toHaveAttribute("aria-hidden");
+  });
+
+  it("drops the hourglass once events arrive", async () => {
+    // Nothing is being waited for any more.
+    vi.mocked(api.recentHookEvent).mockResolvedValue({
+      event: {
+        feature_id: "f-1",
+        feature_name: "AI threat triage",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        received_at: "2026-05-21T09:00:00Z",
+        requests: 3,
+      },
+    });
+    renderPage();
+    await screen.findByText("Events received");
+    expect(document.querySelector(".verify-hourglass")).toBeNull();
+    expect(document.querySelector(".verify-dot.ok")).not.toBeNull();
+  });
+
   it("names the Unattributed bucket rather than showing a blank feature", async () => {
     vi.mocked(api.recentHookEvent).mockResolvedValue({
       event: {
