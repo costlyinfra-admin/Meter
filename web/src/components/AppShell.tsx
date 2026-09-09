@@ -18,7 +18,9 @@ import { BrandMark } from "./BrandMark";
 type IconName =
   | "overview"
   | "sources"
+  | "applications"
   | "features"
+  | "traces"
   | "optimize"
   | "alerts"
   | "sdk"
@@ -43,7 +45,9 @@ const NAV: { section?: string; items: NavItem[] }[] = [
     section: "Analyze",
     items: [
       { to: "/cost-sources", label: "Cost sources", end: false, icon: "sources" },
+      { to: "/applications", label: "Applications", end: false, icon: "applications" },
       { to: "/features", label: "Features", end: false, icon: "features" },
+      { to: "/traces", label: "Traces", end: false, icon: "traces" },
     ],
   },
   {
@@ -95,6 +99,23 @@ function NavIcon({ name }: { name: IconName }) {
           <path d="M10 2.5 17.5 6.5 10 10.5 2.5 6.5Z" />
           <path d="M2.5 10 10 14l7.5-4" />
           <path d="M2.5 13.5 10 17.5l7.5-4" />
+        </>
+      )}
+      {/* Applications: stacked surfaces, the layer above a feature. */}
+      {name === "applications" && (
+        <>
+          <rect x="2.75" y="2.75" width="6" height="6" rx="1.5" />
+          <rect x="11.25" y="2.75" width="6" height="6" rx="1.5" />
+          <rect x="2.75" y="11.25" width="6" height="6" rx="1.5" />
+          <rect x="11.25" y="11.25" width="6" height="6" rx="1.5" />
+        </>
+      )}
+      {/* Traces: a waterfall of spans, which is what the page draws. */}
+      {name === "traces" && (
+        <>
+          <path d="M3 5h9" />
+          <path d="M6 10h8" />
+          <path d="M9 15h5" />
         </>
       )}
       {name === "features" && (

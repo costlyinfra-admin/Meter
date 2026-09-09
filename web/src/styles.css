@@ -5947,3 +5947,369 @@ button.provider-toggle:focus-visible {
   border-radius: var(--radius-sm);
   font-size: 0.85rem;
 }
+
+/* ---------- Traces, spans, and applications ---------- */
+/* Status as a badge with its word always present. Colour alone would exclude
+   anyone who cannot separate these hues, and stale-vs-error is exactly the
+   distinction that matters most on this page. */
+.trace-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.trace-status-running {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--ink);
+}
+
+/* Stale is deliberately NOT the error colour: a quiet agent has not failed and
+   may still finish. Amber reads as "look at this", not "this broke". */
+.trace-status-stale {
+  background: color-mix(in srgb, #d98324 22%, transparent);
+  color: var(--ink);
+}
+
+.trace-status-success {
+  background: var(--surface-alt);
+  color: var(--muted);
+}
+
+.trace-status-error {
+  background: color-mix(in srgb, var(--danger, #c0392b) 18%, transparent);
+  color: var(--ink);
+}
+
+.trace-status-cancelled {
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.trace-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: trace-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes trace-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* Respecting the setting, not just the letter of it: a pulsing dot is exactly
+   the kind of motion this preference exists to stop. */
+@media (prefers-reduced-motion: reduce) {
+  .trace-pulse {
+    animation: none;
+  }
+}
+
+/* Wide tables scroll themselves rather than the page. Twelve columns will not
+   fit a phone and pretending otherwise breaks the whole layout. */
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.data-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.trace-filters {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+.trace-filters label,
+.explore-dimension {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.trace-count {
+  margin-left: auto;
+  font-size: 0.84rem;
+}
+
+.trace-empty {
+  padding: 2.4rem 1.5rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.trace-empty h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.trace-empty-inline {
+  padding: 1.6rem 0;
+}
+
+.button-link {
+  display: inline-block;
+  margin-top: 0.4rem;
+  padding: 0.55rem 1.05rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+/* ---- span waterfall ---- */
+.span-list {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.span-row {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+
+.span-row.span-error {
+  border-color: color-mix(in srgb, var(--danger, #c0392b) 40%, var(--line));
+}
+
+button.span-head {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(12rem, 1.6fr) minmax(6rem, 1fr) auto;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.55rem 0.8rem;
+  background: none;
+  border: none;
+  border-radius: inherit;
+  box-shadow: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+button.span-head:hover,
+button.span-head:focus-visible {
+  background: var(--surface-alt);
+  color: inherit;
+  box-shadow: none;
+}
+
+.span-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.87rem;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.span-caret {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.span-kind,
+.span-orphan {
+  font-size: 0.68rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-alt);
+  color: var(--muted);
+}
+
+.span-orphan {
+  background: color-mix(in srgb, #d98324 20%, transparent);
+  color: var(--ink);
+  text-transform: none;
+}
+
+/* The bar is the span's share of the run, positioned by when it began. That is
+   the whole visualization — no library, because the comparison is one number. */
+.span-track {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-alt);
+  overflow: hidden;
+}
+
+.span-bar {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.span-error .span-bar {
+  background: var(--danger, #c0392b);
+}
+
+.span-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.span-model {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.span-detail {
+  padding: 0.2rem 0.8rem 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.span-detail dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.6rem;
+  margin: 0.6rem 0 0;
+}
+
+.span-detail dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.span-detail dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.span-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  font-weight: 400;
+}
+
+.span-privacy {
+  margin: 0.8rem 0 0;
+  font-size: 0.78rem;
+}
+
+.trace-kpis {
+  margin-bottom: 0.6rem;
+}
+
+.trace-live-note {
+  padding: 0.55rem 0.75rem;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+}
+
+.trace-steps-heading {
+  margin: 1.4rem 0 0;
+  font-size: 1rem;
+}
+
+.trace-back {
+  display: inline-block;
+  margin-bottom: 0.3rem;
+  font-size: 0.82rem;
+}
+
+/* ---- explore ---- */
+.explore {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.explore-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-alt);
+  margin-bottom: 0.3rem;
+  max-width: 12rem;
+}
+
+.explore-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* ---- applications ---- */
+.app-secondary {
+  margin: 0.2rem 0 1.2rem;
+  font-size: 0.86rem;
+}
+
+.app-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  gap: 1.2rem;
+}
+
+.app-breakdowns h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+}
+
+/* Screen-reader-only table captions: the table has an accessible name without
+   a visible heading duplicating the one above it. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 720px) {
+  button.span-head {
+    grid-template-columns: 1fr;
+    gap: 0.4rem;
+  }
+
+  .span-meta {
+    flex-wrap: wrap;
+  }
+}

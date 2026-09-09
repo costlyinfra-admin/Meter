@@ -14,10 +14,14 @@ test build their data through here.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib as _hashlib
+import itertools as _itertools
 import json as _json
 from typing import Optional
 
 import psycopg
+
+from .pricing import price
 
 DEFAULT_PERIOD = _dt.date(2026, 5, 1)  # monthly bucket = first of the month
 
@@ -600,6 +604,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         _add_alert_demo(conn, tenant_id, {"triage": triage, "report": report})
         _add_budget_demo(conn, tenant_id)
         _add_discovery_demo(conn, tenant_id)
+        _add_trace_demo(conn, tenant_id, {"triage": triage, "report": report})
 
     return {"features": feature_count, "tenant_id": tenant_id}
 
@@ -1650,3 +1655,544 @@ def _add_alert_demo(conn, tenant_id, features: dict) -> None:
     )
     _add_alert_notif(conn, tenant_id, healthy, past_res, "in_app", "sent")
     _add_alert_notif(conn, tenant_id, healthy, past_res, "email", "sent")
+
+
+def _add_trace_demo(conn, tenant_id, features: dict) -> None:
+    """DEMO ONLY. Request-level evidence: applications, agent runs, and steps.
+
+    Written directly rather than pushed through traces.ingest, so the demo is
+    deterministic — a seeded run has the timestamps and outcome it is meant to
+    have, not whatever the clock did during seeding. Every shape the Traces page
+    must handle is here on purpose: a single-call trace, multi-step agents, one
+    still running, one gone quiet, a failure, a cancellation, an expensive
+    outlier, a retry loop, and one incomplete run whose end event never arrived.
+
+    Fictional throughout. No real credentials, customers, prompts, responses or
+    tool data — and there is nowhere to put content even if there were, which is
+    the point of the schema.
+    """
+    now = _dt.datetime.now(_dt.timezone.utc)
+    salt = "demo-salt-not-a-secret"
+
+    def app(slug, name, description, owner):
+        return str(
+            conn.execute(
+                "INSERT INTO ai_application (tenant_id, name, slug, description, owner) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (tenant_id, name, slug, description, owner),
+            ).fetchone()[0]
+        )
+
+    support = app(
+        "support-agent",
+        "Support agent",
+        "Resolves inbound customer tickets end to end.",
+        "platform-team",
+    )
+    review = app(
+        "document-review",
+        "Document review",
+        "Extracts and checks obligations in uploaded contracts.",
+        "risk-team",
+    )
+
+    # A counter, not a timestamp: two runs of the same operation at the same
+    # offset would otherwise collide on the unique (tenant, external_trace_id).
+    counter = _itertools.count(1)
+
+    def trace(
+        application,
+        operation,
+        *,
+        feature=None,
+        minutes_ago=60,
+        status="success",
+        duration_s=None,
+        environment="production",
+        release="2026.9.1",
+        customer=None,
+        quiet_minutes=None,
+        ended=True,
+    ):
+        started = now - _dt.timedelta(minutes=minutes_ago)
+        last_activity = now - _dt.timedelta(
+            minutes=quiet_minutes if quiet_minutes is not None else minutes_ago
+        )
+        ended_at = started + _dt.timedelta(seconds=duration_s) if (ended and duration_s) else None
+        return str(
+            conn.execute(
+                """
+                INSERT INTO ai_trace
+                    (tenant_id, application_id, feature_id, external_trace_id, operation_name,
+                     customer_ref, environment, release_version, status, started_at, ended_at,
+                     duration_ms, last_activity_at, last_heartbeat_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    tenant_id,
+                    application,
+                    feature,
+                    f"demo-{operation}-{next(counter):04d}",
+                    operation,
+                    customer,
+                    environment,
+                    release,
+                    status,
+                    started,
+                    ended_at,
+                    int(duration_s * 1000) if duration_s else None,
+                    last_activity,
+                    last_activity if status == "running" else None,
+                ),
+            ).fetchone()[0]
+        )
+
+    def span(
+        trace_id,
+        span_id,
+        kind,
+        operation,
+        *,
+        parent=None,
+        provider=None,
+        model=None,
+        tin=0,
+        tout=0,
+        cache_read=None,
+        cache_write=None,
+        reasoning=None,
+        latency=None,
+        status="success",
+        prompt=None,
+        version=None,
+        offset_s=0,
+        duration_s=1.0,
+        running=False,
+    ):
+        started = now - _dt.timedelta(minutes=45) + _dt.timedelta(seconds=offset_s)
+        amount = price(model or "", tin, tout, provider) if (provider and kind == "llm") else 0
+        prompt_hash = (
+            _hashlib.sha256(f"{salt}:{prompt}-{version}".encode()).hexdigest()[:64]
+            if prompt
+            else None
+        )
+        conn.execute(
+            """
+            INSERT INTO ai_span
+                (tenant_id, trace_id, external_span_id, parent_span_id, span_kind,
+                 operation_name, provider, model, tokens_in, tokens_out, cache_read_tokens,
+                 cache_write_tokens, reasoning_tokens, amount, latency_ms, status,
+                 prompt_id, prompt_version, prompt_hash, started_at, ended_at, occurred_at,
+                 costed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                tenant_id,
+                trace_id,
+                span_id,
+                parent,
+                kind,
+                operation,
+                provider,
+                model,
+                tin or None,
+                tout or None,
+                cache_read,
+                cache_write,
+                reasoning,
+                amount,
+                latency,
+                "running" if running else status,
+                prompt,
+                version,
+                prompt_hash,
+                started,
+                None if running else started + _dt.timedelta(seconds=duration_s),
+                started,
+                None if amount == 0 else started,
+            ),
+        )
+        return amount
+
+    def finish(trace_id, spans, cost):
+        conn.execute(
+            "UPDATE ai_trace SET span_count = %s, total_cost = %s, total_tokens = "
+            "(SELECT COALESCE(SUM(COALESCE(tokens_in,0) + COALESCE(tokens_out,0)), 0) "
+            " FROM ai_span WHERE trace_id = %s) WHERE id = %s",
+            (spans, cost, trace_id, trace_id),
+        )
+
+    triage, report = features["triage"], features["report"]
+
+    # 1. The simplest thing: a wrapped call, one span, no explicit trace.
+    for i, minutes in enumerate((8, 26, 51, 96, 140)):
+        t = trace(
+            support,
+            "classify-ticket",
+            feature=triage,
+            minutes_ago=minutes,
+            duration_s=2.1 + i * 0.3,
+            customer=f"acme-{i % 3}",
+        )
+        cost = span(
+            t,
+            "s1",
+            "llm",
+            "classify",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            tin=1400 + i * 90,
+            tout=180,
+            cache_read=900,
+            latency=2100,
+            prompt="classify-ticket",
+            version="3.2",
+            offset_s=i * 60,
+        )
+        finish(t, 1, cost)
+
+    # 2. A multi-step agent: the shape the waterfall exists to show.
+    t = trace(
+        support,
+        "resolve-ticket",
+        feature=triage,
+        minutes_ago=34,
+        duration_s=18.4,
+        customer="acme-1",
+    )
+    total = span(t, "root", "workflow", "resolve-ticket", duration_s=18.4)
+    total += span(
+        t,
+        "classify",
+        "llm",
+        "classify-intent",
+        parent="root",
+        provider="anthropic",
+        model="claude-haiku-4-5",
+        tin=1200,
+        tout=90,
+        latency=800,
+        prompt="classify-ticket",
+        version="3.2",
+        offset_s=1,
+    )
+    total += span(
+        t,
+        "search",
+        "retrieval",
+        "search-knowledge-base",
+        parent="root",
+        latency=340,
+        offset_s=3,
+        duration_s=0.34,
+    )
+    total += span(
+        t,
+        "embed",
+        "embedding",
+        "embed-query",
+        parent="search",
+        provider="openai",
+        model="text-embedding-3-small",
+        tin=64,
+        tout=0,
+        latency=90,
+        offset_s=3,
+    )
+    total += span(t, "guard", "guardrail", "policy-check", parent="root", latency=45, offset_s=6)
+    total += span(
+        t,
+        "answer",
+        "llm",
+        "generate-answer",
+        parent="root",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        tin=8400,
+        tout=920,
+        cache_read=6100,
+        cache_write=1200,
+        latency=6400,
+        prompt="answer-ticket",
+        version="5.0",
+        offset_s=7,
+        duration_s=6.4,
+    )
+    total += span(t, "eval", "evaluation", "grade-answer", parent="root", latency=120, offset_s=15)
+    finish(t, 7, total)
+
+    # 3. Running right now, mid-workflow. The Running-now tab's happy path.
+    t = trace(
+        support,
+        "resolve-ticket",
+        feature=triage,
+        minutes_ago=3,
+        status="running",
+        quiet_minutes=0,
+        ended=False,
+        customer="acme-2",
+    )
+    total = span(t, "root", "workflow", "resolve-ticket", running=True, offset_s=42 * 60)
+    total += span(
+        t,
+        "classify",
+        "llm",
+        "classify-intent",
+        parent="root",
+        provider="anthropic",
+        model="claude-haiku-4-5",
+        tin=1100,
+        tout=80,
+        latency=760,
+        offset_s=42 * 60,
+    )
+    total += span(
+        t,
+        "answer",
+        "llm",
+        "generate-answer",
+        parent="root",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        tin=7200,
+        tout=0,
+        running=True,
+        offset_s=43 * 60,
+    )
+    conn.execute("UPDATE ai_trace SET current_span_id = 'answer' WHERE id = %s", (t,))
+    finish(t, 3, total)
+
+    # 4. Gone quiet. Still `running` in the database — stale is derived, and this
+    #    run may yet finish, which is exactly why it is not an error.
+    t = trace(
+        review,
+        "extract-obligations",
+        feature=report,
+        minutes_ago=95,
+        status="running",
+        quiet_minutes=88,
+        ended=False,
+        customer="northwind-1",
+    )
+    total = span(t, "root", "workflow", "extract-obligations", running=True, offset_s=0)
+    total += span(
+        t, "parse", "tool", "parse-pdf", parent="root", latency=4200, offset_s=1, duration_s=4.2
+    )
+    total += span(
+        t,
+        "extract",
+        "llm",
+        "extract-clauses",
+        parent="root",
+        provider="openai",
+        model="gpt-4o",
+        tin=22000,
+        tout=1400,
+        latency=11200,
+        prompt="extract-clauses",
+        version="1.4",
+        offset_s=6,
+        duration_s=11.2,
+    )
+    conn.execute("UPDATE ai_trace SET current_span_id = 'extract' WHERE id = %s", (t,))
+    finish(t, 3, total)
+
+    # 5. A failure that still cost money — the case the "failed runs incur cost"
+    #    alert exists for.
+    t = trace(
+        review,
+        "review-contract",
+        feature=report,
+        minutes_ago=72,
+        status="error",
+        duration_s=9.8,
+        customer="northwind-2",
+    )
+    total = span(t, "root", "workflow", "review-contract", status="error", duration_s=9.8)
+    total += span(
+        t,
+        "extract",
+        "llm",
+        "extract-clauses",
+        parent="root",
+        provider="openai",
+        model="gpt-4o",
+        tin=18500,
+        tout=40,
+        latency=8800,
+        status="error",
+        prompt="extract-clauses",
+        version="1.4",
+        offset_s=1,
+    )
+    finish(t, 2, total)
+
+    # 6. Cancelled: finalized, and no cost invented for it.
+    t = trace(
+        review,
+        "review-contract",
+        feature=report,
+        minutes_ago=110,
+        status="cancelled",
+        duration_s=3.2,
+        environment="staging",
+        release="2026.9.0-rc2",
+    )
+    total = span(t, "root", "workflow", "review-contract", status="cancelled", duration_s=3.2)
+    total += span(t, "parse", "tool", "parse-pdf", parent="root", status="cancelled", offset_s=1)
+    finish(t, 2, total)
+
+    # 7. The expensive outlier — one run that costs more than a hundred others.
+    t = trace(
+        review,
+        "review-contract",
+        feature=report,
+        minutes_ago=180,
+        duration_s=142.0,
+        customer="northwind-3",
+    )
+    total = span(t, "root", "workflow", "review-contract", duration_s=142.0)
+    for i in range(6):
+        total += span(
+            t,
+            f"chunk-{i}",
+            "llm",
+            f"review-section-{i + 1}",
+            parent="root",
+            provider="anthropic",
+            model="claude-opus-4-8",
+            tin=46000,
+            tout=3100,
+            reasoning=2400,
+            latency=21000,
+            prompt="review-section",
+            version="2.0",
+            offset_s=i * 22,
+            duration_s=21.0,
+        )
+    finish(t, 7, total)
+
+    # 8. A retry loop: the same step, over and over, each attempt paid for.
+    t = trace(
+        support,
+        "resolve-ticket",
+        feature=triage,
+        minutes_ago=210,
+        status="error",
+        duration_s=61.0,
+        customer="acme-0",
+    )
+    total = span(t, "root", "workflow", "resolve-ticket", status="error", duration_s=61.0)
+    for attempt in range(5):
+        total += span(
+            t,
+            f"answer-retry-{attempt}",
+            "llm",
+            "generate-answer",
+            parent="root",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            tin=8800,
+            tout=60,
+            latency=9200,
+            status="error" if attempt < 4 else "error",
+            prompt="answer-ticket",
+            version="4.9",
+            offset_s=attempt * 12,
+            duration_s=9.2,
+        )
+    finish(t, 6, total)
+
+    # 9. Incomplete: the trace ended, one step's completion never arrived, and a
+    #    child references a parent that was never sent. Both must render.
+    t = trace(support, "resolve-ticket", feature=triage, minutes_ago=260, duration_s=12.0)
+    total = span(t, "root", "workflow", "resolve-ticket", duration_s=12.0)
+    total += span(
+        t,
+        "answer",
+        "llm",
+        "generate-answer",
+        parent="root",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        tin=6200,
+        tout=540,
+        latency=5100,
+        offset_s=1,
+    )
+    total += span(t, "stuck-step", "tool", "post-to-crm", parent="root", running=True, offset_s=8)
+    total += span(t, "orphan", "tool", "notify-owner", parent="never-delivered", offset_s=10)
+    finish(t, 4, total)
+
+    # A month of ordinary single-call traffic behind the hand-built cases above.
+    # The shapes are what the page must handle; this is what makes its numbers
+    # read like a product rather than a fixture — cost per run, error rate and
+    # every sort need a population to be about.
+    ordinary = [
+        (support, "classify-ticket", triage, "anthropic", "claude-haiku-4-5", 1300, 120),
+        (support, "answer-question", triage, "anthropic", "claude-sonnet-4-6", 7400, 780),
+        (review, "extract-obligations", report, "openai", "gpt-4o", 12800, 900),
+    ]
+    for run in range(320):
+        application, operation, feature, provider, model, base_in, base_out = ordinary[run % 3]
+        drift = 1 + ((run * 37) % 45) / 100  # deterministic, not random
+        minutes = 12 + run * 6
+        # A realistic minority fail, so the error rate is a real number.
+        failed = run % 23 == 0
+        t = trace(
+            application,
+            operation,
+            feature=feature,
+            minutes_ago=minutes,
+            status="error" if failed else "success",
+            duration_s=round(1.4 * drift, 2),
+            customer=f"acme-{run % 7}",
+            release="2026.9.1" if run % 9 else "2026.9.0",
+        )
+        cost = span(
+            t,
+            "s1",
+            "llm",
+            operation,
+            provider=provider,
+            model=model,
+            tin=int(base_in * drift),
+            tout=0 if failed else int(base_out * drift),
+            cache_read=int(base_in * 0.55) if run % 4 else None,
+            latency=int(1400 * drift),
+            status="error" if failed else "success",
+            prompt=operation,
+            version="3.2" if run % 5 else "3.1",
+            offset_s=run % 600,
+        )
+        finish(t, 1, cost)
+
+    # 10. A different environment and an older release, so the filters have
+    #     something to separate.
+    for i, minutes in enumerate((300, 330)):
+        t = trace(
+            support,
+            "classify-ticket",
+            feature=triage,
+            minutes_ago=minutes,
+            duration_s=1.9,
+            environment="staging",
+            release="2026.8.4",
+        )
+        cost = span(
+            t,
+            "s1",
+            "llm",
+            "classify",
+            provider="google",
+            model="gemini-2.5-flash",
+            tin=1100,
+            tout=140,
+            latency=1400,
+            prompt="classify-ticket",
+            version="3.1",
+            offset_s=i * 30,
+        )
+        finish(t, 1, cost)

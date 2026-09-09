@@ -15,6 +15,9 @@ import { CostSourcesPage } from "./pages/CostSourcesPage";
 import { ReconciliationPage } from "./pages/ReconciliationPage";
 import { Dashboard } from "./pages/Dashboard";
 import { FeatureDetail } from "./pages/FeatureDetail";
+import { TracesPage } from "./pages/TracesPage";
+import { TraceDetail } from "./pages/TraceDetail";
+import { ApplicationsPage, ApplicationDetail } from "./pages/ApplicationsPage";
 import { FeaturesPage } from "./pages/FeaturesPage";
 import { InstallSdkPage } from "./pages/InstallSdkPage";
 import { Login } from "./pages/Login";
@@ -85,6 +88,10 @@ export function App() {
         <Route path="/reconciliation" element={<ReconciliationPage />} />
         <Route path="/reconciliation/:view" element={<ReconciliationPage />} />
         <Route path="/reconciliation/runs/:runId" element={<ReconciliationPage />} />
+        <Route path="/applications" element={<ApplicationsPage />} />
+        <Route path="/applications/:id" element={<ApplicationDetail />} />
+        <Route path="/traces" element={<TracesPage />} />
+        <Route path="/traces/:id" element={<TraceDetail />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="/features/:id" element={<FeatureDetail />} />
         <Route path="/install-sdk" element={<InstallSdkPage />} />

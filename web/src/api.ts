@@ -245,6 +245,90 @@ export interface InfraSummary {
   services: { service: string; amount: number; attributed: number }[];
 }
 
+/** One step inside an agent run. Never carries prompt or response content —
+ *  there is no column for it, by design. */
+export interface AiSpan {
+  external_span_id: string;
+  parent_span_id: string | null;
+  /** True when the parent event never arrived; the UI renders it as a root. */
+  parent_missing: boolean;
+  span_kind: "workflow" | "llm" | "embedding" | "retrieval" | "tool" | "guardrail" | "evaluation";
+  operation_name: string;
+  provider: string | null;
+  model: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  reasoning_tokens: number | null;
+  amount: number;
+  latency_ms: number | null;
+  status: "running" | "success" | "error" | "cancelled";
+  prompt_id: string | null;
+  prompt_version: string | null;
+  started_at: string;
+  ended_at: string | null;
+}
+
+export interface AiTrace {
+  id: string;
+  /** The id the customer's own SDK generated. */
+  trace_id: string;
+  operation_name: string;
+  /** What is stored. `stale` is never one of these. */
+  status: "running" | "success" | "error" | "cancelled";
+  /** What to show: `running` plus a derived `stale`, computed per request
+   *  against the tenant's threshold. A stale run has not failed and may finish. */
+  live_status: "running" | "stale" | "success" | "error" | "cancelled";
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
+  last_activity_at: string;
+  last_heartbeat_at: string | null;
+  current_span_id: string | null;
+  total_cost: number;
+  total_tokens: number;
+  span_count: number;
+  llm_calls: number;
+  environment: string;
+  release_version: string | null;
+  customer_ref: string | null;
+  application: { id: string; name: string; slug: string };
+  feature: { id: string; name: string } | null;
+  spans?: AiSpan[];
+}
+
+export interface AiTracePage {
+  traces: AiTrace[];
+  total: number;
+  limit: number;
+  offset: number;
+  stale_after_minutes: number;
+}
+
+export interface AiApplication {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  owner: string | null;
+  runs: number;
+  spend: number;
+  tokens: number;
+  features: number;
+  active: number;
+  stale: number;
+  /** null when the window had no runs — "free" and "nothing happened" differ. */
+  cost_per_run: number | null;
+  error_rate: number | null;
+  prior_spend: number;
+  prior_runs: number;
+  spend_change: number | null;
+  by_feature?: { feature: string; spend: number; runs: number }[];
+  by_model?: { provider: string; model: string; spend: number; calls: number }[];
+  releases?: { release: string; runs: number; spend: number }[];
+}
+
 export interface ConnectorStatus {
   type: string;
   name: string;
@@ -1497,6 +1581,42 @@ export const api = {
       `/infrastructure/summary?provider=${encodeURIComponent(provider)}` +
         (period ? `&period=${encodeURIComponent(period)}` : ""),
     ),
+
+  // ---- Request-level AI economics ----
+  aiApplications: (params: { days?: number } = {}) =>
+    request<{ applications: AiApplication[]; from: string; to: string }>(
+      `/ai/applications${params.days ? `?days=${params.days}` : ""}`,
+    ),
+
+  aiApplication: (id: string, days?: number) =>
+    request<AiApplication>(`/ai/applications/${id}${days ? `?days=${days}` : ""}`),
+
+  createAiApplication: (name: string, slug?: string) =>
+    request<{ id: string; name: string; slug: string }>("/ai/applications", {
+      method: "POST",
+      body: JSON.stringify({ name, slug }),
+    }),
+
+  renameAiApplication: (id: string, changes: { name?: string; owner?: string }) =>
+    request<AiApplication>(`/ai/applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    }),
+
+  /** A page of traces. Every filter is optional; the server bounds the page. */
+  aiTraces: (
+    query: Record<string, string | number | boolean | undefined> = {},
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== "" && value !== false) params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return request<AiTracePage>(`/ai/traces${qs ? `?${qs}` : ""}`, signal ? { signal } : {});
+  },
+
+  aiTrace: (id: string) => request<AiTrace>(`/ai/traces/${encodeURIComponent(id)}`),
 
   // ---- Metering hook (M7, optional precision tier) ----
   createHookToken: () => request<{ token: string }>("/hook/token", { method: "POST" }),
