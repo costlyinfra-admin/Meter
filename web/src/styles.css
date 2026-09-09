@@ -1880,6 +1880,19 @@ a.pr-ref:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* A plain window picker, for the pages whose data is a rolling number of days
+   rather than a review period. It sits in the same .period-controls row as the
+   PeriodSelector so the two read as the same control in different places. */
+select.period-select {
+  max-width: 12rem;
+}
+
+/* An application's slug shown inline: a literal, so it keeps its own case and
+   reads as something to copy rather than as a label. */
+code.slug-tag {
+  font-size: 0.8rem;
+}
+
 /* The review-period control: a button carrying the period in view, and the
    panel it opens. */
 .period-selector {
@@ -2326,6 +2339,9 @@ a.exec-value:hover {
   font-feature-settings: "tnum";
 }
 
+/* A table row that opens a detail page. Named for the first table that had
+   one; Applications uses it too, so the behaviour stays identical between the
+   two places a reader drills in from. */
 .feature-row {
   cursor: pointer;
   transition: background 0.12s ease;
