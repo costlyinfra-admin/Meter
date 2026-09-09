@@ -73,6 +73,7 @@ const REGISTRY = [
   provider({ type: "mongodb_atlas", name: "MongoDB Atlas", short: "Atlas" }),
   provider({ type: "cloudflare", name: "Cloudflare", short: "Cloudflare" }),
   provider({ type: "snowflake", name: "Snowflake", short: "Snowflake" }),
+  provider({ type: "vercel_cloud", name: "Vercel", short: "Vercel" }),
 ];
 
 describe("InfrastructureSources", () => {
@@ -93,6 +94,7 @@ describe("InfrastructureSources", () => {
       "MongoDB Atlas",
       "Cloudflare",
       "Snowflake",
+      "Vercel",
     ]) {
       expect(await screen.findByText(name)).toBeInTheDocument();
     }
@@ -302,6 +304,7 @@ describe("InfrastructureSources", () => {
     ["MongoDB Atlas", /Organization Billing Viewer/],
     ["Cloudflare", /Billing → Read/],
     ["Snowflake", /ORGADMIN/],
+    ["Vercel", /Pro and Enterprise teams/],
   ])("shows %s's setup steps and the least privilege it needs", async (name, permission) => {
     render(<InfrastructureSources />);
     await connect(name);
@@ -342,5 +345,27 @@ describe("InfrastructureSources", () => {
 
     expect(await screen.findByText("Inference")).toBeInTheDocument();
     expect(screen.queryByText(/recorded but not counted here/)).not.toBeInTheDocument();
+  });
+
+  it("tells Vercel users their build minutes are counted as build cost", async () => {
+    // Vercel is the one bill here containing both sides of the model, and that
+    // is surprising enough to say before someone connects it.
+    render(<InfrastructureSources />);
+    await connect("Vercel");
+    expect(screen.getByText(/build execution by the minute/)).toBeInTheDocument();
+    expect(screen.getByText(/stays with that connector on the Inference tab/)).toBeInTheDocument();
+  });
+
+  it("names Vercel's AI Gateway as the excluded service on a Vercel card", async () => {
+    vi.mocked(api.infraProviders).mockResolvedValue([
+      provider({ ...CONNECTED, type: "vercel_cloud", name: "Vercel" }),
+    ]);
+    vi.mocked(api.infraSummary).mockResolvedValue(summary({ excluded: 980 }));
+    render(<InfrastructureSources />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure/ }));
+    const note = await screen.findByText(/recorded but not counted here/);
+    expect(note).toHaveTextContent("Vercel AI Gateway");
+    expect(note).toHaveTextContent("$980");
   });
 });

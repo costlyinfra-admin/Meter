@@ -335,6 +335,33 @@ SNOWFLAKE_RULES: tuple[Rule, ...] = (
     ),
 )
 
+#: Vercel. FOCUS gives us ServiceName, so the rules read that. Two exceptions to
+#: the infrastructure default, and they pull in opposite directions: build
+#: minutes are build cost, and the AI Gateway is inference that the existing
+#: "Vercel AI Gateway" connector already ingests.
+VERCEL_RULES: tuple[Rule, ...] = (
+    Rule(
+        name="vercel-ai-gateway-inference",
+        category="inference",
+        services=("AI Gateway", "AI SDK", "Vercel AI"),
+        dedupe_owner="vercel",
+        why=(
+            "Model spend routed through Vercel's AI Gateway. The existing Vercel "
+            "AI Gateway connector on the Inference tab is its authoritative "
+            "ingestion path, so these rows are recorded but not counted here."
+        ),
+    ),
+    Rule(
+        name="vercel-build-minutes",
+        category="build",
+        services=("Build", "Build Execution", "Build Minutes", "Remote Cache"),
+        why=(
+            "Vercel bills build execution by the minute. That is literally what a "
+            "feature cost to build, on the run-cost side of the same invoice."
+        ),
+    ),
+)
+
 #: Which rule table applies to which infrastructure provider. A provider with no
 #: entry gets no rules — every item defaults to `infrastructure`, which is still
 #: a correct answer rather than a dropped row.
@@ -346,6 +373,7 @@ RULES_BY_PROVIDER: dict[str, tuple[Rule, ...]] = {
     "mongodb_atlas": ATLAS_RULES,
     "cloudflare": CLOUDFLARE_RULES,
     "snowflake": SNOWFLAKE_RULES,
+    "vercel_cloud": VERCEL_RULES,
 }
 
 #: Back-compat alias: the AWS table was `RULES` when AWS was the only provider.

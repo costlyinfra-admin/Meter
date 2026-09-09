@@ -607,6 +607,207 @@ def _parse_snowflake(payload: dict, tag_key: str) -> list[CloudCostItem]:
 
 
 # ---------------------------------------------------------------------------
+# Vercel — billing charges (FOCUS 1.3)
+# ---------------------------------------------------------------------------
+# Vercel's /v1/billing/charges returns charges in FOCUS — the FinOps Open Cost
+# and Usage Specification — at daily granularity for up to a year. That is a far
+# better contract than a vendor-shaped JSON blob: FOCUS names its columns, so
+# BilledCost means billed cost on every provider that emits it, and a Tags map
+# arrives with the row. Vercel is the first source here with real cost-allocation
+# tags rather than a project name standing in for them.
+#
+# Two things the setup guide has to say. The endpoint is Pro and Enterprise only,
+# so a Hobby token gets a permission error rather than an empty bill. And this is
+# the ACCOUNT's infrastructure spend — the separate "Vercel AI Gateway" connector
+# on the Inference tab reads model spend and keeps its own id.
+#
+# The window is also enforced on our side after parsing. The query asks for a
+# date range, but a charge outside it is dropped whatever the API returns, so a
+# parameter-name change upstream can never silently widen what we record.
+_VERCEL_API = "https://api.vercel.com"
+_VERCEL_CHARGES = "/v1/billing/charges"
+
+#: FOCUS cost columns, in the order we prefer them. BilledCost is what the
+#: invoice says; EffectiveCost is amortised and is a different question.
+_FOCUS_COST_COLUMNS = ("billedcost", "effectivecost", "listcost", "contractedcost")
+#: FOCUS names dimensions in PascalCase; matching is case-insensitive because
+#: implementations differ on casing and none of them differ on meaning.
+_FOCUS_FIELDS = {
+    "servicename": "service",
+    "skuid": "usage_type",
+    "chargedescription": "operation",
+    "subaccountname": "account_id",
+    "regionid": "region",
+}
+
+
+class VercelCloudCostClient(_BaseCostClient):
+    """Read-only billing reader for Vercel, over the FOCUS charges endpoint.
+
+    JSON cred: ``{"token":…, "team_id"?:…, "tag"?:…, "metric"?:…}``. The token
+    needs read access to the team's billing; the endpoint is available to Pro
+    and Enterprise teams.
+    """
+
+    base_url = _VERCEL_API
+
+    def __init__(self, admin_key: str, **kwargs):
+        super().__init__(admin_key, **kwargs)
+        c = _json_cred(admin_key, '{"token":…, "team_id":…, "tag":"feature"}')
+        self._token = c.get("token") or c.get("api_token") or c.get("access_token")
+        if not self._token:
+            raise ProviderError("Vercel credentials need an access token with billing read access.")
+        self._team = c.get("team_id") or c.get("teamId")
+        self.tag = (c.get("tag") or "feature").strip() or "feature"
+        metric = (c.get("metric") or "BilledCost").strip()
+        if metric.lower() not in _FOCUS_COST_COLUMNS:
+            raise ProviderError(
+                "metric must be one of BilledCost, EffectiveCost, ListCost, ContractedCost."
+            )
+        self.metric = metric
+        self.granularity = "DAILY"
+
+    def fetch_items(self, start: dt.date, end: dt.date) -> list[CloudCostItem]:
+        """Every charge in ``[start, end)``. No service filter."""
+        params = {"start": start.isoformat(), "end": end.isoformat()}
+        if self._team:
+            params["teamId"] = self._team
+        items: list[CloudCostItem] = []
+        seen_cursors: set = set()
+        for _ in range(100):  # hard stop, far beyond a year of daily charges
+            data = self._get(params)
+            rows = _focus_rows(data)
+            items.extend(_parse_focus(rows, start, end, self.metric, self.tag))
+            cursor = _vercel_cursor(data)
+            # A cursor that repeats means the API is not advancing; stop rather
+            # than loop until the hard cap.
+            if not cursor or cursor in seen_cursors:
+                break
+            seen_cursors.add(cursor)
+            params = {**params, "until": cursor}
+        return items
+
+    def _get(self, params: dict) -> dict:
+        resp = self._client.get(
+            f"{self._base}{_VERCEL_CHARGES}",
+            params=params,
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        if resp.status_code in (401, 403):
+            raise ProviderError(
+                "Vercel rejected the token. It needs billing read access, and the "
+                "billing charges endpoint is available to Pro and Enterprise teams.",
+                401,
+            )
+        if resp.status_code == 404:
+            raise ProviderError(
+                "Vercel has no billing charges for that team. Check the team id — a "
+                "personal account has none.",
+                404,
+            )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"Vercel error {resp.status_code}: {_short_text(resp)}", resp.status_code
+            )
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise ProviderError(
+                "Vercel returned an unexpected response instead of billing charges.", 502
+            ) from exc
+
+
+def _focus_rows(data) -> list:
+    """The charge rows out of whatever envelope they arrived in.
+
+    A bare list is a list. Otherwise the rows are under one of the documented
+    keys — anything else is treated as no rows rather than guessed at, so a
+    changed envelope shows up as an empty sync rather than as invented data.
+    """
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in ("charges", "data", "result", "results", "items", "billing"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _vercel_cursor(data) -> Optional[str]:
+    if not isinstance(data, dict):
+        return None
+    pagination = data.get("pagination")
+    if isinstance(pagination, dict):
+        nxt = pagination.get("next")
+        return str(nxt) if nxt else None
+    nxt = data.get("next") or data.get("cursor")
+    return str(nxt) if nxt else None
+
+
+def _focus_get(row: dict, *names: str):
+    """A FOCUS column by name, case-insensitively."""
+    lowered = {str(k).lower(): v for k, v in row.items()}
+    for name in names:
+        if name.lower() in lowered:
+            return lowered[name.lower()]
+    return None
+
+
+def _parse_focus(
+    rows: list, start: dt.date, end: dt.date, metric: str, tag_key: str
+) -> list[CloudCostItem]:
+    """FOCUS charge rows to line items, filtered to ``[start, end)``.
+
+    The window is applied here as well as in the query. A charge outside it is
+    not ours to record whatever the endpoint chose to return.
+    """
+    out: list[CloudCostItem] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # Fall back through the cost columns: a provider that omits the
+        # requested one still has a real number to report.
+        amount = None
+        for column in (metric, *_FOCUS_COST_COLUMNS):
+            amount = _to_decimal(_focus_get(row, column))
+            if amount is not None:
+                break
+        # Zero carries nothing; a NEGATIVE is a credit and is real money.
+        if amount is None or amount == 0:
+            continue
+        day = _iso_day(_focus_get(row, "ChargePeriodStart", "BillingPeriodStart"))
+        if day is None or not (start <= day < end):
+            continue
+        tags = _focus_get(row, "Tags")
+        tag_value = None
+        if isinstance(tags, dict):
+            lowered = {str(k).lower(): v for k, v in tags.items()}
+            raw = lowered.get(tag_key.lower())
+            tag_value = str(raw) if raw not in (None, "") else None
+        item = CloudCostItem(
+            period=day,
+            amount=amount,
+            currency=str(_focus_get(row, "BillingCurrency") or "USD").upper(),
+            tag_key=tag_key,
+            tag_value=tag_value,
+            dimensions={f"TAG:{tag_key}": tag_value},
+        )
+        for column, attr in _FOCUS_FIELDS.items():
+            value = _focus_get(row, column)
+            clean = str(value) if value not in (None, "") else None
+            item.dimensions[column] = clean
+            if getattr(item, attr, None) in (None, ""):
+                setattr(item, attr, clean if attr != "service" else (clean or ""))
+        # ChargeCategory separates usage from tax, credits and purchases; it is
+        # kept so those can be told apart later without re-fetching.
+        item.dimensions["chargecategory"] = _focus_get(row, "ChargeCategory")
+        out.append(item)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 #: A Snowflake account identifier: ORGNAME-ACCOUNTNAME, or a legacy locator.

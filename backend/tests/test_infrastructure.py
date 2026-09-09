@@ -616,7 +616,7 @@ def test_the_nightly_run_covers_every_cloud_a_tenant_connected(tenant_id, monkey
 # ---------------------------------------------------------------------------
 # Managed platforms: DigitalOcean, MongoDB Atlas, Cloudflare, Snowflake.
 # ---------------------------------------------------------------------------
-PLATFORMS = ["digitalocean", "mongodb_atlas", "cloudflare", "snowflake"]
+PLATFORMS = ["digitalocean", "mongodb_atlas", "cloudflare", "snowflake", "vercel_cloud"]
 
 
 def test_a_platform_bill_imports_as_infrastructure(tenant_id):
@@ -702,6 +702,7 @@ def test_the_registry_lists_every_connected_cloud_and_platform(tenant_id):
         "mongodb_atlas",
         "cloudflare",
         "snowflake",
+        "vercel_cloud",
     ]
     assert set(infrastructure.LIVE_PROVIDERS) == set(types)
     assert all(p["status"] == "available" for p in infrastructure.PROVIDERS)
@@ -737,3 +738,27 @@ def test_no_platform_config_panel_can_show_a_secret(tenant_id):
     status = repr(infrastructure.provider_status(tenant_id))
     for _, (_, secret) in secrets.items():
         assert secret not in status, secret
+
+
+def test_vercel_splits_one_invoice_across_build_run_and_inference(tenant_id):
+    # The AI Gateway line is recorded but not counted: the Vercel AI Gateway
+    # connector on the Inference tab is already counting those dollars.
+    summary = store_for(
+        tenant_id,
+        "vercel_cloud",
+        [
+            item("Edge Functions", "142.50"),
+            item("Blob", "18.00"),
+            item("Build Execution", "64.00"),
+            item("AI Gateway", "980.00"),
+        ],
+        metric="BilledCost",
+    )
+
+    assert summary["infrastructure"] == 160.5
+    assert summary["excluded"] == 980.0
+    assert summary["by_category"]["build"] == 64.0
+
+    by_service = {r[0]: r for r in rows_for(tenant_id, "vercel_cloud")}
+    assert by_service["AI Gateway"][2:5] == ("inference", False, "vercel")
+    assert infrastructure.summary(tenant_id, "vercel_cloud", MONTH)["excluded"] == 980.0

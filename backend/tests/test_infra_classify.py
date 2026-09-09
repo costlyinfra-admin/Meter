@@ -201,9 +201,10 @@ ALL_PROVIDERS = [
     "mongodb_atlas",
     "cloudflare",
     "snowflake",
+    "vercel_cloud",
 ]
-#: The three whose model service another connector already ingests.
-DEDUPED_PROVIDERS = ["aws", "azure_cloud", "gcp"]
+#: Those whose model service another connector already ingests.
+DEDUPED_PROVIDERS = ["aws", "azure_cloud", "gcp", "vercel_cloud"]
 
 
 @pytest.mark.parametrize("provider", ALL_PROVIDERS)
@@ -280,3 +281,16 @@ def test_platform_tables_do_not_bleed_into_one_another():
     assert classify(cortex, "snowflake").category == "inference"
     for other in ("aws", "cloudflare", "digitalocean", "mongodb_atlas"):
         assert classify(cortex, other).category == "infrastructure", other
+
+
+def test_vercel_bills_both_sides_of_the_model():
+    # Vercel is the one platform here whose invoice contains build cost, run
+    # cost and inference at once.
+    assert classify(LineItem(service="Build Execution"), "vercel_cloud").category == "build"
+    assert classify(LineItem(service="Edge Functions"), "vercel_cloud").category == (
+        "infrastructure"
+    )
+    gateway = classify(LineItem(service="AI Gateway"), "vercel_cloud")
+    assert gateway.category == "inference"
+    # The existing Vercel AI Gateway connector owns those dollars.
+    assert gateway.dedupe_owner == "vercel"

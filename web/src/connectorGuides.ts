@@ -125,6 +125,23 @@ export const CONNECTOR_GUIDES: Record<string, ConnectorGuide> = {
     multiline: true,
     docUrl: "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-api.html",
   },
+  vercel_cloud: {
+    blurb:
+      "Read-only. We read Vercel's billing charges in FOCUS — the open cost standard — " +
+      "so every charge arrives with its service, its tags and a billed amount.",
+    steps: [
+      "In Vercel, open Account Settings → Tokens and create a token scoped to the team whose bill you want to read.",
+      "Copy the team ID from Team Settings → General, and paste both below as JSON.",
+      "The billing charges endpoint is available to Pro and Enterprise teams. On a Hobby account the token is valid but the endpoint refuses it, so you will see a permission error rather than an empty bill.",
+      "Vercel reports FOCUS tags, so spend attributes to features by a real cost-allocation tag — set `tag` to the one you use (default: feature). Untagged charges land in Unattributed rather than being guessed at.",
+      "Charges are daily and available for up to a year, so a first sync backfills real history — unlike a subscription-based source.",
+      "Vercel bills build execution by the minute. Those charges are counted as build cost, not infrastructure — it is the one bill here that contains both sides of the model.",
+      "If you also use the Vercel AI Gateway, its spend stays with that connector on the Inference tab. Gateway charges seen here are recorded but never added to infrastructure totals, so nothing is counted twice.",
+    ],
+    placeholder: '{"token":"…","team_id":"team_…","tag":"feature"}',
+    multiline: true,
+    docUrl: "https://vercel.com/docs/rest-api/reference/endpoints/billing",
+  },
   digitalocean: {
     blurb:
       "Read-only. We read your DigitalOcean invoices — the real line items, product by product.",

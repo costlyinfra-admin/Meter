@@ -31,6 +31,7 @@ const DEDUPED_SERVICE: Record<string, string> = {
   aws: "Amazon Bedrock",
   azure_cloud: "Azure OpenAI",
   gcp: "Vertex AI",
+  vercel_cloud: "Vercel AI Gateway",
 };
 
 /** Where that service's dollars are counted instead. */
@@ -38,6 +39,7 @@ const DEDUPE_OWNER_TAB: Record<string, string> = {
   aws: "the Amazon Bedrock connector on the Inference tab",
   azure_cloud: "the Azure OpenAI connector on the Inference tab",
   gcp: "the Google connector on the Inference tab",
+  vercel_cloud: "the Vercel AI Gateway connector on the Inference tab",
 };
 
 /** How a category reads in the panel. Matches backend/meter/infra_classify.py. */

@@ -47,6 +47,7 @@ from .infra_providers import (
     DigitalOceanCostClient,
     MongoAtlasCostClient,
     SnowflakeCostClient,
+    VercelCloudCostClient,
 )
 from .providers import (
     AwsCostExplorerClient,
@@ -123,6 +124,15 @@ PROVIDERS: tuple[dict, ...] = (
         "status": "available",
         "note": "Reads ORGANIZATION_USAGE spend in currency — read-only SQL.",
     },
+    # "vercel_cloud", not "vercel": the latter is the Vercel AI Gateway connector
+    # on the Inference tab, a different scope of the same invoice.
+    {
+        "type": "vercel_cloud",
+        "name": "Vercel",
+        "short": "Vercel",
+        "status": "available",
+        "note": "Reads Vercel billing charges (FOCUS) — daily, read-only.",
+    },
 )
 _BY_TYPE = {p["type"]: p for p in PROVIDERS}
 
@@ -136,6 +146,7 @@ LIVE_PROVIDERS = (
     "mongodb_atlas",
     "cloudflare",
     "snowflake",
+    "vercel_cloud",
 )
 
 #: How far back a manual "Sync now" reaches. Cloud bills are restated for days
@@ -173,6 +184,8 @@ def make_client(provider_type: str, secret: str):
         return CloudflareCostClient(secret)
     if provider_type == "snowflake":
         return SnowflakeCostClient(secret)
+    if provider_type == "vercel_cloud":
+        return VercelCloudCostClient(secret)
     if provider_type in _BY_TYPE:
         raise InfraError(f"{_BY_TYPE[provider_type]['name']} ingestion is not available yet.")
     raise InfraError(f"Unknown infrastructure provider: {provider_type}")
@@ -228,6 +241,14 @@ _CONFIG_DEFAULTS = {
         "granularity": "DAILY",
         "group_by": ["service_type", "account"],
         "scope_key": "account",
+        "scope_default": "",
+    },
+    "vercel_cloud": {
+        # FOCUS names the cost column, so the metric is a real choice here.
+        "metric": "BilledCost",
+        "granularity": "DAILY",
+        "group_by": ["ServiceName", "TAG"],
+        "scope_key": "team_id",
         "scope_default": "",
     },
     "gcp": {

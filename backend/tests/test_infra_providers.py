@@ -496,3 +496,196 @@ def test_snowflake_treats_a_non_json_success_as_an_error_not_an_empty_bill():
 
     with pytest.raises(ProviderError, match="unexpected response"):
         _sf(handler).fetch_items(*WINDOW)
+
+
+# ---------------------------------------------------------------------------
+# Vercel — billing charges in FOCUS 1.3
+# ---------------------------------------------------------------------------
+_V_TOKEN = "vercel_tok_Xq7aB9cDz2EfGh4IjKlMnOpQrStUv"
+_V_CRED = {"token": _V_TOKEN, "team_id": "team_abc", "tag": "feature"}
+
+
+def _v(handler, **over):
+    from meter.infra_providers import VercelCloudCostClient
+
+    return _client(VercelCloudCostClient, {**_V_CRED, **over}, handler)
+
+
+def _charge(**over):
+    row = {
+        "ChargePeriodStart": "2026-05-04T00:00:00Z",
+        "BilledCost": "142.50",
+        "BillingCurrency": "USD",
+        "ServiceName": "Edge Functions",
+        "ChargeCategory": "Usage",
+        "Tags": {"feature": "triage"},
+    }
+    row.update(over)
+    return row
+
+
+def test_vercel_reads_focus_charges_with_real_tags():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        assert request.headers["Authorization"] == f"Bearer {_V_TOKEN}"
+        return httpx.Response(
+            200,
+            json={
+                "charges": [
+                    _charge(SkuId="edge-invocations", SubAccountName="acme-web", RegionId="iad1"),
+                    _charge(ServiceName="Brand New Vercel Thing", BilledCost="88.00", Tags={}),
+                ]
+            },
+        )
+
+    items = _v(handler).fetch_items(*WINDOW)
+
+    assert "teamId=team_abc" in seen["url"]
+    assert [(i.service, i.amount, i.tag_value) for i in items] == [
+        # FOCUS carries a Tags map, so this is a real cost-allocation tag —
+        # not a project name standing in for one.
+        ("Edge Functions", Decimal("142.50"), "triage"),
+        ("Brand New Vercel Thing", Decimal("88.00"), None),
+    ]
+    assert (items[0].usage_type, items[0].account_id, items[0].region) == (
+        "edge-invocations",
+        "acme-web",
+        "iad1",
+    )
+
+
+def test_vercel_keeps_credits_because_they_are_real_money():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "charges": [
+                    _charge(),
+                    _charge(ServiceName="Credit", BilledCost="-25.00", ChargeCategory="Credit"),
+                    _charge(ServiceName="Free tier", BilledCost="0"),
+                ]
+            },
+        )
+
+    items = _v(handler).fetch_items(*WINDOW)
+    # A credit reduces the bill. Dropping it would overstate spend.
+    assert [i.amount for i in items] == [Decimal("142.50"), Decimal("-25.00")]
+    assert items[1].dimensions["chargecategory"] == "Credit"
+
+
+def test_vercel_enforces_the_window_on_our_side():
+    # The query asks for a range, but the window is applied again after parsing:
+    # a parameter-name change upstream must never silently widen what we record.
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "charges": [
+                    _charge(),
+                    _charge(ChargePeriodStart="2020-01-01T00:00:00Z", ServiceName="Ancient"),
+                ]
+            },
+        )
+
+    items = _v(handler).fetch_items(*WINDOW)
+    assert [i.service for i in items] == ["Edge Functions"]
+
+
+def test_vercel_matches_focus_columns_case_insensitively():
+    # FOCUS is PascalCase, but implementations differ on casing and none of them
+    # differ on meaning.
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "chargePeriodStart": "2026-05-04",
+                    "billedCost": "10.00",
+                    "serviceName": "Blob",
+                    "billingCurrency": "usd",
+                    "tags": {"Feature": "reports"},
+                }
+            ],
+        )
+
+    (item,) = _v(handler).fetch_items(*WINDOW)
+    assert (item.service, item.amount, item.currency, item.tag_value) == (
+        "Blob",
+        Decimal("10.00"),
+        "USD",
+        "reports",
+    )
+
+
+def test_vercel_follows_pagination_and_stops_on_a_repeated_cursor():
+    pages = [
+        {"charges": [_charge()], "pagination": {"next": "cur2"}},
+        # A cursor that does not advance would otherwise loop to the hard cap.
+        {
+            "charges": [_charge(ServiceName="Blob", BilledCost="12.00")],
+            "pagination": {"next": "cur2"},
+        },
+    ]
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=pages[min(len(calls) - 1, 1)])
+
+    items = _v(handler).fetch_items(*WINDOW)
+    assert len(calls) == 2
+    assert [i.service for i in items] == ["Edge Functions", "Blob"]
+
+
+def test_vercel_prefers_billed_cost_but_falls_back_rather_than_dropping():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "charges": [
+                    {
+                        "ChargePeriodStart": "2026-05-04",
+                        "EffectiveCost": "7.00",
+                        "ServiceName": "Blob",
+                    }
+                ]
+            },
+        )
+
+    (item,) = _v(handler).fetch_items(*WINDOW)
+    # BilledCost is absent; a real number is still a real number.
+    assert item.amount == Decimal("7.00")
+
+
+def test_vercel_treats_an_unrecognised_envelope_as_empty_not_invented():
+    def handler(_request):
+        return httpx.Response(200, json={"somethingElse": {"nested": [_charge()]}})
+
+    # An envelope we do not recognise yields nothing, which shows up as an empty
+    # sync — never as a number guessed out of an unfamiliar shape.
+    assert _v(handler).fetch_items(*WINDOW) == []
+
+
+def test_vercel_says_the_endpoint_needs_a_pro_or_enterprise_team():
+    def handler(_request):
+        return httpx.Response(403, json={"error": {"code": "forbidden"}})
+
+    with pytest.raises(ProviderError) as exc:
+        _v(handler).fetch_items(*WINDOW)
+    assert "Pro and Enterprise" in str(exc.value)
+    assert exc.value.status == 401
+    assert _V_TOKEN not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [({"token": None}, "access token"), ({"metric": "MadeUpCost"}, "metric must be")],
+)
+def test_vercel_configuration_is_validated_before_any_call(overrides, message):
+    from meter.infra_providers import VercelCloudCostClient
+
+    cred = {k: v for k, v in {**_V_CRED, **overrides}.items() if v is not None}
+    with pytest.raises(ProviderError, match=message):
+        VercelCloudCostClient(json.dumps(cred))

@@ -64,6 +64,8 @@ KNOWN_CONNECTORS = [
     {"type": "mongodb_atlas", "name": "MongoDB Atlas", "category": "infrastructure"},
     {"type": "cloudflare", "name": "Cloudflare", "category": "infrastructure"},
     {"type": "snowflake", "name": "Snowflake", "category": "infrastructure"},
+    # "vercel_cloud", not "vercel": the latter is the AI Gateway connector above.
+    {"type": "vercel_cloud", "name": "Vercel", "category": "infrastructure"},
     {"type": "cursor", "name": "Cursor for Teams", "category": "build_activity"},
     # Identity provider for SSO/SCIM seat rosters (Cursor, Tabnine, Cody, …).
     {"type": "okta", "name": "Okta (SSO seats)", "category": "build_activity"},

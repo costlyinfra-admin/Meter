@@ -82,6 +82,7 @@ def test_providers_lists_every_cloud_as_connectable(client):
         "mongodb_atlas",
         "cloudflare",
         "snowflake",
+        "vercel_cloud",
     ]
     assert all(p["status"] == "available" for p in providers)
     assert all(p["connected"] is False for p in providers)
@@ -203,7 +204,15 @@ def test_a_known_but_unconnected_cloud_says_to_connect_it(client):
 
 @pytest.mark.parametrize(
     "provider",
-    ["azure_cloud", "gcp", "digitalocean", "mongodb_atlas", "cloudflare", "snowflake"],
+    [
+        "azure_cloud",
+        "gcp",
+        "digitalocean",
+        "mongodb_atlas",
+        "cloudflare",
+        "snowflake",
+        "vercel_cloud",
+    ],
 )
 def test_every_cloud_syncs_through_the_same_route(client, monkeypatch, provider):
     r = client.post(f"/api/connectors/{provider}/credential", json={"secret": CREDENTIAL})
@@ -229,6 +238,7 @@ def test_every_cloud_appears_under_the_infrastructure_category(client):
         "mongodb_atlas",
         "cloudflare",
         "snowflake",
+        "vercel_cloud",
     }
     # The Azure OpenAI connector stays where it was, on the inference side.
     azure_openai = next(c for c in connectors if c["type"] == "azure")
