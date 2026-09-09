@@ -18,15 +18,15 @@ describe("ConnectorMark", () => {
     expect(logo()).toHaveAttribute("alt", "");
   });
 
-  // Connectors we knowingly ship without a mark. An entry here is a debt, not a
-  // decision: the row falls back to a monogram until someone drops
-  // `src/logos/<type>.svg` in, which needs no code change.
+  // Connectors we knowingly ship without a mark. Empty, and the assertions below
+  // are what keep it that way: an entry that gains a logo file fails, so the
+  // list shrinks itself rather than becoming a pile of excuses.
   //
-  // We do not draw these ourselves. A hand-approximated logo beside a company's
-  // name reads worse than initials, and google.svg is the cautionary case — it
-  // is Gemini's sparkle, not Google Cloud's mark, so GCP is on this list rather
-  // than wearing the wrong product's logo.
-  const NO_LOGO_YET = new Set(["gcp", "digitalocean", "mongodb_atlas", "cloudflare", "snowflake"]);
+  // We still do not draw these ourselves. A hand-approximated logo beside a
+  // company's name reads worse than initials — google.svg is the cautionary
+  // case, being Gemini's sparkle rather than Google Cloud's mark, which is why
+  // GCP has its own file now instead of borrowing that one.
+  const NO_LOGO_YET = new Set<string>([]);
 
   it("has a logo for every provider with a setup guide", () => {
     // The list is derived from src/logos, so a missing file is a missing logo
@@ -39,21 +39,36 @@ describe("ConnectorMark", () => {
     }
   });
 
-  it("falls back to a readable monogram for a connector still owed its mark", () => {
+  it("keeps the exception list honest: an entry that gains a mark must be removed", () => {
     for (const type of NO_LOGO_YET) {
       const { unmount } = render(<ConnectorMark type={type} name="Placeholder Name" />);
-      expect(logo(), `${type} is on NO_LOGO_YET but has a logo`).toBeNull();
+      expect(logo(), `${type} is on NO_LOGO_YET but now has a logo — drop it`).toBeNull();
       expect(mark()).toHaveTextContent("PN");
       unmount();
+      // And the list must not outlive the connector it excuses.
+      expect(Object.keys(CONNECTOR_GUIDES), `${type} is not a connector`).toContain(type);
     }
   });
 
-  it("keeps the exception list honest by shrinking it when a mark lands", () => {
-    // The assertion above already fails if an entry gains a logo file, which is
-    // what makes this list self-cleaning rather than a growing pile of excuses.
-    // This one keeps it from covering connectors that no longer exist.
-    for (const type of NO_LOGO_YET) {
-      expect(Object.keys(CONNECTOR_GUIDES), `${type} is not a connector`).toContain(type);
+  it("has a mark for every infrastructure provider", () => {
+    // The tab lists eleven sources side by side; one grey monogram among ten
+    // logos reads as a mistake rather than as a provider without artwork.
+    for (const type of [
+      "aws",
+      "azure_cloud",
+      "gcp",
+      "digitalocean",
+      "mongodb_atlas",
+      "cloudflare",
+      "snowflake",
+      "vercel_cloud",
+      "redis_cloud",
+      "supabase",
+      "neon",
+    ]) {
+      const { unmount } = render(<ConnectorMark type={type} name={type} />);
+      expect(logo(), `no logo file for ${type}`).toBeInTheDocument();
+      unmount();
     }
   });
 
