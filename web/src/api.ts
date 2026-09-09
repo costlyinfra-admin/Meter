@@ -179,6 +179,8 @@ export interface InfraProvider {
    *  what forces the UI to grow a way to show that, rather than silently
    *  offering a Connect button that cannot work. */
   status: "available";
+  /** How this provider's numbers arrive: read from its API, or a file you upload. */
+  ingest: "api" | "csv";
   note: string;
   connected: boolean;
   last_sync: InfraSyncRun | null;
@@ -206,6 +208,28 @@ export interface InfraConfig {
   /** What `scope` is called for this provider ("region", "subscription id", …). */
   scope_label: string;
   group_by: string[];
+}
+
+/** What a CSV import found. A preview returns this without writing anything. */
+export interface InfraImportReport {
+  provider: string;
+  dry_run: boolean;
+  rows_read: number;
+  rows_imported: number;
+  rows_skipped: number;
+  /** meaning -> the column header it was taken from. */
+  mapping: Record<string, string>;
+  unmapped_columns: string[];
+  warnings: string[];
+  total: number;
+  currency: string;
+  from: string | null;
+  to: string | null;
+  /** Present only after a real import. */
+  items?: number;
+  infrastructure?: number;
+  attributed?: number;
+  unattributed?: number;
 }
 
 export interface InfraSummary {
@@ -1449,6 +1473,23 @@ export const api = {
     }>("/infrastructure/ingest", {
       method: "POST",
       body: JSON.stringify({ provider, months }),
+    }),
+
+  /** Preview or commit a downloaded bill. `dryRun` writes nothing. */
+  importInfrastructureCsv: (
+    provider: string,
+    csv: string,
+    opts: { dryRun?: boolean; tag?: string; mapping?: Record<string, string> } = {},
+  ) =>
+    request<InfraImportReport>("/infrastructure/import", {
+      method: "POST",
+      body: JSON.stringify({
+        provider,
+        csv,
+        dry_run: opts.dryRun ?? false,
+        tag: opts.tag ?? "feature",
+        mapping: opts.mapping ?? null,
+      }),
     }),
 
   infraSummary: (provider = "aws", period?: string) =>

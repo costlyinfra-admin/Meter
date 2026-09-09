@@ -22,6 +22,7 @@ function provider(over: Partial<InfraProvider> = {}): InfraProvider {
     name: "Amazon Web Services",
     short: "AWS",
     status: "available",
+    ingest: "api",
     note: "Reads AWS Cost Explorer — the whole bill, read-only.",
     connected: false,
     last_sync: null,
@@ -74,6 +75,13 @@ const REGISTRY = [
   provider({ type: "cloudflare", name: "Cloudflare", short: "Cloudflare" }),
   provider({ type: "snowflake", name: "Snowflake", short: "Snowflake" }),
   provider({ type: "vercel_cloud", name: "Vercel", short: "Vercel" }),
+  provider({
+    type: "redis_cloud",
+    name: "Redis Cloud",
+    short: "Redis",
+    ingest: "csv",
+    note: "Import the cost report you download from Redis Cloud.",
+  }),
 ];
 
 describe("InfrastructureSources", () => {
@@ -95,11 +103,16 @@ describe("InfrastructureSources", () => {
       "Cloudflare",
       "Snowflake",
       "Vercel",
+      "Redis Cloud",
     ]) {
       expect(await screen.findByText(name)).toBeInTheDocument();
     }
     // Every one is connectable — nothing is listed but withheld.
-    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(REGISTRY.length);
+    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(
+      REGISTRY.filter((p) => p.ingest === "api").length,
+    );
+    // The import-only provider offers a file, not a credential.
+    expect(screen.getByRole("button", { name: "Import a bill" })).toBeInTheDocument();
     expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
   });
 

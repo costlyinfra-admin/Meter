@@ -20,7 +20,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type InfraProvider, type InfraSummary } from "../api";
 import { money } from "../format";
+import { ConnectorMark } from "./ConnectorMark";
 import { ConnectorRow } from "./ConnectorRow";
+import { CsvBillImport } from "./CsvBillImport";
 
 /** The model service each cloud bills that a dedicated connector already owns.
  *  Naming it matters: "some spend was excluded" is not an explanation, and the
@@ -70,10 +72,60 @@ function statusLine(p: InfraProvider): string {
   // "Reads your DigitalOcean invoices" answers a question "Cloud
   // infrastructure" does not.
   if (!p.connected) return p.note || "Cloud infrastructure";
-  if (!p.last_sync) return "Connected — not synced yet";
-  if (p.last_sync.status === "error")
-    return `Last sync failed — ${syncedAt(p.last_sync.started_at)}`;
-  return `Last synced ${syncedAt(p.last_sync.started_at)}`;
+  // A file import is not a sync, and calling it one would tell someone their
+  // numbers refresh on their own when they do not.
+  const csv = p.ingest === "csv";
+  if (!p.last_sync) return csv ? "Imported" : "Connected — not synced yet";
+  const when = syncedAt(p.last_sync.started_at);
+  if (p.last_sync.status === "error") return `Last ${csv ? "import" : "sync"} failed — ${when}`;
+  return `Last ${csv ? "imported" : "synced"} ${when}`;
+}
+
+/** A provider whose bill arrives as a file. It has no credential to collect, so
+ *  the row's panel is the importer rather than a setup guide and a token box. */
+function CsvProviderRow({
+  provider,
+  expanded,
+  onToggle,
+  onImported,
+  refreshKey,
+}: {
+  provider: InfraProvider;
+  expanded: boolean;
+  onToggle: () => void;
+  onImported: () => void;
+  refreshKey: number;
+}) {
+  return (
+    <li className="connector-row">
+      <div className="connector-head">
+        <button
+          type="button"
+          className="connector-info connector-info-toggle"
+          onClick={onToggle}
+          aria-expanded={expanded}
+        >
+          <ConnectorMark type={provider.type} name={provider.name} />
+          <span className="connector-text">
+            <span className="connector-name">{provider.name}</span>
+            <span className="connector-category">{statusLine(provider)}</span>
+          </span>
+        </button>
+        <span className="connector-actions">
+          {provider.connected && <span className="badge connected">Imported</span>}
+          <button className="secondary" onClick={onToggle} aria-expanded={expanded}>
+            {expanded ? "Close ▴" : provider.connected ? "Import again" : "Import a bill"}
+          </button>
+        </span>
+      </div>
+      {expanded && (
+        <div className="connector-panel">
+          <CsvBillImport provider={provider} onImported={onImported} />
+          {provider.connected && <InfraDetail provider={provider} refreshKey={refreshKey} />}
+        </div>
+      )}
+    </li>
+  );
 }
 
 /** What a connected provider's last sync actually imported. */
@@ -204,44 +256,58 @@ export function InfrastructureSources() {
       )}
       {providers && (
         <ul className="connector-list">
-          {providers.map((p) => (
-            <ConnectorRow
-              key={p.type}
-              connector={{
-                type: p.type,
-                name: p.name,
-                category: "infrastructure",
-                connected: p.connected,
-              }}
-              hint={statusLine(p)}
-              onConnected={refresh}
-              expanded={openType === p.type}
-              onToggle={() => setOpenType((t) => (t === p.type ? null : p.type))}
-              detail={<InfraDetail provider={p} refreshKey={detailVersion} />}
-              onSync={async () => {
-                let r;
-                try {
-                  r = await api.syncInfrastructure(p.type);
-                } catch (err) {
-                  // A failed sync is still a sync: the backend recorded the
-                  // run, so re-read the card rather than leaving it claiming
-                  // whatever it said before this attempt.
+          {providers.map((p) =>
+            p.ingest === "csv" ? (
+              <CsvProviderRow
+                key={p.type}
+                provider={p}
+                expanded={openType === p.type}
+                onToggle={() => setOpenType((t) => (t === p.type ? null : p.type))}
+                onImported={() => {
+                  refresh();
+                  setDetailVersion((v) => v + 1);
+                }}
+                refreshKey={detailVersion}
+              />
+            ) : (
+              <ConnectorRow
+                key={p.type}
+                connector={{
+                  type: p.type,
+                  name: p.name,
+                  category: "infrastructure",
+                  connected: p.connected,
+                }}
+                hint={statusLine(p)}
+                onConnected={refresh}
+                expanded={openType === p.type}
+                onToggle={() => setOpenType((t) => (t === p.type ? null : p.type))}
+                detail={<InfraDetail provider={p} refreshKey={detailVersion} />}
+                onSync={async () => {
+                  let r;
+                  try {
+                    r = await api.syncInfrastructure(p.type);
+                  } catch (err) {
+                    // A failed sync is still a sync: the backend recorded the
+                    // run, so re-read the card rather than leaving it claiming
+                    // whatever it said before this attempt.
+                    await refresh();
+                    throw err;
+                  }
                   await refresh();
-                  throw err;
-                }
-                await refresh();
-                setDetailVersion((v) => v + 1);
-                const excluded =
-                  r.excluded > 0
-                    ? ` ${money(r.excluded)} of ${DEDUPED_SERVICE[p.type] ?? "model"} spend was excluded — its own connector already counts it.`
-                    : "";
-                return (
-                  `Read ${r.items} line ${r.items === 1 ? "item" : "items"}: ` +
-                  `${money(r.infrastructure)} of infrastructure cost.${excluded}`
-                );
-              }}
-            />
-          ))}
+                  setDetailVersion((v) => v + 1);
+                  const excluded =
+                    r.excluded > 0
+                      ? ` ${money(r.excluded)} of ${DEDUPED_SERVICE[p.type] ?? "model"} spend was excluded — its own connector already counts it.`
+                      : "";
+                  return (
+                    `Read ${r.items} line ${r.items === 1 ? "item" : "items"}: ` +
+                    `${money(r.infrastructure)} of infrastructure cost.${excluded}`
+                  );
+                }}
+              />
+            ),
+          )}
         </ul>
       )}
     </section>

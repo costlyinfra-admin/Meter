@@ -703,9 +703,21 @@ def test_the_registry_lists_every_connected_cloud_and_platform(tenant_id):
         "cloudflare",
         "snowflake",
         "vercel_cloud",
+        "redis_cloud",
+        "supabase",
+        "neon",
     ]
-    assert set(infrastructure.LIVE_PROVIDERS) == set(types)
-    assert all(p["status"] == "available" for p in infrastructure.PROVIDERS)
+    # Every provider declares how its numbers arrive, and the two sets partition
+    # the registry — a provider that is in neither could never be synced at all.
+    assert set(infrastructure.LIVE_PROVIDERS) | set(infrastructure.CSV_PROVIDERS) == set(types)
+    assert not set(infrastructure.LIVE_PROVIDERS) & set(infrastructure.CSV_PROVIDERS)
+    for p in infrastructure.PROVIDERS:
+        assert p["status"] == "available"
+        assert p["ingest"] in ("api", "csv"), p["type"]
+        expected = (
+            infrastructure.CSV_PROVIDERS if p["ingest"] == "csv" else infrastructure.LIVE_PROVIDERS
+        )
+        assert p["type"] in expected, p["type"]
 
 
 @pytest.mark.parametrize("provider_type", PLATFORMS)
@@ -762,3 +774,121 @@ def test_vercel_splits_one_invoice_across_build_run_and_inference(tenant_id):
     by_service = {r[0]: r for r in rows_for(tenant_id, "vercel_cloud")}
     assert by_service["AI Gateway"][2:5] == ("inference", False, "vercel")
     assert infrastructure.summary(tenant_id, "vercel_cloud", MONTH)["excluded"] == 980.0
+
+
+# ---------------------------------------------------------------------------
+# CSV import: Redis Cloud, Supabase and Neon.
+# ---------------------------------------------------------------------------
+CSV_PROVIDERS = ["redis_cloud", "supabase", "neon"]
+BILL = (
+    "Subscription,Database,Usage Date,Cost (USD)\n"
+    "prod-cache,sessions,2026-05-01,142.50\n"
+    "prod-cache,search,2026-05-02,88.25\n"
+    "staging,scratch,2026-05-03,12.10\n"
+)
+
+
+def test_a_preview_writes_nothing(tenant_id):
+    report = infrastructure.import_csv(tenant_id, "redis_cloud", BILL, dry_run=True)
+
+    assert report["dry_run"] is True
+    assert report["rows_imported"] == 3
+    assert report["total"] == 242.85
+    assert report["mapping"]["amount"] == "Cost (USD)"
+    # Nothing reached the database: a preview that half-imported would be worse
+    # than no preview at all.
+    assert rows_for(tenant_id, "redis_cloud") == []
+    status = {p["type"]: p for p in infrastructure.provider_status(tenant_id)}["redis_cloud"]
+    assert status["connected"] is False
+
+
+@pytest.mark.parametrize("provider_type", CSV_PROVIDERS)
+def test_an_import_stores_the_bill_as_infrastructure(tenant_id, provider_type):
+    result = infrastructure.import_csv(tenant_id, provider_type, BILL)
+
+    assert result["dry_run"] is False
+    assert result["items"] == 3
+    assert result["infrastructure"] == 242.85
+    rows = rows_for(tenant_id, provider_type)
+    assert len(rows) == 3
+    assert {r[2] for r in rows} == {"infrastructure"}
+
+
+def test_a_bill_with_no_service_column_is_labelled_with_the_platform(tenant_id):
+    # Rather than landing the whole import in Unclassified.
+    infrastructure.import_csv(tenant_id, "neon", "Date,Amount\n2026-05-01,10.00\n")
+    assert rows_for(tenant_id, "neon")[0][0] == "Neon"
+
+
+@pytest.mark.parametrize("provider_type", CSV_PROVIDERS)
+def test_re_importing_a_corrected_file_converges_rather_than_doubling(tenant_id, provider_type):
+    infrastructure.import_csv(tenant_id, provider_type, BILL)
+    corrected = BILL.replace("142.50", "150.00")
+    result = infrastructure.import_csv(tenant_id, provider_type, corrected)
+
+    assert result["infrastructure"] == 250.35
+    assert len(rows_for(tenant_id, provider_type)) == 3
+    assert infrastructure.summary(tenant_id, provider_type, MONTH)["total"] == 250.35
+
+
+def test_an_import_never_disturbs_rows_an_api_connector_wrote(tenant_id):
+    # The two sources share the table; a file import replacing its own window
+    # must not take an API sync's rows with it.
+    store_for(tenant_id, "redis_cloud", [item("Api Written", "999.00")])
+    infrastructure.import_csv(tenant_id, "redis_cloud", BILL)
+
+    services = sorted(r[0] for r in rows_for(tenant_id, "redis_cloud"))
+    assert "Api Written" in services
+    assert len(services) == 4
+
+
+def test_a_csv_provider_is_connected_once_it_has_been_given_a_file(tenant_id):
+    by_type = {p["type"]: p for p in infrastructure.provider_status(tenant_id)}
+    assert by_type["redis_cloud"]["ingest"] == "csv"
+    assert by_type["redis_cloud"]["connected"] is False
+
+    infrastructure.import_csv(tenant_id, "redis_cloud", BILL)
+
+    after = {p["type"]: p for p in infrastructure.provider_status(tenant_id)}["redis_cloud"]
+    assert after["connected"] is True
+    assert after["last_sync"]["status"] == "success"
+    assert after["last_sync"]["items"] == 3
+    # No credential exists, so there is no configuration to show.
+    assert after["config"] is None
+
+
+def test_an_imported_bill_attributes_by_its_tag_column(tenant_id):
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    features.add_signal(tenant_id, triage["id"], "usage_tag", "prod-cache")
+
+    result = infrastructure.import_csv(tenant_id, "supabase", BILL)
+
+    # The Subscription column was matched as the tag.
+    assert result["attributed"] == 230.75
+    assert result["unattributed"] == 12.10
+
+
+@pytest.mark.parametrize("provider_type", ["aws", "vercel_cloud"])
+def test_an_api_provider_refuses_a_file(tenant_id, provider_type):
+    with pytest.raises(infrastructure.InfraError, match="nothing to import"):
+        infrastructure.import_csv(tenant_id, provider_type, BILL)
+
+
+def test_an_unreadable_file_is_reported_not_half_imported(tenant_id):
+    with pytest.raises(infrastructure.InfraError, match="an amount"):
+        infrastructure.import_csv(tenant_id, "neon", "Date,Notes\n2026-05-01,hello\n")
+    assert rows_for(tenant_id, "neon") == []
+
+
+def test_csv_providers_are_not_polled_by_the_scheduled_run(tenant_id, monkeypatch):
+    # They have no API to poll. A scheduled run that tried would fail nightly
+    # against a provider that is working perfectly well.
+    infrastructure.import_csv(tenant_id, "redis_cloud", BILL)
+    calls = []
+    monkeypatch.setattr(
+        infrastructure, "_make_client", lambda p, s: calls.append(p) or _FakeClient([])
+    )
+
+    infrastructure.run_scheduled_infra_sync(months=1)
+
+    assert not any(c in infrastructure.CSV_PROVIDERS for c in calls)

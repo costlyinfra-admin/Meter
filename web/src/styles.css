@@ -5837,3 +5837,113 @@ button.provider-toggle:focus-visible {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- CSV bill import ---------- */
+/* The panel for a provider whose bill arrives as a file. It carries a preview
+   the customer has to read before committing, so it is laid out to be read:
+   one headline number, then the column mapping, then the caveats. */
+.csv-import {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.csv-import-why {
+  font-size: 0.83rem;
+}
+
+/* The file input itself is replaced by its label — a native file control is not
+   styleable and reads as a foreign object beside the app's own buttons. */
+.csv-import-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  align-self: flex-start;
+  padding: 0.55rem 0.95rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.csv-import-file:hover {
+  border-color: var(--accent);
+}
+
+.csv-import-file input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Focus has to be visible on the label, since the input it belongs to is not. */
+.csv-import-file:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.csv-import-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+
+.csv-import-headline {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.csv-import-mapping {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.csv-import-mapping td,
+.csv-import-mapping th {
+  text-align: left;
+}
+
+.csv-import-mapping select {
+  max-width: 22rem;
+}
+
+.csv-import-required {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+/* Skipped rows, unused columns, ambiguous dates. Set apart because these are
+   the reasons a total might not match the invoice the customer is holding. */
+.csv-import-warnings {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.csv-import-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.csv-import-done {
+  padding: 0.6rem 0.75rem;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}

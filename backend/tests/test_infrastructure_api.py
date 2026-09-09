@@ -83,6 +83,9 @@ def test_providers_lists_every_cloud_as_connectable(client):
         "cloudflare",
         "snowflake",
         "vercel_cloud",
+        "redis_cloud",
+        "supabase",
+        "neon",
     ]
     assert all(p["status"] == "available" for p in providers)
     assert all(p["connected"] is False for p in providers)
@@ -296,4 +299,96 @@ def test_no_endpoint_ever_returns_the_stored_keys(client, monkeypatch):
 def test_every_route_requires_a_session(client, method, path):
     client.post("/api/auth/logout")
     r = getattr(client, method)(path, **({"json": {}} if method == "post" else {}))
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# CSV import
+# ---------------------------------------------------------------------------
+_BILL = (
+    "Subscription,Database,Usage Date,Cost (USD)\n"
+    "prod-cache,sessions,2026-05-01,142.50\n"
+    "prod-cache,search,2026-05-02,88.25\n"
+)
+
+
+def test_a_preview_reports_without_writing(client):
+    body = client.post(
+        "/api/infrastructure/import",
+        json={"provider": "redis_cloud", "csv": _BILL, "dry_run": True},
+    ).json()
+
+    assert body["dry_run"] is True
+    assert body["rows_imported"] == 2
+    assert body["total"] == 230.75
+    assert body["mapping"]["amount"] == "Cost (USD)"
+    # And nothing was stored.
+    assert (
+        client.get("/api/infrastructure/summary?provider=redis_cloud&period=2026-05").json()["rows"]
+        == 0
+    )
+
+
+def test_an_import_stores_the_bill_and_the_card_shows_it(client):
+    body = client.post(
+        "/api/infrastructure/import", json={"provider": "redis_cloud", "csv": _BILL}
+    ).json()
+    assert body["items"] == 2
+
+    # The summary is month-scoped, like every provider's, and this bill is May's.
+    summary = client.get("/api/infrastructure/summary?provider=redis_cloud&period=2026-05").json()
+    assert summary["total"] == 230.75
+    # The import result says which window it covered, so an empty current month
+    # is explainable rather than alarming.
+    assert (body["from"], body["to"]) == ("2026-05-01", "2026-05-02")
+
+    card = next(
+        p for p in client.get("/api/infrastructure/providers").json() if p["type"] == "redis_cloud"
+    )
+    assert card["ingest"] == "csv"
+    assert card["connected"] is True
+    assert card["last_sync"]["items"] == 2
+
+
+def test_the_customer_can_correct_a_column_we_matched_wrongly(client):
+    csv = "Date,List Price,Charge\n2026-05-01,99.00,42.00\n"
+    default = client.post(
+        "/api/infrastructure/import",
+        json={"provider": "neon", "csv": csv, "dry_run": True},
+    ).json()
+    assert default["total"] == 42.0
+
+    corrected = client.post(
+        "/api/infrastructure/import",
+        json={
+            "provider": "neon",
+            "csv": csv,
+            "dry_run": True,
+            "mapping": {"amount": "List Price"},
+        },
+    ).json()
+    assert corrected["total"] == 99.0
+
+
+def test_an_unreadable_file_is_a_400_saying_what_is_wrong(client):
+    r = client.post(
+        "/api/infrastructure/import",
+        json={"provider": "supabase", "csv": "Date,Notes\n2026-05-01,hello\n"},
+    )
+    assert r.status_code == 400
+    # The message names the columns the file actually has, so the mismatch is
+    # visible rather than a guessing game.
+    assert "an amount" in r.json()["detail"]
+    assert "Notes" in r.json()["detail"]
+
+
+def test_an_api_provider_refuses_a_file(client):
+    r = client.post("/api/infrastructure/import", json={"provider": "aws", "csv": _BILL})
+    assert r.status_code == 400
+    assert "nothing to import" in r.json()["detail"]
+
+
+def test_import_requires_a_session(client):
+    client.post("/api/auth/logout")
+    r = client.post("/api/infrastructure/import", json={"provider": "neon", "csv": _BILL})
     assert r.status_code == 401

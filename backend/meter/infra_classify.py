@@ -362,6 +362,14 @@ VERCEL_RULES: tuple[Rule, ...] = (
     ),
 )
 
+#: Redis Cloud, Supabase and Neon. Managed data platforms whose bills are
+#: entirely infrastructure — none of them sells a separately-billed model
+#: service. Empty tables rather than absent ones, so the reason is written down
+#: instead of looking like an oversight, exactly as for Atlas.
+REDIS_CLOUD_RULES: tuple[Rule, ...] = ()
+SUPABASE_RULES: tuple[Rule, ...] = ()
+NEON_RULES: tuple[Rule, ...] = ()
+
 #: Which rule table applies to which infrastructure provider. A provider with no
 #: entry gets no rules — every item defaults to `infrastructure`, which is still
 #: a correct answer rather than a dropped row.
@@ -374,6 +382,9 @@ RULES_BY_PROVIDER: dict[str, tuple[Rule, ...]] = {
     "cloudflare": CLOUDFLARE_RULES,
     "snowflake": SNOWFLAKE_RULES,
     "vercel_cloud": VERCEL_RULES,
+    "redis_cloud": REDIS_CLOUD_RULES,
+    "supabase": SUPABASE_RULES,
+    "neon": NEON_RULES,
 }
 
 #: Back-compat alias: the AWS table was `RULES` when AWS was the only provider.

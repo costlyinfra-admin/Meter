@@ -300,6 +300,19 @@ class InfraIngestRequest(BaseModel):
     months: int = Field(default=infrastructure.DEFAULT_BACKFILL_MONTHS, ge=1, le=24)
 
 
+class InfraImportRequest(BaseModel):
+    """A downloaded bill, pasted or uploaded for a file-import provider."""
+
+    provider: str = Field(max_length=20)
+    csv: str = Field(min_length=1, max_length=20_000_000)
+    tag: str = Field(default="feature", max_length=64)
+    # Preview first: report what was matched and what it totals, write nothing.
+    dry_run: bool = False
+    # How the customer corrected a column we guessed wrong, e.g.
+    # {"amount": "Cost (USD)"}. Keys are meanings, values are the file's headers.
+    mapping: Optional[dict] = None
+
+
 class BuildImportRequest(BaseModel):
     csv: str = Field(min_length=1, max_length=5_000_000)
     tool: Optional[str] = Field(default=None, max_length=20)
@@ -902,6 +915,24 @@ def create_app() -> FastAPI:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Could not reach {name}. Check the credentials and retry.",
             ) from exc
+
+    @app.post("/api/infrastructure/import")
+    def import_infrastructure(body: InfraImportRequest, user: CurrentUser) -> dict:
+        # No credential involved: the customer is handing us the file directly,
+        # so the only authority needed is their own session.
+        try:
+            return infrastructure.import_csv(
+                user["tenant_id"],
+                body.provider,
+                body.csv,
+                tag=body.tag,
+                mapping_override=body.mapping,
+                dry_run=body.dry_run,
+            )
+        except infrastructure.InfraError as exc:
+            # Every failure here is something about the file that the customer
+            # can fix, so it is a 400 carrying the reason verbatim.
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @app.get("/api/infrastructure/summary")
     def infrastructure_summary(

@@ -39,7 +39,7 @@ import logging
 from decimal import Decimal
 from typing import Optional
 
-from . import credentials
+from . import credentials, infra_csv
 from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .infra_classify import LineItem, classify
 from .infra_providers import (
@@ -63,9 +63,13 @@ logger = logging.getLogger("meter.infrastructure")
 #: The infrastructure providers this tab offers, in display order. Adding one is
 #: an entry here plus a client — the tab, the API and the UI all read this list
 #: rather than hard-coding AWS.
+#: `ingest` says how a provider's numbers arrive: "api" reads the vendor, "csv"
+#: takes a file the customer downloaded. It is on every entry rather than
+#: defaulted, so adding a provider forces the question to be answered.
 PROVIDERS: tuple[dict, ...] = (
     {
         "type": "aws",
+        "ingest": "api",
         "name": "Amazon Web Services",
         "short": "AWS",
         "status": "available",
@@ -77,6 +81,7 @@ PROVIDERS: tuple[dict, ...] = (
     # the same bill.
     {
         "type": "azure_cloud",
+        "ingest": "api",
         "name": "Microsoft Azure",
         "short": "Azure",
         "status": "available",
@@ -84,6 +89,7 @@ PROVIDERS: tuple[dict, ...] = (
     },
     {
         "type": "gcp",
+        "ingest": "api",
         "name": "Google Cloud Platform",
         "short": "GCP",
         "status": "available",
@@ -96,6 +102,7 @@ PROVIDERS: tuple[dict, ...] = (
     # usage are deliberately absent — see infra_providers.py.
     {
         "type": "digitalocean",
+        "ingest": "api",
         "name": "DigitalOcean",
         "short": "DigitalOcean",
         "status": "available",
@@ -103,6 +110,7 @@ PROVIDERS: tuple[dict, ...] = (
     },
     {
         "type": "mongodb_atlas",
+        "ingest": "api",
         "name": "MongoDB Atlas",
         "short": "Atlas",
         "status": "available",
@@ -110,6 +118,7 @@ PROVIDERS: tuple[dict, ...] = (
     },
     {
         "type": "cloudflare",
+        "ingest": "api",
         "name": "Cloudflare",
         "short": "Cloudflare",
         "status": "available",
@@ -119,6 +128,7 @@ PROVIDERS: tuple[dict, ...] = (
     },
     {
         "type": "snowflake",
+        "ingest": "api",
         "name": "Snowflake",
         "short": "Snowflake",
         "status": "available",
@@ -128,16 +138,48 @@ PROVIDERS: tuple[dict, ...] = (
     # on the Inference tab, a different scope of the same invoice.
     {
         "type": "vercel_cloud",
+        "ingest": "api",
         "name": "Vercel",
         "short": "Vercel",
         "status": "available",
         "note": "Reads Vercel billing charges (FOCUS) — daily, read-only.",
+    },
+    # Import-only. These three publish an authoritative invoice you can download
+    # but nothing you can fetch: Redis Cloud has a cost report, Supabase shows
+    # invoices in its dashboard, and Neon publishes consumption that would have
+    # to be priced into a modelled figure. Reading the real numbers from a file
+    # beats inventing them from a price list — see infra_csv.py.
+    {
+        "type": "redis_cloud",
+        "name": "Redis Cloud",
+        "short": "Redis",
+        "status": "available",
+        "ingest": "csv",
+        "note": "Import the cost report you download from Redis Cloud.",
+    },
+    {
+        "type": "supabase",
+        "name": "Supabase",
+        "short": "Supabase",
+        "status": "available",
+        "ingest": "csv",
+        "note": "Import the invoice you download from the Supabase dashboard.",
+    },
+    {
+        "type": "neon",
+        "name": "Neon",
+        "short": "Neon",
+        "status": "available",
+        "ingest": "csv",
+        "note": "Import the invoice you download from the Neon console.",
     },
 )
 _BY_TYPE = {p["type"]: p for p in PROVIDERS}
 
 #: Connector types that ingest through this module. Kept separate from PROVIDERS
 #: so a provider can be listed before it is syncable.
+#: Providers this module can sync from an API. CSV-import providers are live but
+#: have nothing to poll, so a scheduled run must not try.
 LIVE_PROVIDERS = (
     "aws",
     "azure_cloud",
@@ -148,6 +190,9 @@ LIVE_PROVIDERS = (
     "snowflake",
     "vercel_cloud",
 )
+
+#: Providers whose numbers arrive as an uploaded file.
+CSV_PROVIDERS = ("redis_cloud", "supabase", "neon")
 
 #: How far back a manual "Sync now" reaches. Cloud bills are restated for days
 #: after the fact, so a sync always re-reads recent history rather than trusting
@@ -389,6 +434,7 @@ def persist(
     end: dt.date,
     metric: str,
     granularity: str,
+    source: str = "cost_api",
 ) -> dict:
     """Classify, attribute and store a window of line items. Idempotent.
 
@@ -405,8 +451,11 @@ def persist(
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         maps = _load_mappings(conn)
         conn.execute(
-            "DELETE FROM infra_cost WHERE provider = %s AND period >= %s AND period < %s",
-            (provider_type, start, end),
+            # Scoped to this source: re-importing a file must never delete rows
+            # an API sync wrote, and vice versa.
+            "DELETE FROM infra_cost "
+            "WHERE provider = %s AND source = %s AND period >= %s AND period < %s",
+            (provider_type, source, start, end),
         )
         for (period, key), row in folded.items():
             item, amount = row["item"], row["amount"]
@@ -430,9 +479,9 @@ def persist(
                     (tenant_id, feature_id, provider, period, month, granularity, metric,
                      service, usage_type, operation, account_id, region, tag_key, tag_value,
                      dimensions, amount, currency, category, category_rule, counted,
-                     dedupe_owner, allocation_method, confidence, item_key)
+                     dedupe_owner, allocation_method, confidence, item_key, source)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     tenant_id,
@@ -459,6 +508,7 @@ def persist(
                     method,
                     confidence,
                     key,
+                    source,
                 ),
             )
             by_category[verdict.category] = by_category.get(verdict.category, Decimal("0")) + amount
@@ -572,6 +622,73 @@ def sync_window(
     return summary
 
 
+def import_csv(
+    tenant_id: str,
+    provider_type: str,
+    text: str,
+    *,
+    tag: str = "feature",
+    mapping_override: Optional[dict] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Read a downloaded bill and, unless ``dry_run``, store it.
+
+    Two calls on purpose. The first previews: it reports which columns were
+    matched, what the file totals, which rows were skipped and why — and writes
+    nothing. Only a second call commits. An import that surprises someone is an
+    import that should have been previewed, and these files are hand-downloaded,
+    so there is no schedule to hurry.
+
+    The window is the file's own date range, and only CSV-sourced rows inside it
+    are replaced. Re-uploading a corrected file therefore converges rather than
+    doubling, and never touches rows an API connector wrote.
+    """
+    meta = provider(provider_type)
+    if meta.get("ingest") != "csv":
+        raise InfraError(f"{meta['name']} syncs from its API — there is nothing to import.")
+    try:
+        report = infra_csv.parse(
+            text, tag_key=tag, mapping_override=mapping_override, default_service=meta["name"]
+        )
+    except infra_csv.CsvImportError as exc:
+        raise InfraError(str(exc)) from exc
+
+    summary = {**report.as_dict(), "provider": provider_type, "dry_run": dry_run}
+    if dry_run:
+        return summary
+
+    start, end = report.first_day, report.last_day + dt.timedelta(days=1)
+    stored = persist(
+        tenant_id,
+        provider_type,
+        report.items,
+        start=start,
+        end=end,
+        metric="invoice",
+        granularity="DAILY",
+        source="csv",
+    )
+    _record_run(
+        tenant_id,
+        provider_type,
+        start=start,
+        end=end,
+        trigger="manual",
+        status="success",
+        items=stored["items"],
+        amount=stored["infrastructure"],
+    )
+    # Merged deliberately, not with {**a, **b}: `persist` reports the half-open
+    # window it replaced and the report reports the file's inclusive date range.
+    # Both are called "to", and letting one silently win would make the number
+    # shown to the customer mean whichever happened to be second.
+    return {
+        **summary,
+        **{k: v for k, v in stored.items() if k not in ("from", "to", "provider")},
+        "dry_run": False,
+    }
+
+
 def backfill_start(months: int, *, today: Optional[dt.date] = None) -> dt.date:
     """First-of-month ``months - 1`` months before today (month-aligned)."""
     today = today or dt.date.today()
@@ -670,16 +787,26 @@ def run_scheduled_infra_sync(months: int = 1) -> list[dict]:
 def provider_status(tenant_id: str) -> list[dict]:
     """Every infrastructure provider with its connection state and last sync.
 
-    `status` is registry metadata rather than a constant: all three clouds are
-    connectable today, and a provider that is ever listed before it is syncable
-    is marked here rather than left off the page — a customer asking "can I
-    connect this?" deserves an answer on the page, not the absence of a row.
+    `status` is registry metadata rather than a constant: every provider listed
+    is usable today, and one that is ever listed before it is is marked here
+    rather than left off the page — a customer asking "can I connect this?"
+    deserves an answer on the page, not the absence of a row.
+
+    What "connected" means depends on how a provider's numbers arrive. An API
+    provider is connected when it holds a credential. A file-import provider has
+    no credential to hold, so it is connected once it has actually been given a
+    file — anything else would be a card claiming a connection nobody made.
     """
     connected: set[str] = set()
+    imported: set[str] = set()
     last_runs: dict[str, dict] = {}
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         connected = {
             r[0] for r in conn.execute("SELECT DISTINCT connector_type FROM connector_credential")
+        }
+        imported = {
+            r[0]
+            for r in conn.execute("SELECT DISTINCT provider FROM infra_cost WHERE source = 'csv'")
         }
         for row in conn.execute(
             """
@@ -700,11 +827,14 @@ def provider_status(tenant_id: str) -> list[dict]:
 
     out = []
     for p in PROVIDERS:
-        # Only a provider this module can actually ingest counts as connected.
-        # A credential is not a connection here unless there is a client behind
-        # it, and a "coming soon" card must never claim otherwise.
-        is_connected = p["type"] in LIVE_PROVIDERS and p["type"] in connected
-        secret = credentials.get_secret(tenant_id, p["type"]) if is_connected else None
+        if p.get("ingest") == "csv":
+            is_connected = p["type"] in imported
+            secret = None
+        else:
+            # A credential is not a connection unless there is a client behind
+            # it, so a provider this module cannot ingest never reads connected.
+            is_connected = p["type"] in LIVE_PROVIDERS and p["type"] in connected
+            secret = credentials.get_secret(tenant_id, p["type"]) if is_connected else None
         out.append(
             {
                 **p,
