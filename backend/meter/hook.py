@@ -86,7 +86,7 @@ def _period_of(occurred_at: Optional[str]) -> dt.date:
 _BATCH_MEMORY = "1 hour"
 
 
-def _replayed(conn, tenant_id: str, batch_id: str) -> Optional[dict]:
+def replayed_batch(conn, tenant_id: str, batch_id: str) -> Optional[dict]:
     """Claim `batch_id`, or return the result of its first delivery.
 
     Costing is additive, so applying a batch twice inflates a feature's spend.
@@ -123,7 +123,7 @@ def ingest_events(tenant_id: str, events: list[dict], batch_id: Optional[str] = 
     accepted = 0
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         if batch_id:
-            prior = _replayed(conn, tenant_id, batch_id)
+            prior = replayed_batch(conn, tenant_id, batch_id)
             if prior is not None:
                 return prior
         valid_features = {str(r[0]) for r in conn.execute("SELECT id FROM feature").fetchall()}
@@ -201,11 +201,11 @@ def ingest_events(tenant_id: str, events: list[dict], batch_id: Optional[str] = 
             accepted += 1
 
         for (feature_id, provider, model, period), entry in accumulator.items():
-            _upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry)
+            upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry)
             total += entry["amount"]
 
         for (customer_id, period), centry in customer_acc.items():
-            _upsert_customer_cost(conn, tenant_id, customer_id, period, centry)
+            upsert_customer_cost(conn, tenant_id, customer_id, period, centry)
 
         for skey, sentry in signal_acc.items():
             feature_id, provider, model, period, kind, fingerprint = skey
@@ -227,22 +227,31 @@ def ingest_events(tenant_id: str, events: list[dict], batch_id: Optional[str] = 
             )
 
         if batch_id:
-            conn.execute(
-                "UPDATE hook_batch SET accepted = %s, cost = %s "
-                "WHERE tenant_id = %s AND batch_id = %s",
-                (accepted, total, tenant_id, batch_id),
-            )
-            # Amortised cleanup: a batch id is only useful while a client might
-            # still retry it. Pruning on a small fraction of calls keeps the
-            # table bounded without a DELETE on every ingest or a cron job.
-            if random.random() < 0.02:  # noqa: S311  (not security-sensitive)
-                conn.execute(
-                    f"DELETE FROM hook_batch WHERE tenant_id = %s "  # noqa: S608
-                    f"AND seen_at < now() - interval '{_BATCH_MEMORY}'",
-                    (tenant_id,),
-                )
+            record_batch(conn, tenant_id, batch_id, accepted, total)
 
     return {"accepted": accepted, "cost": float(total)}
+
+
+def record_batch(conn, tenant_id: str, batch_id: str, accepted: int, total) -> None:
+    """Close out a batch id so a retry of it applies nothing.
+
+    Shared with traces.py: both ingest paths write into the same hook_batch
+    table, so a client that retries a mixed batch is idempotent whichever path
+    handled it.
+    """
+    conn.execute(
+        "UPDATE hook_batch SET accepted = %s, cost = %s WHERE tenant_id = %s AND batch_id = %s",
+        (accepted, total, tenant_id, batch_id),
+    )
+    # Amortised cleanup: a batch id is only useful while a client might still
+    # retry it. Pruning on a small fraction of calls keeps the table bounded
+    # without a DELETE on every ingest or a cron job.
+    if random.random() < 0.02:  # noqa: S311  (not security-sensitive)
+        conn.execute(
+            f"DELETE FROM hook_batch WHERE tenant_id = %s "  # noqa: S608
+            f"AND seen_at < now() - interval '{_BATCH_MEMORY}'",
+            (tenant_id,),
+        )
 
 
 def _customer_of(metadata) -> Optional[str]:
@@ -254,7 +263,7 @@ def _customer_of(metadata) -> Optional[str]:
     return None
 
 
-def _upsert_customer_cost(conn, tenant_id, customer_id, period, centry) -> None:
+def upsert_customer_cost(conn, tenant_id, customer_id, period, centry) -> None:
     conn.execute(
         """
         INSERT INTO customer_cost (tenant_id, customer_id, period, amount, request_count)
@@ -362,7 +371,7 @@ def _upsert_signal(
         )
 
 
-def _upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry) -> None:
+def upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry) -> None:
     latency = entry.get("latency", 0)
     existing = conn.execute(
         """
