@@ -332,10 +332,11 @@ function TokenSection({
         <span className="settings-hint muted">
           {normalizedDiffers ? (
             <>
-              The SDK will send <code>{slug}</code>. Lowercase, with dashes — it lives in a URL.
+              The SDK will send <code>{slug}</code>. Slugs are lowercase with dashes, because they
+              appear in URLs.
             </>
           ) : slugTouched ? (
-            <>Pick a name for the app, not for your company — you can have several.</>
+            <>Name the app, not your company. You can have several.</>
           ) : (
             <>
               We suggested this name based on your codebase. Change it now if needed—changing it
@@ -355,7 +356,7 @@ function TokenSection({
           <Snippet className="token" sensitive>
             {envSnippet(ingestUrl, slug, token)}
           </Snippet>
-          <p className="muted">Copy the token now — it isn't shown again. Keep it secret.</p>
+          <p className="muted">Copy the token now. It is not shown again. Keep it secret.</p>
         </>
       ) : (
         <>
@@ -371,8 +372,8 @@ function TokenSection({
         </>
       )}
       <p className="muted">
-        Meter creates the application the first time an event arrives naming it, so there is nothing
-        to set up here first.
+        Meter creates the application the first time an event names it. There is nothing to set up
+        here first.
       </p>
     </section>
   );
@@ -389,13 +390,16 @@ function CliGuide({ heading }: { heading: string }) {
         <span className="badge-soon">Coming soon</span>
       </div>
       <p className="muted">
-        Run one command from your project root. Meter will detect your runtime, package manager, and
-        supported AI providers.
+        Run one command from your project root. Meter detects your runtime, package manager, and AI
+        providers, then sets everything up.
       </p>
-      <div className="hint">
-        <strong>Not available yet.</strong> The command below is what it will be — the package is
-        not published, so there is nothing to run today and no copy button for it. Use one of the
-        agent guides, or the manual route, in the meantime.
+      <div className="hint hint-with-icon">
+        <AlertIcon />
+        <span>
+          <strong>Not available yet.</strong> The package is not published, so this command will not
+          run today and there is no copy button for it. Use an agent guide or the manual route for
+          now.
+        </span>
       </div>
       <span className="chart-title">Planned command</span>
       {/* Deliberately not a Snippet: a copy button here would hand someone a
@@ -404,11 +408,11 @@ function CliGuide({ heading }: { heading: string }) {
         {PLANNED_CLI_COMMAND}
       </pre>
       <p className="muted" id="cli-soon">
-        No token goes on that command line. A secret typed into a shell ends up in its history and
-        in any process listing on the machine — the CLI will read it the way the SDK does, from the
-        environment.
+        The command takes no token. A secret typed into a shell is saved in its history and visible
+        in process listings. The CLI will read the token from your environment, the way the SDK
+        does.
       </p>
-      <p className="muted">It will:</p>
+      <p className="muted">When it ships, it will:</p>
       <ul className="cli-steps muted">
         {PLANNED_CLI_STEPS.map((step) => (
           <li key={step}>{step}</li>
@@ -433,22 +437,25 @@ function AgentGuidePanel({
     <section className="source-section">
       <h2>{heading}</h2>
       <p className="muted">
-        {instruction} It carries everything the agent needs — the exact packages, this workspace's
-        ingest URL, your real feature ids, and the rules it must not break. Read the diff before you
-        merge it, as you would any other change.
+        {instruction} The prompt includes the exact packages, your ingest URL, your real feature
+        IDs, and the rules the agent must follow. Review the diff before you merge, as you would any
+        other change.
       </p>
       {!hasFeatures && (
-        <div className="hint">
-          <strong>Confirm your features first.</strong> The prompt is far more useful once it can
-          name them — otherwise the agent has to stop and ask you for every id.
+        <div className="hint hint-with-icon">
+          <AlertIcon />
+          <span>
+            <strong>Confirm your features first.</strong> Without them, the agent has to stop and
+            ask you for every feature ID.
+          </span>
         </div>
       )}
       <Snippet className="agent-prompt" copyLabel="Copy prompt">
         {prompt}
       </Snippet>
       <p className="muted">
-        The prompt tells the agent to read the token from your environment, never to write it into
-        the code — so nothing secret is in what you just copied.
+        The prompt tells the agent to read the token from your environment and never to write it in
+        code. Nothing secret is in what you just copied.
       </p>
     </section>
   );
@@ -473,9 +480,8 @@ function ManualGuide({
       <section className="source-section">
         <h2>1. Install the package</h2>
         <p className="muted">
-          Apache-2.0, no dependencies. Install it into the environment your app actually runs in —
-          the same virtualenv, image or lockfile as the rest of your dependencies, not your laptop's
-          system Python.
+          Apache-2.0 and no dependencies. Install it into the environment your app runs in: the same
+          virtualenv, image, or lockfile as your other dependencies, not your system Python.
         </p>
         <span className="chart-title">Python</span>
         <Snippet>{`python3 -m pip install "costlyinfra-meter>=${MIN_SDK}"
@@ -483,8 +489,8 @@ function ManualGuide({
 # or, the durable version — add it to your requirements.txt / pyproject.toml:
 costlyinfra-meter>=${MIN_SDK}`}</Snippet>
         <p className="muted">
-          If pip answers <code>error: externally-managed-environment</code>, you are outside a
-          virtualenv — activate your app's environment and run it again. That message is Python
+          If pip reports <code>error: externally-managed-environment</code>, you are outside a
+          virtualenv. Activate your app's environment and run it again. That message is Python
           protecting the system install, not a problem with the package.
         </p>
 
@@ -504,17 +510,17 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
         </div>
         <Snippet>{NODE_INSTALL[nodePm]}</Snippet>
         <p className="muted">
-          The Node package is <strong>ESM only</strong>: use <code>import</code>. In a CommonJS
-          project, load it with <code>{`const { Meter } = await import("costlyinfra-meter")`}</code>{" "}
-          — <code>require()</code> will not work.
+          The Node package is <strong>ESM only</strong>, so use <code>import</code>. In a CommonJS
+          project, load it with <code>{`const { Meter } = await import("costlyinfra-meter")`}</code>
+          . <code>require()</code> will not work.
         </p>
       </section>
 
       <section className="source-section">
         <h2>2. Configure the environment</h2>
         <p className="muted">
-          Set these where your app already keeps its secrets. The SDK is a silent no-op until the
-          URL and token are both present, so deploying before the token exists is safe.
+          Set these where your app keeps its secrets. The SDK does nothing until the URL and token
+          are both set, so it is safe to deploy before the token exists.
         </p>
         {/* The placeholder, never the real token. The generated token is shown
             once, above, inside a snippet marked for session-replay masking —
@@ -532,22 +538,21 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
           ))}
         </dl>
         <p className="muted">
-          Add these names to your <code>.env.example</code> with empty values so the next person
-          knows they exist — never a real token.
+          Add these names to your <code>.env.example</code> with empty values, so the next person
+          knows they exist. Never commit a real token.
         </p>
       </section>
 
       <section className="source-section">
         <h2>3. Wrap your LLM client</h2>
         <p className="muted">
-          For a single model call with no workflow around it, wrap the client once where it is
-          constructed and pass the feature the calls belong to (copy a feature's id from its page
-          under{" "}
+          For a single model call, wrap the client once where you create it and pass the feature the
+          calls belong to. Copy a feature's ID from its page under{" "}
           <Link to="/features" className="link">
             Features
           </Link>
-          ). Every call through it is metered automatically — no per-call code — and each becomes
-          its own one-step trace. The provider is detected from the client; pass{" "}
+          . Every call through the wrapped client is then metered, with no per-call code, and each
+          becomes its own one-step trace. The provider is detected from the client. Pass{" "}
           <code>provider=</code> if you have subclassed or wrapped it and detection is wrong.
         </p>
         <span className="chart-title">Python</span>
@@ -560,8 +565,8 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
         <h2>4. Record a multi-step run</h2>
         <p className="muted">
           If one request makes several model calls, or mixes model calls with retrieval and tools,
-          wrap the <strong>whole run</strong> so its steps are recorded as one trace. This is what
-          makes <em>“why did this run cost $1.42”</em> answerable, and it is what the{" "}
+          wrap the <strong>whole run</strong>. Its steps are recorded as one trace, which is what
+          makes <em>“why did this run cost $1.42”</em> answerable and what the{" "}
           <Link to="/traces" className="link">
             Traces
           </Link>{" "}
@@ -572,11 +577,11 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
         <span className="chart-title">Node</span>
         <Snippet>{AGENT_NODE}</Snippet>
         <p className="muted">
-          Each step returns whatever your function returned, so wrapping one does not change control
-          flow. Leaving the block ends the trace — on an exception too, so a crashed agent is
-          recorded as failed rather than left looking like it is still running. Name steps after
-          what they <em>do</em> (<code>classify</code>, <code>retrieve-documents</code>), not after
-          the function that implements them.
+          Each step returns whatever your function returned, so wrapping it does not change your
+          control flow. Leaving the block ends the trace, including on an exception, so a crashed
+          agent is recorded as failed instead of looking stuck. Name steps after what they{" "}
+          <em>do</em>, like <code>classify</code> or <code>retrieve-documents</code>, not after the
+          function that implements them.
         </p>
         <dl className="env-table">
           {SPAN_KINDS.map(([kind, what]) => (
@@ -593,9 +598,9 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
       <section className="source-section">
         <h2>5. Queues, workers and short-lived processes</h2>
         <p className="muted">
-          If a run continues in a background worker, export the context and resume it there, so both
-          halves are one trace. The exported context carries identifiers only — no prompts, no
-          customer data — so it is safe to put on a queue.
+          If a run continues in a background worker, export the context and resume it there so both
+          halves are one trace. The context carries identifiers only, with no prompts and no
+          customer data, so it is safe to put on a queue.
         </p>
         <span className="chart-title">Python</span>
         <Snippet>{RESUME_PYTHON}</Snippet>
@@ -603,10 +608,10 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
         <Snippet>{RESUME_NODE}</Snippet>
         <p className="muted">
           Two cases to watch. <strong>Streaming and async responses</strong> have no usage until
-          they finish, so a wrapped client skips them — record those inside{" "}
+          they finish, so a wrapped client skips them. Record those inside{" "}
           <code>meter.agent(…)</code>, where you control when the step ends. And a{" "}
-          <strong>short-lived process</strong> — a script, a cron job, a Lambda — can exit before
-          the background worker has sent anything:
+          <strong>short-lived process</strong>, such as a script, cron job, or Lambda, can exit
+          before the background worker sends anything:
         </p>
         <Snippet>{`${FLUSH_PYTHON}\n${FLUSH_NODE}`}</Snippet>
       </section>
@@ -722,8 +727,8 @@ function Verification() {
             </div>
           </dl>
           <p className="muted">
-            Metered cost is reconciled against your provider bill, so it sharpens the picture rather
-            than replacing it. Open the feature under{" "}
+            Metered cost is reconciled against your provider bill, so it refines your numbers rather
+            than replacing them. Open the feature under{" "}
             <Link to="/features" className="link">
               Features
             </Link>{" "}
@@ -736,15 +741,15 @@ function Verification() {
             <Hourglass /> Waiting for your first Meter event…
           </p>
           <p className="muted">
-            Run your app so it makes a real model call. This updates on its own — no need to reload.
-            If nothing arrives: check both environment variables are set{" "}
-            <em>in the running process</em>, and that the <code>feature_id</code> matches a real
-            feature. The SDK fails silently by design, so a missing token never errors — it simply
+            Run your app so it makes a real model call. This page updates on its own, so there is no
+            need to reload. If nothing arrives, check that both environment variables are set{" "}
+            <em>in the running process</em> and that the <code>feature_id</code> matches a real
+            feature. The SDK fails silently by design, so a missing token never errors. It simply
             does not report.
           </p>
           {failed && (
             <p className="muted" role="status">
-              Could not reach Meter just now — still trying.
+              Could not reach Meter just now. Still trying.
             </p>
           )}
         </>

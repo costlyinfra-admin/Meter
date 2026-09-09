@@ -42,13 +42,13 @@ export const ENV_VARS = [
   {
     name: "METER_INGEST_URL",
     required: true,
-    note: "Where the SDK posts. Specific to this install.",
+    note: "Where the SDK sends usage. Specific to this install.",
   },
   { name: "METER_INGEST_TOKEN", required: true, note: "Secret. Never commit it." },
   {
     name: "METER_APPLICATION",
     required: false,
-    note: "Groups every workflow in this codebase. Defaults to “default”.",
+    note: "Groups every workflow in this codebase under one name. Defaults to “default”.",
   },
   {
     name: "METER_ENVIRONMENT",
@@ -58,7 +58,7 @@ export const ENV_VARS = [
   {
     name: "METER_RELEASE_VERSION",
     required: false,
-    note: "Your build or release id, so a cost change can be traced to a deploy.",
+    note: "Your build or release ID, so a cost change can be traced to a deploy.",
   },
 ];
 
