@@ -187,14 +187,15 @@ export interface AgentGuide {
   instruction: string;
 }
 
+/**
+ * The guides, in the order they are offered.
+ *
+ * Setup CLI comes last, and the first entry is what the page opens on: the
+ * three agent guides work today, and the CLI does not exist yet. Leading with
+ * an unavailable option meant the first thing a new customer saw was a
+ * "Coming soon" badge.
+ */
 export const AGENT_GUIDES: AgentGuide[] = [
-  {
-    id: "cli",
-    label: "Setup CLI",
-    logo: "meter-cli",
-    heading: "Install Meter automatically",
-    instruction: "Run one command from your project root.",
-  },
   {
     id: "claude-code",
     label: "Claude Code",
@@ -216,7 +217,18 @@ export const AGENT_GUIDES: AgentGuide[] = [
     heading: "Install with Codex",
     instruction: "Open the repository in Codex and paste this prompt.",
   },
+  {
+    id: "cli",
+    label: "Setup CLI",
+    logo: "meter-cli",
+    heading: "Install Meter automatically",
+    instruction: "Run one command from your project root.",
+  },
 ];
+
+/** The guide shown when the URL names none. Derived from the order above so the
+ *  two cannot drift: moving a guide moves the landing tab with it. */
+export const DEFAULT_GUIDE: AgentId = AGENT_GUIDES[0].id;
 
 /**
  * Each agent works differently enough to be worth a closing paragraph, and no

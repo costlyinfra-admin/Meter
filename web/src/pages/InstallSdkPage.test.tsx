@@ -53,24 +53,27 @@ beforeEach(() => {
 });
 
 describe("InstallSdkPage — structure", () => {
-  it("opens on Setup with AI, showing the Setup CLI guide", async () => {
+  it("opens on a guide that works, not on the one that does not exist yet", async () => {
+    // Setup CLI is unbuilt. Landing there meant the first thing a new customer
+    // saw on this page was a "Coming soon" badge.
     renderPage();
     expect(await screen.findByRole("heading", { name: "Install SDK" })).toBeInTheDocument();
 
     expect(tabIn("Installation method", "Setup with AI")).toHaveAttribute("aria-selected", "true");
-    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("heading", { name: "Install Meter automatically" })).toBeVisible();
+    expect(tabIn("Setup assistant", /Claude Code/)).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "Install with Claude Code" })).toBeVisible();
   });
 
   it("offers the four assistants in order, each with a logo", async () => {
     renderPage();
     const list = screen.getByRole("tablist", { name: "Setup assistant" });
     const tabs = within(list).getAllByRole("tab");
+    // Setup CLI last: the three that work come first.
     expect(tabs.map((t) => t.getAttribute("aria-label"))).toEqual([
-      "Setup CLI",
       "Claude Code",
       "Cursor",
       "Codex",
+      "Setup CLI",
     ]);
     // A mark before every label, all rendered by the app's own icon component.
     for (const tab of tabs) expect(tab.querySelector(".connector-mark")).toBeInTheDocument();
@@ -87,7 +90,8 @@ describe("InstallSdkPage — structure", () => {
 
 describe("InstallSdkPage — the Setup CLI tab is a preview, not an instruction", () => {
   it("shows the planned command without offering to copy it", async () => {
-    renderPage();
+    // Reached explicitly now: it is the last guide, not the landing one.
+    renderPage("/install-sdk?guide=cli");
     await screen.findByRole("heading", { name: "Install Meter automatically" });
 
     expect(screen.getByText("Coming soon")).toBeInTheDocument();
@@ -111,14 +115,14 @@ describe("InstallSdkPage — keyboard", () => {
     const list = screen.getByRole("tablist", { name: "Setup assistant" });
 
     fireEvent.keyDown(list, { key: "ArrowRight" });
-    expect(tabIn("Setup assistant", /Claude Code/)).toHaveAttribute("aria-selected", "true");
+    expect(tabIn("Setup assistant", /Cursor/)).toHaveAttribute("aria-selected", "true");
 
     fireEvent.keyDown(list, { key: "ArrowLeft" });
-    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
+    expect(tabIn("Setup assistant", /Claude Code/)).toHaveAttribute("aria-selected", "true");
 
     // Left from the first wraps to the last, as the tab pattern expects.
     fireEvent.keyDown(list, { key: "ArrowLeft" });
-    expect(tabIn("Setup assistant", /Codex/)).toHaveAttribute("aria-selected", "true");
+    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
   });
 
   it("jumps to the ends with Home and End", async () => {
@@ -126,9 +130,9 @@ describe("InstallSdkPage — keyboard", () => {
     const list = screen.getByRole("tablist", { name: "Setup assistant" });
 
     fireEvent.keyDown(list, { key: "End" });
-    expect(tabIn("Setup assistant", /Codex/)).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(list, { key: "Home" });
     expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(list, { key: "Home" });
+    expect(tabIn("Setup assistant", /Claude Code/)).toHaveAttribute("aria-selected", "true");
   });
 
   it("is one tab stop: only the selected tab is reachable by Tab", async () => {
@@ -151,7 +155,7 @@ describe("InstallSdkPage — the URL carries the tab", () => {
   it("falls back to the defaults when the query string is nonsense", async () => {
     renderPage("/install-sdk?tab=sideways&guide=emacs");
     expect(tabIn("Installation method", "Setup with AI")).toHaveAttribute("aria-selected", "true");
-    expect(tabIn("Setup assistant", /Setup CLI/)).toHaveAttribute("aria-selected", "true");
+    expect(tabIn("Setup assistant", /Claude Code/)).toHaveAttribute("aria-selected", "true");
   });
 
   it("opens the manual route directly", async () => {

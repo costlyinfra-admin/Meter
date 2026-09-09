@@ -36,6 +36,7 @@ import {
 import {
   AGENT_GUIDES,
   agentPromptFor,
+  DEFAULT_GUIDE,
   MIN_SDK,
   PLANNED_CLI_COMMAND,
   PLANNED_CLI_STEPS,
@@ -86,7 +87,7 @@ export function InstallSdkPage() {
   const tabParam = params.get("tab");
   const guideParam = params.get("guide");
   const tab: PrimaryTab = isPrimary(tabParam) ? tabParam : "ai";
-  const guide: AgentId = isGuide(guideParam) ? guideParam : "cli";
+  const guide: AgentId = isGuide(guideParam) ? guideParam : DEFAULT_GUIDE;
 
   // Replace rather than push: flicking between tabs should not fill the back
   // button, while a link straight to one still lands where it says.
