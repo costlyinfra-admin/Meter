@@ -889,10 +889,18 @@ select {
   margin-top: 0.95rem;
 }
 
-.settings-field > label {
+.settings-field > label,
+/* A settings row whose value is stated rather than chosen. Content capture has
+   no control by design, so its heading is a span, not a <label> pointing at a
+   form field that does not exist — but it must read like every label beside it. */
+.settings-field > .settings-label-static {
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--ink-soft);
+}
+
+.content-capture-value {
+  display: flex;
 }
 
 .settings-field input,

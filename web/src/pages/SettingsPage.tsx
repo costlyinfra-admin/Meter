@@ -61,6 +61,20 @@ const CUSTOMER_ID_OPTIONS: { value: OrgSettings["customer_id_storage"]; label: s
   { value: "hashed", label: "Hashed identifiers" },
 ];
 
+const TRACE_RETENTION_OPTIONS: { value: OrgSettings["trace_retention_days"]; label: string }[] = [
+  { value: 7, label: "7 days" },
+  { value: 30, label: "30 days" },
+  { value: 90, label: "90 days" },
+];
+
+const STALE_OPTIONS = [
+  { value: 5, label: "5 minutes" },
+  { value: 10, label: "10 minutes" },
+  { value: 30, label: "30 minutes" },
+  { value: 60, label: "1 hour" },
+  { value: 240, label: "4 hours" },
+];
+
 const RETENTION_OPTIONS: { value: OrgSettings["data_retention"]; label: string }[] = [
   { value: "30d", label: "30 days" },
   { value: "90d", label: "90 days" },
@@ -300,6 +314,62 @@ export function SettingsPage() {
             </span>
           </div>
           <div className="settings-field">
+            <label htmlFor="trace-retention">Trace retention</label>
+            <select
+              id="trace-retention"
+              value={settings.trace_retention_days}
+              onChange={(e) =>
+                patch({
+                  trace_retention_days: Number(
+                    e.target.value,
+                  ) as OrgSettings["trace_retention_days"],
+                })
+              }
+            >
+              {TRACE_RETENTION_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <span className="settings-hint muted">
+              How long request-level traces and their steps are kept. Your cost totals are not
+              affected — deleting traces never changes what a month cost.
+            </span>
+          </div>
+          <div className="settings-field">
+            <label htmlFor="stale-after">Agent stale threshold</label>
+            <select
+              id="stale-after"
+              value={settings.agent_stale_after_minutes}
+              onChange={(e) => patch({ agent_stale_after_minutes: Number(e.target.value) })}
+            >
+              {STALE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <span className="settings-hint muted">
+              How long a running agent may go quiet before Traces marks it stale. A stale run has
+              not failed and may still finish.
+            </span>
+          </div>
+          {/* Stated, not offered. The reserved values exist in the API so a
+              future consented capture feature needs no migration, but nothing
+              may turn them on before that feature exists — with its own
+              consent, encryption, retention and audit story. */}
+          <div className="settings-field">
+            <span className="settings-label-static">Content capture</span>
+            <span className="content-capture-value">
+              <span className="badge">Disabled</span>
+            </span>
+            <span className="settings-hint muted">
+              Meter records prompt identity, version, tokens and cost — not prompt or response
+              content. There is no column for it, so it cannot be enabled here.
+            </span>
+          </div>
+          <div className="settings-field">
             <label htmlFor="retention">Data retention</label>
             <select
               id="retention"
@@ -323,6 +393,11 @@ export function SettingsPage() {
                     customer_id_storage: settings.customer_id_storage,
                     store_prompts: settings.store_prompts,
                     data_retention: settings.data_retention,
+                    trace_retention_days: settings.trace_retention_days,
+                    agent_stale_after_minutes: settings.agent_stale_after_minutes,
+                    // content_capture is deliberately absent: it has no control,
+                    // and sending it would be the one path by which a UI could
+                    // ever turn capture on.
                   },
                   setSavingPrivacy,
                   setPrivacySaved,

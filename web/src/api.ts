@@ -22,6 +22,13 @@ export interface OrgSettings {
   customer_id_storage: "names" | "aliases" | "hashed";
   store_prompts: boolean;
   data_retention: "30d" | "90d" | "1y" | "indefinite";
+  /** How long request-level traces are kept. Financial aggregates outlive them. */
+  trace_retention_days: 7 | 30 | 90;
+  /** How long a running agent may be quiet before the UI calls it stale. */
+  agent_stale_after_minutes: number;
+  /** Always "disabled" today. The reserved values exist so a future consented
+   *  capture feature needs no migration; nothing may select them yet. */
+  content_capture: "disabled" | "redacted" | "full";
 }
 
 /** The organization's AI budget. Null everywhere until someone sets one — there

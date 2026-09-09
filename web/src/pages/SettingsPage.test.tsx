@@ -32,6 +32,9 @@ const SETTINGS: OrgSettings = {
   customer_id_storage: "hashed",
   store_prompts: false,
   data_retention: "indefinite",
+  trace_retention_days: 30,
+  agent_stale_after_minutes: 10,
+  content_capture: "disabled",
 };
 
 function renderPage(route = "/settings") {
@@ -346,5 +349,64 @@ describe("Budgets", () => {
 
     await waitFor(() => expect(api.removeBudget).toHaveBeenCalled());
     expect(await screen.findByText(/No budget is set/)).toBeInTheDocument();
+  });
+});
+
+describe("Request-level settings", () => {
+  it("saves trace retention and the stale threshold with the rest of privacy", async () => {
+    vi.mocked(api.updateSettings).mockResolvedValue({
+      ...SETTINGS,
+      trace_retention_days: 90,
+      agent_stale_after_minutes: 30,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("tab", { name: /Privacy/ }));
+
+    const retention = await screen.findByLabelText("Trace retention");
+    expect(retention).toHaveValue("30");
+    fireEvent.change(retention, { target: { value: "90" } });
+    fireEvent.change(screen.getByLabelText("Agent stale threshold"), { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(api.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ trace_retention_days: 90, agent_stale_after_minutes: 30 }),
+      ),
+    );
+  });
+
+  it("says plainly that trace retention does not touch cost totals", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("tab", { name: /Privacy/ }));
+    // Someone shortening retention needs to know their bill history survives.
+    expect(
+      await screen.findByText(/deleting traces never changes what a month cost/i),
+    ).toBeInTheDocument();
+  });
+
+  it("explains that a stale agent has not failed", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("tab", { name: /Privacy/ }));
+    expect(await screen.findByText(/has not failed and may still finish/i)).toBeInTheDocument();
+  });
+
+  it("shows content capture as disabled, with no way to enable it", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("tab", { name: /Privacy/ }));
+
+    expect(await screen.findByText("Content capture")).toBeInTheDocument();
+    expect(screen.getByText("Disabled")).toBeInTheDocument();
+    // Stated, not offered: there is no control, so nothing can turn it on.
+    expect(screen.queryByLabelText("Content capture")).not.toBeInTheDocument();
+    expect(screen.queryByText("Redacted")).not.toBeInTheDocument();
+    expect(screen.queryByText("Full")).not.toBeInTheDocument();
+  });
+
+  it("says what Meter records instead of content", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("tab", { name: /Privacy/ }));
+    expect(
+      await screen.findByText(/records prompt identity, version, tokens and cost/i),
+    ).toBeInTheDocument();
   });
 });
