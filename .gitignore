@@ -34,3 +34,6 @@ npm-debug.log*
 .idea/
 .vscode/
 *.swp
+
+# SDK development virtualenv (created by `make test-sdk`).
+sdk/python/.venv/

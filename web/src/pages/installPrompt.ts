@@ -49,66 +49,103 @@ INSTALL
 It has no dependencies and is Apache-2.0 licensed.
 
 CONFIGURE
-Two environment variables, set wherever this app already keeps its secrets:
+Environment variables, set wherever this app already keeps its secrets:
   METER_INGEST_URL=${ingestUrl}
   METER_INGEST_TOKEN=<ask me for this; it is a secret>
-${projectId ? `Our Meter project id is ${projectId}, for reference if you need to ask about\nthis install. It is not a credential and the SDK does not read it.\n` : ""}Also add METER_INGEST_URL and METER_INGEST_TOKEN to .env.example (or whatever
-this repository uses to document its configuration) with EMPTY values, so the
-next person knows they exist. Never put a real token in that file.
-Never hardcode the token in source and never commit it. The SDK is a silent
-no-op until both variables are set, so this is safe to merge and deploy before
-the token exists.
+  METER_APPLICATION=<ask me: a short slug naming this app, e.g. support-agent>
+  METER_ENVIRONMENT=<production | staging | development, matching this deploy>
+  METER_RELEASE_VERSION=<optional; your build or release identifier>
+${projectId ? `Our Meter project id is ${projectId}, for reference if you need to ask about\nthis install. It is not a credential and the SDK does not read it.\n` : ""}Also add these names to .env.example (or whatever this repository uses to
+document its configuration) with EMPTY values, so the next person knows they
+exist. Never put a real token in that file, never hardcode it in source, and
+never commit it. The SDK is a silent no-op until the URL and token are set, so
+this is safe to merge and deploy before the token exists.
 
-WHAT TO CHANGE
-Find every place this codebase constructs an LLM client — Anthropic, OpenAI,
-Google GenAI, or any OpenAI-compatible client — and wrap it once, where it is
-constructed, with the feature its calls belong to. Do not add per-call code.
+If you do not know the application slug, ASK ME. It groups every workflow in
+this codebase and is awkward to change later.
 
-  # Python
-  from costlyinfra_meter import wrap
-  client = wrap(Anthropic(), feature_id="<feature-id>")
+WHAT TO CHANGE — two cases, and most codebases need both
 
-  // Node
-  import { wrap } from "costlyinfra-meter";
-  const client = wrap(new OpenAI(), { featureId: "<feature-id>" });
+1. A SINGLE MODEL CALL. Wrap the client once where it is constructed. Existing
+   calls stay exactly as they are; each becomes its own one-call trace.
 
-wrap() returns a transparent proxy. Existing calls stay exactly as they are and
-are metered automatically, with latency. The provider is detected from the
-client; pass provider="..." / { provider: "..." } only if detection is wrong.
+     # Python
+     from costlyinfra_meter import Meter
+     meter = Meter()                       # reads the env vars above
+     client = meter.wrap(Anthropic(), feature_id="<feature-id>")
+
+     // Node
+     import { Meter } from "costlyinfra-meter";
+     const meter = new Meter();
+     const client = meter.wrap(new OpenAI(), { featureId: "<feature-id>" });
+
+   wrap() returns a transparent proxy. The provider is detected from the client;
+   pass provider="..." / { provider: "..." } if detection is wrong.
+
+2. A MULTI-STEP AGENT OR WORKFLOW. If a request makes several model calls, or
+   mixes model calls with retrieval and tool calls, wrap the WHOLE run so the
+   steps are recorded as one trace. This is what makes "why did this run cost
+   $1.42" answerable.
+
+     # Python
+     with meter.agent("resolve-ticket", feature_id="<feature-id>",
+                      customer_id=customer_id) as run:
+         classification = run.llm("classify", lambda: client.messages.create(...))
+         documents      = run.tool("retrieve-documents", retrieve_documents)
+         answer         = run.llm("generate-answer", lambda: client.messages.create(...))
+
+     // Node
+     const answer = await meter.agent(
+       "resolve-ticket",
+       { featureId: "<feature-id>", customerId },
+       async (run) => {
+         const classification = await run.llm("classify", () => client.messages.create(...));
+         const documents      = await run.tool("retrieve-documents", retrieveDocuments);
+         return run.llm("generate-answer", () => client.messages.create(...));
+       },
+     );
+
+   Each step returns whatever your function returned, so wrapping a step does
+   not change control flow. Besides llm and tool there are retrieval,
+   embedding, guardrail and evaluation.
+
+   Name steps after what they DO ("classify", "retrieve-documents"), not after
+   the function that implements them.
 
 OUR FEATURES — use these ids, they are real:
 ${featureList(features)}
 
-If one client serves several features, wrap it at each call site instead of
-once at construction. If you cannot tell which feature a call belongs to, ask
-me — do not guess. A wrong id misattributes real money.
+If you cannot tell which feature a call belongs to, ask me — do not guess. A
+wrong id misattributes real money.
 
-TWO CASES wrap() DOES NOT COVER
-1. Streaming and async responses are skipped. Record those explicitly, with a
-   meter of your own:
-     # Python
-     from costlyinfra_meter import Meter
-     meter = Meter(feature_id="<feature-id>")
-     meter.record_anthropic(resp)   # or meter.record_openai(resp)
-     // Node
-     import { Meter } from "costlyinfra-meter";
-     const meter = new Meter("<feature-id>");
-     meter.recordAnthropic(resp);   // or meter.recordOpenAI(resp)
+QUEUES AND WORKERS
+If a run continues in a background worker, pass the context and resume it, so
+both halves are one trace:
+
+  # Python
+  context = run.export_context()          # identifiers only; safe to enqueue
+  with meter.resume(job.trace_context) as run:
+      run.tool("process-document", process_document)
+
+  // Node
+  await queue.send({ traceContext: run.exportContext() });
+  await meter.resume(job.traceContext, async (run) => run.tool("process", process));
+
+TWO CASES TO WATCH
+1. Streaming and async responses have no usage until they finish, so a wrapped
+   client skips them. Record those inside meter.agent(...) instead, where you
+   control when the step ends.
 2. Short-lived processes — a script, a cron job, a Lambda — can exit before the
    background worker has sent anything. Call meter.flush() (await it in Node)
    before the process ends.
 
-OPTIONAL
-metadata passed at wrap time is attached to every call through that client:
-  wrap(client, feature_id="...", metadata={"environment": "prod"})
-  wrap(client, { featureId: "...", metadata: { environment: "prod" } })
-For cost per customer, where the value changes from call to call, either build
-the wrapped client per request with that customer's id, or record the call
-explicitly with meter.record_*(resp, metadata={"customer_id": ...}).
-
 RULES — these are not negotiable
-- Never send prompt or response text to Meter. The SDK sends token counts,
-  the model name, latency and the feature id. Keep it that way.
+- Never send prompt or response content to Meter — not prompts, responses,
+  messages, tool arguments, tool results, retrieved documents, error messages
+  or stack traces. The SDK has no field for any of it and the server rejects a
+  payload that carries one. Do not attempt to add it. What Meter records is
+  identity, counts, timing and cost: token counts, the model, latency, the
+  feature, and optionally a prompt id and version.
 - Metering must never break or slow the request path. Do not await delivery, do
   not add your own retries, and do not put metering in a code path whose failure
   could change what the application returns.

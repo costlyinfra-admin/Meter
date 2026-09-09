@@ -47,9 +47,12 @@ test-web:
 	cd $(WEB) && npm test
 
 # Metering SDKs (M7): Python uses the backend venv's pytest; Node uses node --test.
+# `-m pip` / `-m pytest` rather than the console scripts: those carry an
+# absolute shebang baked in at venv creation, which breaks the moment the
+# checkout moves or is renamed.
 test-sdk:
-	$(VENV)/bin/pip install -q -e "sdk/python[dev]"
-	cd sdk/python && ../../$(VENV)/bin/pytest
+	$(PY) -m pip install -q -e "sdk/python[dev]"
+	cd sdk/python && ../../$(PY) -m pytest
 	cd sdk/node && node --test
 
 # ---- lint ----------------------------------------------------------------

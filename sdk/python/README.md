@@ -1,112 +1,138 @@
 # costlyinfra-meter
 
-The optional metering hook for [Meter](https://github.com/costlyinfra-admin/Meter) —
-a thin, fail-safe wrapper that reports per-call LLM usage so spend can be
-attributed **per feature**. Stdlib-only, no dependencies. Cost is computed
-server-side from Meter's pricing tables — the SDK never sees prices, and it
-never sends prompt or response content, only token counts and a `feature_id`.
+Request-level AI economics for [Meter](https://github.com/costlyinfra-admin/Meter).
 
-It is **fail-safe**: recording appends to an in-memory queue and returns. A
-single background worker batches and posts; nothing on your call path blocks,
-raises, or touches the network. If Meter is down, misconfigured, or asleep,
-your application is unaffected. With no ingest URL/token configured, every call
-is a no-op.
+It answers questions a monthly total cannot: why did *this* agent run cost
+$1.42, which step spent it, which agents are running right now, and did last
+week's prompt change make every run more expensive.
 
-It is also **bounded**: one worker thread per meter whatever your traffic, and a
-capped queue (10,000 events). If the queue fills — a stalled endpoint, a burst —
-the oldest events are dropped and counted on `meter.dropped`. Metering degrades;
-your application does not.
+Stdlib-only, no dependencies.
 
-### Delivery and `flush()`
+## What it never sends
 
-Events are sent when a batch fills (50) or after `flush_interval` seconds (5),
-whichever comes first. An `atexit` hook flushes on normal shutdown with a short
-deadline, so a script that exits immediately still delivers.
+Prompts, responses, messages, tool arguments, tool results, retrieved
+documents, exception messages and stack traces.
 
-Call `meter.flush()` explicitly where the worker may not get scheduled — a
-serverless handler that freezes between invocations, or before a hard exit:
-
-```python
-meter.flush()          # returns True if the queue drained, False on timeout
-meter.flush(timeout=1) # never waits longer than you allow
-```
-
-### Retries
-
-A failed batch is retried (3 attempts, backing off ~1s / 4s / 15s with jitter) —
-enough to ride out a restart, a blip, or a sleeping instance waking up. A 4xx is
-*not* retried: a bad token or a malformed event fails the same way forever, so
-retrying only hammers the endpoint. 429 is retried, since it explicitly asks you
-to come back.
-
-Retrying is safe because every attempt carries the same `batch_id`. The server
-applies a batch once and recognises re-deliveries, so a retry after a timeout you
-could not distinguish from a failure cannot double-charge a feature. Events only
-count as lost after the final attempt, and then `meter.dropped` says so.
-
-Tunable per meter: `batch_size`, `flush_interval`, `queue_max`, `timeout`,
-`max_attempts`, `retry_backoff`.
+Not truncated, not redacted, not behind a setting — the events this SDK can
+construct have no field for them, and the server rejects a payload that carries
+one. What travels is identity, counts, timing and money: which prompt version,
+how many tokens, how long, how much.
 
 ## Install
 
-Into the virtualenv your application runs in:
+```bash
+pip install costlyinfra-meter
+```
 
 ```bash
-python3 -m pip install "costlyinfra-meter>=1.0"
+export METER_INGEST_URL="https://your-meter/api/hook/events"
+export METER_INGEST_TOKEN="…"          # Install SDK page -> Generate token
+export METER_APPLICATION="support-agent"
+export METER_ENVIRONMENT="production"
+export METER_RELEASE_VERSION="2026.9.1"   # optional
 ```
 
-Or add `costlyinfra-meter>=1.0` to `requirements.txt` / `pyproject.toml`, which is
-the version that survives a rebuild.
+With no URL or token configured every call is a no-op, so importing this into a
+test suite or a local script costs nothing and needs no conditionals.
 
-If pip answers `error: externally-managed-environment`, you are outside a
-virtualenv — activate your application's environment and run it again.
-
-## Use
-
-**Recommended — wrap the client once (no per-call code):**
-
-```python
-from costlyinfra_meter import wrap
-
-client = wrap(anthropic_client, feature_id="feature-threat-triage")  # reads ENV
-
-resp = client.messages.create(model="claude-sonnet-4-6", ...)   # metered automatically
-```
-
-Provider is auto-detected; each call is recorded with its latency. Pass an
-optional `metadata={…}` (e.g. `environment`, `customer_id`) for extra
-attribution. Streaming/async calls use the explicit form below.
-
-**Explicit — one line per call:**
+## One model call
 
 ```python
 from costlyinfra_meter import Meter
 
-meter = Meter(feature_id="feature-threat-triage")
-resp = anthropic_client.messages.create(model="claude-sonnet-4-6", ...)
-meter.record_anthropic(resp)   # <- the whole hook
+meter = Meter(application="support-agent", environment="production")
+client = meter.wrap(anthropic_client, feature_id="answer-generation")
+
+response = client.messages.create(model="claude-sonnet-4-6", messages=messages)
 ```
 
-Helpers: `record_anthropic`, `record_openai`, `record_gemini`,
-`record_openai_compatible`, or the generic `record(provider=…, model=…,
-tokens_in=…, tokens_out=…, feature_id=…)`.
+The wrapped client behaves exactly like the original — same arguments, same
+return value. Each call becomes its own one-span trace; you never mention
+traces.
 
-### Optimize mode (opt-in)
+If your client is behind a wrapper or a subclass, name the provider outright:
+`meter.wrap(client, provider="anthropic")`.
 
-`Meter(..., optimize=True)` additionally emits **privacy-safe** signals — salted
-hashes and counts, never prompt text — so Meter can surface *measured*
-optimization opportunities (duplicate calls, uncached repeated prefixes). Off by
-default; all work is off the call path, memory-bounded, and fail-safe. The SDK
-fetches a per-tenant salt once (`GET /api/hook/salt`, same ingest token).
+## A multi-step agent
 
-## Config
+```python
+with meter.agent(
+    "resolve-ticket",
+    feature_id="ticket-resolution",
+    customer_id="customer-123",
+) as run:
+    classification = run.llm("classify", lambda: anthropic_client.messages.create(...))
+    documents      = run.tool("retrieve-documents", retrieve_documents)
+    answer         = run.llm("generate-answer", lambda: anthropic_client.messages.create(...))
+```
 
-| Env var                  | What it is                                            |
-|--------------------------|-------------------------------------------------------|
-| `METER_INGEST_URL`   | e.g. `https://app.example.com/api/hook/events`        |
-| `METER_INGEST_TOKEN` | the per-workspace ingest token from the dashboard     |
+Each step returns whatever your function returned. Latency, status, tokens,
+model and provider are recorded automatically. An exception fails the step and
+the run and is re-raised unchanged — its message is never transmitted.
 
-## License
+Besides `llm` and `tool` there are `retrieval`, `embedding`, `guardrail` and
+`evaluation`, which record the same way and are separated in reporting.
 
-Apache-2.0. (The Meter server is AGPL-3.0; this client SDK is permissive so
-you can embed it in a proprietary app.)
+Prompt identity, when you version prompts:
+
+```python
+run.llm("generate-answer", call, prompt_id="answer-ticket", prompt_version="5.0")
+```
+
+## Long-running agents
+
+A run sends a heartbeat every 30 seconds so a slow-but-healthy agent is not
+mistaken for a hung one. Heartbeats stop the moment the run ends — success,
+failure or cancellation — and the timer is cancelled rather than abandoned.
+
+Meter derives "stale" at read time from that activity. A stale run has **not**
+failed: it may still finish, and it does so normally when it does.
+
+## Queues and workers
+
+```python
+# producer
+with meter.agent("resolve-ticket") as run:
+    queue.send("continue-agent", trace_context=run.export_context())
+
+# worker
+with meter.resume(job.trace_context) as run:
+    run.tool("process-document", process_document)
+```
+
+Both processes write to one trace. The exported context carries identifiers
+only — trace id, parent span id, application, feature, environment, release. No
+token, no customer content: it is designed on the assumption that anything on a
+queue eventually gets logged.
+
+## Delivery
+
+Recording appends to an in-memory queue and returns. One background worker
+batches and posts; nothing on your call path blocks, raises or touches the
+network. If Meter is down or misconfigured, your agent is unaffected.
+
+Bounded: one worker thread per meter whatever your traffic, and a capped queue
+(10,000 events). If it fills — a stalled endpoint, a burst — the oldest events
+are dropped and counted on `meter.dropped`. Metering degrades visibly; your
+application does not.
+
+A batch keeps one id across retries, so a retry after an ambiguous timeout
+(server committed, response lost) is recognised as a replay rather than
+doubling a run's cost.
+
+Call `flush()` where the worker may not get scheduled — a serverless handler, a
+script about to exit:
+
+```python
+meter.flush()          # True if the queue drained, False on timeout
+```
+
+An `atexit` hook flushes on normal shutdown.
+
+## Upgrading from 0.x
+
+1.0 replaces per-call cost reporting with traces. `meter.record(...)`,
+`record_anthropic(...)` and the other `record_*` methods are gone; use
+`meter.wrap(...)` for a single call and `meter.agent(...)` for a workflow.
+`METER_TOKEN` is now `METER_INGEST_TOKEN`, and `METER_APPLICATION` is new and
+required for anything to be grouped sensibly.

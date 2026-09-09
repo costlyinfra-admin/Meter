@@ -2,10 +2,32 @@
 
 from __future__ import annotations
 
+import uuid
+
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from meter.api import create_app
+
+
+def span_event(**fields):
+    """One finished LLM call, as a lifecycle event.
+
+    The SDK now sends spans rather than cost rows, so every one of these carries
+    the trace it belongs to. A helper keeps the tests about what they are
+    testing rather than about event plumbing.
+    """
+    event = {
+        "event_type": "span.completed",
+        "trace_id": fields.pop("trace_id", None) or f"t-{uuid.uuid4().hex[:8]}",
+        "span_id": fields.pop("span_id", None) or uuid.uuid4().hex[:8],
+        "span_kind": "llm",
+        "operation_name": fields.pop("operation_name", "completion"),
+        "application": fields.pop("application", "support-agent"),
+    }
+    event.update(fields)
+    return event
+
 
 PASSWORD = "correct horse battery"
 
@@ -33,13 +55,13 @@ def test_hook_token_and_event_ingest(client):
         headers={"Authorization": f"Bearer {token}"},
         json={
             "events": [
-                {
-                    "provider": "anthropic",
-                    "model": "claude-sonnet-4-6",
-                    "tokens_in": 100_000_000,
-                    "tokens_out": 0,
-                    "feature_id": feature["id"],
-                }
+                span_event(
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                    tokens_in=100_000_000,
+                    tokens_out=0,
+                    feature_id=feature["id"],
+                )
             ]
         },
     )
@@ -60,16 +82,16 @@ def test_hook_ingest_captures_latency_and_customer(client):
     token = client.post("/api/hook/token").json()["token"]
 
     def ev(latency, customer):
-        return {
-            "provider": "anthropic",
-            "model": "claude-sonnet-4-6",
-            "tokens_in": 1_000_000,
-            "tokens_out": 0,
-            "feature_id": feature["id"],
-            "occurred_at": "2026-06-15T10:00:00Z",
-            "latency_ms": latency,
-            "metadata": {"customer_id": customer},
-        }
+        return span_event(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            tokens_in=1_000_000,
+            tokens_out=0,
+            feature_id=feature["id"],
+            latency_ms=latency,
+            customer_id=customer,
+            occurred_at="2026-06-15T12:00:00Z",
+        )
 
     resp = client.post(
         "/api/hook/events",
@@ -97,8 +119,10 @@ def test_hook_ingest_captures_latency_and_customer(client):
 
 
 def test_hook_ingest_persists_optimization_signal(client, admin_conninfo):
-    # Regression: the API event model must NOT strip the optional `signal` block
-    # before it reaches the hook (same failure mode as latency_ms/metadata once had).
+    # An optimization signal is a salted fingerprint and counts — the same
+    # privacy class as prompt_hash, and never any text. It stays in the event
+    # contract because the duplicate/uncached-prefix detectors are built on it,
+    # and dropping it would have silently removed a working feature.
     feature = client.post("/api/features", json={"name": "AI threat triage"}).json()
     token = client.post("/api/hook/token").json()["token"]
 
@@ -107,18 +131,19 @@ def test_hook_ingest_persists_optimization_signal(client, admin_conninfo):
         headers={"Authorization": f"Bearer {token}"},
         json={
             "events": [
-                {
-                    "provider": "anthropic",
-                    "model": "claude-sonnet-4-6",
-                    "tokens_in": 1_000_000,
-                    "tokens_out": 0,
-                    "feature_id": feature["id"],
-                    "signal": {"kind": "duplicate", "fingerprint": "fp-api-1", "count": 1},
-                }
+                span_event(
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                    tokens_in=1_000_000,
+                    tokens_out=0,
+                    feature_id=feature["id"],
+                    signal={"kind": "duplicate", "fingerprint": "fp-api-1", "count": 1},
+                )
             ]
         },
     )
     assert resp.status_code == 200
+    assert resp.json()["accepted"] == 1
 
     with psycopg.connect(admin_conninfo) as db:  # admin bypasses RLS for the assertion
         row = db.execute("SELECT signal_kind, fingerprint, call_count FROM usage_signal").fetchone()
@@ -131,15 +156,17 @@ def test_opportunities_endpoint_surfaces_measured_savings(client):
     token = client.post("/api/hook/token").json()["token"]
 
     def dup():
-        return {
-            "provider": "anthropic",
-            "model": "claude-sonnet-4-6",
-            "tokens_in": 1_000_000,
-            "tokens_out": 0,
-            "feature_id": feature["id"],
-            "occurred_at": "2026-06-15T10:00:00Z",
-            "signal": {"kind": "duplicate", "fingerprint": "fp-a", "count": 1},
-        }
+        return span_event(
+            **{
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "tokens_in": 1_000_000,
+                "tokens_out": 0,
+                "feature_id": feature["id"],
+                "occurred_at": "2026-06-15T10:00:00Z",
+                "signal": {"kind": "duplicate", "fingerprint": "fp-a", "count": 1},
+            }
+        )
 
     client.post(
         "/api/hook/events",
@@ -166,19 +193,25 @@ def test_copilot_overview_aggregates_across_features(client):
     for name in ("AI threat triage", "Report generator"):
         fid = client.post("/api/features", json={"name": name}).json()["id"]
         ids.append(fid)
-        ev = {
-            "provider": "anthropic",
-            "model": "claude-sonnet-4-6",
-            "tokens_in": 1_000_000,
-            "tokens_out": 0,
-            "feature_id": fid,
-            "occurred_at": "2026-06-15T10:00:00Z",
-            "signal": {"kind": "duplicate", "fingerprint": "fp-a", "count": 1},
-        }
+        ev = span_event(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            tokens_in=1_000_000,
+            tokens_out=0,
+            feature_id=fid,
+            occurred_at="2026-06-15T10:00:00Z",
+            signal={"kind": "duplicate", "fingerprint": "fp-a", "count": 1},
+        )
+        second = span_event(
+            **{
+                **{k: v for k, v in ev.items() if k not in ("event_type", "span_id", "trace_id")},
+                "occurred_at": "2026-06-16T10:00:00Z",
+            }
+        )
         client.post(
             "/api/hook/events",
             headers={"Authorization": f"Bearer {token}"},
-            json={"events": [ev, {**ev, "occurred_at": "2026-06-16T10:00:00Z"}]},
+            json={"events": [ev, second]},
         )
 
     body = client.get("/api/copilot/overview?period=2026-06").json()
@@ -240,12 +273,9 @@ def test_hook_salt_endpoint_is_stable_and_token_gated(client):
 # GET /api/hook/recent — the Install SDK page's "is it reporting yet" check
 # --------------------------------------------------------------------------
 def _post_event(client, token, **over):
-    event = {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
-        "tokens_in": 1000,
-        "tokens_out": 100,
-    }
+    event = span_event(
+        provider="anthropic", model="claude-sonnet-4-6", tokens_in=1000, tokens_out=100
+    )
     event.update(over)
     return client.post(
         "/api/hook/events",

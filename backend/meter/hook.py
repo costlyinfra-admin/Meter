@@ -163,7 +163,7 @@ def ingest_events(tenant_id: str, events: list[dict], batch_id: Optional[str] = 
             sig = event.get("signal")
             sig_kind = sig.get("kind") if isinstance(sig, dict) else None
             if sig_kind in ("duplicate", "prefix"):
-                _accumulate_signal(
+                accumulate_signal(
                     signal_acc,
                     sig,
                     sig_kind,
@@ -209,7 +209,7 @@ def ingest_events(tenant_id: str, events: list[dict], batch_id: Optional[str] = 
 
         for skey, sentry in signal_acc.items():
             feature_id, provider, model, period, kind, fingerprint = skey
-            _upsert_signal(
+            upsert_signal(
                 conn, tenant_id, feature_id, provider, model, period, kind, fingerprint, sentry
             )
 
@@ -277,7 +277,7 @@ def upsert_customer_cost(conn, tenant_id, customer_id, period, centry) -> None:
     )
 
 
-def _accumulate_signal(
+def accumulate_signal(
     signal_acc, sig, kind, feature_id, provider, model, period, tokens_in, tokens_out
 ) -> None:
     """Fold one optimization signal into the batch accumulator (opt spec §6).
@@ -310,7 +310,7 @@ def _accumulate_signal(
             entry["prefix_tokens"] = max(prev, int(ptok))
 
 
-def _upsert_signal(
+def upsert_signal(
     conn, tenant_id, feature_id, provider, model, period, kind, fingerprint, entry
 ) -> None:
     existing = conn.execute(

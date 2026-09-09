@@ -1,20 +1,21 @@
-# costlyinfra-meter (Node)
+# costlyinfra-meter
 
-The optional metering hook for [Meter](https://github.com/costlyinfra-admin/Meter) —
-a thin, fail-safe wrapper that reports per-call LLM usage so spend can be
-attributed **per feature**. No dependencies (Node ≥ 18). Cost is computed
-server-side from Meter's pricing tables — the SDK never sees prices, and it
-never sends prompt or response content, only token counts and a `featureId`.
+Request-level AI economics for [Meter](https://github.com/costlyinfra-admin/Meter).
 
-It is **fail-safe**: recording appends to an in-memory queue and returns. A timer
-batches and posts; nothing on your call path blocks, throws, or touches the
-network. If Meter is down, misconfigured, or asleep, your application is
-unaffected. With no ingest URL/token configured, every call is a no-op.
+It answers questions a monthly total cannot: why did *this* agent run cost
+$1.42, which step spent it, which agents are running right now, and did last
+week's prompt change make every run more expensive.
 
-It is also **bounded**: a capped queue (10,000 events) whose oldest entries are
-dropped and counted on `meter.dropped` when it fills. Metering degrades; your
-application does not. The batching timer is `unref`'d, so it never holds your
-process open.
+No dependencies. Node 18+.
+
+## What it never sends
+
+Prompts, responses, messages, tool arguments, tool results, retrieved
+documents, error messages and stack traces.
+
+Not truncated, not redacted, not behind a setting — the events this SDK can
+construct have no field for them, and the server rejects a payload that carries
+one. What travels is identity, counts, timing and money.
 
 ## Install
 
@@ -22,79 +23,112 @@ process open.
 npm install costlyinfra-meter
 ```
 
-ESM only — `import` it. In a CommonJS project use a dynamic import
-(`const { wrap } = await import("costlyinfra-meter")`); `require()` will not work.
-
-## Use
-
-**Recommended — wrap the client once (no per-call code):**
-
-```js
-import { wrap } from "costlyinfra-meter";
-
-const client = wrap(openai, { featureId: "feature-threat-triage" }); // reads ENV
-
-const resp = await client.chat.completions.create({ model: "gpt-4o", ... }); // metered
+```bash
+export METER_INGEST_URL="https://your-meter/api/hook/events"
+export METER_INGEST_TOKEN="…"          # Install SDK page -> Generate token
+export METER_APPLICATION="support-agent"
+export METER_ENVIRONMENT="production"
+export METER_RELEASE_VERSION="2026.9.1"   # optional
 ```
 
-Provider is auto-detected; each call is recorded with its latency. Pass an
-optional `metadata` (e.g. `{ environment, customer_id }`) for extra attribution.
-Streaming responses use the explicit form below.
+With no URL or token configured every call is a no-op, so importing this into a
+test suite or a local script costs nothing and needs no conditionals.
 
-**Explicit — one line per call:**
+## One model call
 
 ```js
 import { Meter } from "costlyinfra-meter";
 
-const meter = new Meter("feature-threat-triage");
-const resp = await openai.chat.completions.create({ model: "gpt-4o", ... });
-meter.recordOpenAI(resp);        // <- the whole hook
+const meter = new Meter({ application: "support-agent", environment: "production" });
+const client = meter.wrap(anthropic, { featureId: "answer-generation" });
+
+const response = await client.messages.create({ model: "claude-sonnet-4-6", messages });
 ```
 
-Helpers: `recordAnthropic`, `recordOpenAI`, plus the generic
-`record({ provider, model, tokensIn, tokensOut, featureId })`.
+The wrapped client behaves exactly like the original. Each call becomes its own
+one-span trace; you never mention traces.
 
-### Delivery, `flush()` and retries
+If your client is behind a wrapper, name the provider outright:
+`meter.wrap(client, { provider: "anthropic" })`.
 
-Events are sent when a batch fills (50) or after `flushIntervalMs` (5000),
-whichever comes first. Each request is bounded by a timeout (5s, `{ timeoutMs }`),
-so a sleeping endpoint can never leave requests pending.
-
-A failed batch is retried (3 attempts, backing off ~1s / 4s / 15s with jitter) —
-enough to ride out a restart or an instance waking from sleep. A 4xx is *not*
-retried: a bad token fails the same way forever. 429 is, since it explicitly asks
-you to come back. Retrying is safe because every attempt carries the same
-`batch_id`, which the server applies once and then recognises — so a retry after
-an ambiguous timeout cannot double-charge a feature.
-
-The SDK drains automatically on `beforeExit`. That does **not** fire on
-`process.exit()` or an uncaught throw, so await a flush before a hard exit:
+## A multi-step agent
 
 ```js
-await meter.flush();      // true if the queue drained, false on timeout
-await meter.flush(1000);  // never waits longer than you allow
+const result = await meter.agent(
+  "resolve-ticket",
+  { featureId: "ticket-resolution", customerId: "customer-123" },
+  async (run) => {
+    const classification = await run.llm("classify", () => anthropic.messages.create(...));
+    const documents      = await run.tool("retrieve-documents", retrieveDocuments);
+    return run.llm("generate-answer", () => anthropic.messages.create(...));
+  },
+);
 ```
 
-Tunable: `batchSize`, `flushIntervalMs`, `queueMax`, `timeoutMs`, `maxAttempts`,
-`retryBackoffMs`.
+Each step resolves to whatever your function resolved to. Latency, status,
+tokens, model and provider are recorded automatically. A rejection fails the
+step and the run and is re-thrown unchanged — its message is never transmitted.
 
-### Optimize mode (opt-in)
+Besides `llm` and `tool` there are `retrieval`, `embedding`, `guardrail` and
+`evaluation`.
 
-`new Meter(featureId, { optimize: true })` additionally emits **privacy-safe**
-signals — salted hashes and counts, never prompt text — so Meter can surface
-*measured* optimization opportunities (duplicate calls, uncached repeated
-prefixes). Off by default; work is off the call path, memory-bounded, and
-fail-safe. The SDK fetches a per-tenant salt once (`GET /api/hook/salt`, same
-ingest token).
+Prompt identity, when you version prompts:
 
-## Config
+```js
+await run.llm("generate-answer", call, { promptId: "answer-ticket", promptVersion: "5.0" });
+```
 
-| Env var                  | What it is                                        |
-|--------------------------|---------------------------------------------------|
-| `METER_INGEST_URL`   | e.g. `https://app.example.com/api/hook/events`    |
-| `METER_INGEST_TOKEN` | the per-workspace ingest token from the dashboard |
+## Long-running agents
 
-## License
+A run sends a heartbeat every 30 seconds so a slow-but-healthy agent is not
+mistaken for a hung one. Heartbeats stop the moment the run ends, and the timer
+is `unref`'d so metering can never hold your process open.
 
-Apache-2.0. (The Meter server is AGPL-3.0; this client SDK is permissive so
-you can embed it in a proprietary app.)
+Meter derives "stale" at read time from that activity. A stale run has **not**
+failed: it may still finish, and it does so normally when it does.
+
+## Queues and workers
+
+```js
+// producer
+await meter.agent("resolve-ticket", {}, async (run) => {
+  await queue.send({ traceContext: run.exportContext() });
+});
+
+// worker
+await meter.resume(job.traceContext, async (run) => {
+  return run.tool("process-document", processDocument);
+});
+```
+
+Both processes write to one trace. The exported context carries identifiers
+only — no token, no customer content: it is designed on the assumption that
+anything on a queue eventually gets logged.
+
+## Delivery
+
+Recording appends to an in-memory queue and returns. Batches are posted off your
+call path, chained rather than concurrent so one slow request cannot fan out.
+If Meter is down or misconfigured, your agent is unaffected.
+
+Bounded: a capped queue (10,000 events) that sheds oldest-first when full, with
+the count on `meter.dropped`. Metering degrades visibly; your application does
+not.
+
+A batch keeps one id across retries, so a retry after an ambiguous timeout
+(server committed, response lost) is recognised as a replay rather than doubling
+a run's cost.
+
+Await `flush()` before a short-lived process exits:
+
+```js
+await meter.flush();
+```
+
+## Upgrading from 0.x
+
+1.0 replaces per-call cost reporting with traces. `meter.record(...)` and the
+`record*` helpers are gone; use `meter.wrap(...)` for a single call and
+`meter.agent(...)` for a workflow. The constructor now takes an options object
+rather than a feature id, `METER_TOKEN` is now `METER_INGEST_TOKEN`, and
+`METER_APPLICATION` is new.

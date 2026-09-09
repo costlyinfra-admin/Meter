@@ -289,13 +289,25 @@ from versioned pricing tables. It's a no-op when unconfigured, so the same code 
 with or without it.
 
 ```python
-# Python — pip install ./sdk/python (or publish it)
+# Python — pip install costlyinfra-meter
 from costlyinfra_meter import Meter
-meter = Meter(feature_id="feature-threat-triage")   # reads METER_INGEST_URL/TOKEN
+meter = Meter(application="support-agent")   # reads METER_INGEST_URL/TOKEN
 
-resp = anthropic_client.messages.create(model="claude-sonnet-4-6", ...)
-meter.record_anthropic(resp)        # one line — that's the whole hook
+# One call: wrap the client once and every call becomes its own trace.
+client = meter.wrap(anthropic_client, feature_id="feature-threat-triage")
+client.messages.create(model="claude-sonnet-4-6", ...)
+
+# A workflow: each step becomes a span under one run, so "why did this run
+# cost $1.42" has an answer.
+with meter.agent("resolve-ticket", feature_id="feature-threat-triage") as run:
+    run.llm("classify", lambda: client.messages.create(...))
+    docs = run.tool("retrieve-documents", retrieve_documents)
+    run.llm("generate-answer", lambda: client.messages.create(...))
 ```
+
+The SDK never sends prompts, responses, tool arguments, tool results, retrieved
+documents or exception text — there is no field for any of it. Cost is computed
+server-side from versioned pricing tables.
 
 Hook totals are **reconciled against the provider's authoritative bill** each
 period; any gap surfaces in Unattributed rather than corrupting a feature's number.

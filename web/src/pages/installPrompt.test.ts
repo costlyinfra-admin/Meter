@@ -38,28 +38,53 @@ describe("the coding-agent prompt", () => {
     expect(NODE_MANIFEST.version).toBe(/version = "([\d.]+)"/.exec(PYTHON_MANIFEST)![1]);
   });
 
+  // The prompt tells a coding agent which methods to call. If it names one the
+  // SDK does not have, the agent writes code that cannot work — so the prompt
+  // is checked against the SDK source, not against what we remember shipping.
   it("only mentions Python entry points that exist", () => {
-    for (const name of ["def wrap(", "class Meter", "def record_anthropic", "def record_openai"]) {
+    for (const name of [
+      "def wrap(",
+      "class Meter",
+      "def agent(",
+      "def resume(",
+      "def llm(",
+      "def tool(",
+      "def export_context(",
+      "def flush(",
+    ]) {
       expect(PYTHON_SDK).toContain(name);
     }
-    expect(PYTHON_SDK).toContain("def flush(");
     const text = prompt();
-    expect(text).toContain("from costlyinfra_meter import wrap");
-    expect(text).toContain("meter.record_anthropic(resp)");
+    expect(text).toContain("from costlyinfra_meter import Meter");
+    expect(text).toContain("meter.wrap(");
+    expect(text).toContain("meter.agent(");
+    expect(text).toContain("run.export_context()");
+    // And must not name anything the rewrite removed.
+    for (const gone of ["record_anthropic", "record_openai", "meter.record("]) {
+      expect(text).not.toContain(gone);
+    }
   });
 
   it("only mentions Node entry points that exist", () => {
     for (const name of [
-      "export function wrap(",
       "export class Meter",
-      "recordAnthropic(",
-      "recordOpenAI(",
+      "export class AgentRun",
+      "async agent(",
+      "async resume(",
+      "llm(",
+      "tool(",
+      "exportContext(",
+      "async flush(",
     ]) {
       expect(NODE_SDK).toContain(name);
     }
     const text = prompt();
-    expect(text).toContain('import { wrap } from "costlyinfra-meter"');
-    expect(text).toContain("meter.recordAnthropic(resp)");
+    expect(text).toContain('import { Meter } from "costlyinfra-meter"');
+    expect(text).toContain("meter.agent(");
+    expect(text).toContain("run.exportContext()");
+    for (const gone of ["recordAnthropic", "recordOpenAI", 'new Meter("<feature-id>")']) {
+      expect(text).not.toContain(gone);
+    }
   });
 
   it("is right that the Node package is ESM only", () => {
@@ -78,9 +103,7 @@ describe("the coding-agent prompt", () => {
   });
 
   it("carries this install's ingest URL, not a placeholder", () => {
-    expect(prompt()).toContain(
-      "METER_INGEST_URL=https://meter.example.com/api/hook/events",
-    );
+    expect(prompt()).toContain("METER_INGEST_URL=https://meter.example.com/api/hook/events");
   });
 
   it("lists real feature ids so the agent has nothing to invent", () => {
@@ -102,7 +125,10 @@ describe("the coding-agent prompt", () => {
 
   it("states the invariants that make metering safe to merge", () => {
     const text = prompt();
-    expect(text).toMatch(/Never send prompt or response text/i);
+    expect(text).toMatch(/Never send prompt or response content/i);
+    // The ban must be specific enough that an agent knows what it covers.
+    expect(text).toMatch(/tool arguments/i);
+    expect(text).toMatch(/stack traces/i);
     expect(text).toMatch(/never break or slow the request path/i);
     expect(text).toMatch(/flush\(\)/);
   });

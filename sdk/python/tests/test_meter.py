@@ -1,596 +1,489 @@
-"""Tests for the Python metering SDK (no network — a transport captures posts)."""
+"""The Python SDK: lifecycle, propagation, privacy, and never breaking the agent."""
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import threading
 import time
-import urllib.error
 
-from costlyinfra_meter import (
-    Meter,
-    _detect_provider,  # noqa: PLC2701  (tested on purpose)
-    wrap,
-)
+import pytest
+from costlyinfra_meter import Meter
+
+URL = "https://meter.example/api/hook/events"
 
 
-class _Capture:
-    def __init__(self):
-        self.calls = []
+class Captured:
+    """A transport that records what would have been posted."""
+
+    def __init__(self, fail: int = 0, status: int = 0):
+        self.batches: list = []
+        self.calls = 0
+        self._fail, self._status = fail, status
 
     def __call__(self, url, headers, body):
-        payload = json.loads(body)
-        self.calls.append(
-            {
-                "url": url,
-                "headers": headers,
-                "events": payload["events"],
-                "batch_id": payload.get("batch_id"),
-            }
-        )
+        self.calls += 1
+        payload = json.loads(body.decode())
+        self.batches.append(payload)
+        if self.calls <= self._fail:
+            if self._status:
+                import urllib.error
+
+                raise urllib.error.HTTPError(url, self._status, "no", {}, None)
+            raise OSError("network")
+
+    @property
+    def events(self) -> list:
+        return [e for b in self.batches for e in b["events"]]
+
+    def of(self, kind: str) -> list:
+        return [e for e in self.events if e["event_type"] == kind]
 
 
-def _meter(capture, *, retry_backoff=None, **kw):
-    if retry_backoff is not None:
-        kw["retry_backoff"] = (retry_backoff,)  # keep retry tests instant
+def meter(transport=None, **kw) -> Meter:
+    kw.setdefault("flush_interval", 0.01)
+    kw.setdefault("token", "tok")
     return Meter(
-        ingest_url="https://app.test/api/hook/events", token="tok", transport=capture, **kw
-    )
-
-
-def test_record_builds_event_and_authenticates():
-    cap = _Capture()
-    m = _meter(cap)
-    m.record(
-        provider="anthropic",
-        model="claude-sonnet-4-6",
-        tokens_in=1200,
-        tokens_out=300,
-        feature_id="f1",
-    )
-    m.flush()
-
-    assert cap.calls[0]["headers"]["Authorization"] == "Bearer tok"
-    event = cap.calls[0]["events"][0]
-    assert event["provider"] == "anthropic"
-    assert event["tokens_in"] == 1200
-    assert event["feature_id"] == "f1"
-
-
-def test_record_anthropic_maps_usage():
-    cap = _Capture()
-    m = _meter(cap)
-    resp = type(
-        "R", (), {"model": "claude-haiku-4-5", "usage": {"input_tokens": 50, "output_tokens": 7}}
-    )()
-    m.record_anthropic(resp, feature_id="f2")
-    m.flush()
-    event = cap.calls[0]["events"][0]
-    assert _stamped(event) == {
-        "provider": "anthropic",
-        "model": "claude-haiku-4-5",
-        "tokens_in": 50,
-        "tokens_out": 7,
-        "feature_id": "f2",
-    }
-
-
-def test_record_openai_maps_usage():
-    cap = _Capture()
-    m = _meter(cap)
-    resp = {"model": "gpt-4o", "usage": {"prompt_tokens": 80, "completion_tokens": 20}}
-    m.record_openai(resp, feature_id="f3")
-    m.flush()
-    event = cap.calls[0]["events"][0]
-    assert event["provider"] == "openai"
-    assert event["tokens_in"] == 80
-    assert event["tokens_out"] == 20
-
-
-def test_record_gemini_maps_usage_metadata():
-    cap = _Capture()
-    m = _meter(cap)
-    resp = type(
-        "R",
-        (),
-        {
-            "model_version": "gemini-2.5-flash",
-            "usage_metadata": {"prompt_token_count": 800, "candidates_token_count": 120},
-        },
-    )()
-    m.record_gemini(resp, feature_id="f7")
-    m.flush()
-    event = cap.calls[0]["events"][0]
-    assert _stamped(event) == {
-        "provider": "google",
-        "model": "gemini-2.5-flash",
-        "tokens_in": 800,
-        "tokens_out": 120,
-        "feature_id": "f7",
-    }
-
-
-def test_record_openai_compatible_tags_hosted_oss_provider():
-    cap = _Capture()
-    m = _meter(cap)
-    # A Together response uses the OpenAI usage shape; provider drives pricing.
-    resp = {
-        "model": "meta-llama-3.1-70b-instruct",
-        "usage": {"prompt_tokens": 1200, "completion_tokens": 300},
-    }
-    m.record_openai_compatible(resp, provider="together", feature_id="f9")
-    m.flush()
-    event = cap.calls[0]["events"][0]
-    assert _stamped(event) == {
-        "provider": "together",
-        "model": "meta-llama-3.1-70b-instruct",
-        "tokens_in": 1200,
-        "tokens_out": 300,
-        "feature_id": "f9",
-    }
-
-
-def test_unconfigured_meter_is_a_noop():
-    cap = _Capture()
-    m = Meter(transport=cap)  # no url/token
-    assert m.enabled is False
-    assert m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1) is None
-    assert cap.calls == []
-
-
-def test_record_does_not_raise_when_a_thread_cannot_start(monkeypatch):
-    """An app at its thread limit must still be able to call record().
-
-    Metering spawns a thread per call, so it helps push a busy application to
-    the limit — and Thread.start() then raises. That must never reach the
-    caller's request path: the event is dropped, and record() returns None.
-    """
-    cap = _Capture()
-    m = _meter(cap)
-
-    def _refuse(self):
-        raise RuntimeError("can't start new thread")
-
-    monkeypatch.setattr(threading.Thread, "start", _refuse)
-
-    assert m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1) is None
-    assert m.record_anthropic(_anthropic_resp(), feature_id="f1") is None
-    assert cap.calls == []  # nothing sent, but nothing raised either
-
-
-def test_wrapped_call_still_returns_the_response_when_a_thread_cannot_start(monkeypatch):
-    """The wrapped client keeps working even when metering cannot run at all."""
-    cap = _Capture()
-    resp = _anthropic_resp()
-    client = wrap(_FakeAnthropic(resp), provider="anthropic", meter=_meter(cap))
-
-    def _refuse(self):
-        raise RuntimeError("can't start new thread")
-
-    monkeypatch.setattr(threading.Thread, "start", _refuse)
-
-    assert client.messages.create(model="claude-sonnet-4-6", messages=[]) is resp
-
-
-# --- wrap() auto-instrumentation, latency, metadata ------------------------
-
-
-def _flushed(meter, timeout=2.0):
-    """Delivery is batched on a worker; force it and wait for the queue to drain."""
-    assert meter.flush(timeout=timeout), "meter did not drain within the timeout"
-
-
-class _FakeMessages:
-    def __init__(self, resp):
-        self.resp = resp
-        self.calls = []
-
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.resp
-
-
-class _FakeAnthropic:
-    def __init__(self, resp):
-        self.messages = _FakeMessages(resp)
-        self.api_key = "sk-real"
-
-
-def _anthropic_resp():
-    return type(
-        "R", (), {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 10, "output_tokens": 2}}
-    )()
-
-
-def test_wrap_records_completion_and_passes_through():
-    cap = _Capture()
-    resp = _anthropic_resp()
-    client = _FakeAnthropic(resp)
-    m = Meter(
-        ingest_url="https://app.test/api/hook/events",
-        token="tok",
-        feature_id="f1",
-        transport=cap,
-    )
-    wrapped = wrap(client, provider="anthropic", meter=m)
-
-    out = wrapped.messages.create(model="claude-sonnet-4-6", messages=[])
-    assert out is resp  # returns the real response, unchanged
-    assert wrapped.api_key == "sk-real"  # non-instrumented attribute passes through
-    assert client.messages.calls  # the underlying call actually ran
-
-    _flushed(m)
-    ev = cap.calls[0]["events"][0]
-    assert ev["provider"] == "anthropic"
-    assert ev["feature_id"] == "f1"
-    assert ev["tokens_in"] == 10 and ev["tokens_out"] == 2
-    assert isinstance(ev["latency_ms"], int) and ev["latency_ms"] >= 0
-
-
-def test_wrap_merges_default_metadata():
-    cap = _Capture()
-    m = Meter(
-        ingest_url="https://app.test/api/hook/events",
-        token="tok",
-        metadata={"environment": "prod"},
-        transport=cap,
-    )
-    wrapped = wrap(_FakeAnthropic(_anthropic_resp()), provider="anthropic", meter=m)
-    wrapped.messages.create()
-    _flushed(m)
-    assert cap.calls[0]["events"][0]["metadata"] == {"environment": "prod"}
-
-
-def test_wrap_skips_streaming_or_async_responses():
-    cap = _Capture()
-    stream = iter([])  # no usage attribute -> looks like a stream
-    m = _meter(cap)
-    wrapped = wrap(_FakeAnthropic(stream), provider="anthropic", meter=m)
-    out = wrapped.messages.create(stream=True)
-    assert out is stream
-    _flushed(m, timeout=0.3)
-    assert cap.calls == []  # nothing recorded for a non-usage response
-
-
-def test_detect_provider_from_client_module():
-    for module, expected in [
-        ("anthropic.resources.messages", "anthropic"),
-        ("openai._client", "openai"),
-        ("google.genai", "google"),
-    ]:
-        cls = type("Client", (), {})
-        cls.__module__ = module
-        assert _detect_provider(cls()) == expected
-
-
-# --- optimize mode (opt spec M-opt-2) --------------------------------------
-
-
-def _opt_meter(capture, **kw):
-    # salt is supplied directly so the optimizer never hits the network in tests.
-    kw.setdefault("salt", "test-salt")
-    return Meter(
-        ingest_url="https://app.test/api/hook/events",
-        token="tok",
-        feature_id="f1",
-        optimize=True,
-        transport=capture,
+        application="support-agent",
+        environment="production",
+        ingest_url=URL,
+        transport=transport or Captured(),
         **kw,
     )
 
 
-def _stamped(event):
-    """Strip (and check) the delivery timestamp every event now carries."""
-    event = dict(event)
-    assert event.pop("occurred_at").endswith("Z"), "event was not timestamped"
-    return event
+def drain(m: Meter) -> None:
+    assert m.flush(timeout=3.0)
 
 
-def _all_events(cap):
-    return [ev for call in cap.calls for ev in call["events"]]
+class Response:
+    """A provider response shaped like Anthropic's."""
+
+    def __init__(self, model="claude-sonnet-4-6", **usage):
+        self.model = model
+        self.usage = type("U", (), {
+            "input_tokens": usage.get("input_tokens", 1000),
+            "output_tokens": usage.get("output_tokens", 200),
+            "cache_read_input_tokens": usage.get("cache_read", 0),
+            "cache_creation_input_tokens": usage.get("cache_write", 0),
+        })()
 
 
-def test_optimize_is_off_by_default():
-    cap = _Capture()
-    m = _meter(cap)
-    assert m._optimizer is None
-    wrapped = wrap(_FakeAnthropic(_anthropic_resp()), provider="anthropic", meter=m)
-    wrapped.messages.create(model="claude-sonnet-4-6", messages=[{"role": "user", "content": "hi"}])
-    _flushed(m)
-    assert "signal" not in cap.calls[0]["events"][0]
+# --- the simple case -------------------------------------------------------
+def test_a_wrapped_call_produces_a_complete_one_span_trace():
+    t = Captured()
+    m = meter(t)
+
+    class Anthropic:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return Response()
+
+    client = m.wrap(Anthropic(), feature_id="answer-generation")
+    client.messages.create(model="claude-sonnet-4-6", messages=[])
+    drain(m)
+
+    kinds = [e["event_type"] for e in t.events]
+    assert kinds == ["trace.started", "span.started", "span.completed", "trace.completed"]
+    done = t.of("span.completed")[0]
+    assert done["tokens_in"] == 1000 and done["tokens_out"] == 200
+    assert done["model"] == "claude-sonnet-4-6"
+    assert done["feature_id"] == "answer-generation"
+    assert done["span_kind"] == "llm"
+    # One trace, one span: the ids agree across all four events.
+    assert len({e["trace_id"] for e in t.events}) == 1
 
 
-def test_optimize_flags_a_duplicate_call():
-    cap = _Capture()
-    m = _opt_meter(cap)
-    wrapped = wrap(_FakeAnthropic(_anthropic_resp()), provider="anthropic", meter=m)
-    req = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "same"}]}
+def test_a_wrapped_call_returns_the_provider_response_untouched():
+    t = Captured()
+    m = meter(t)
+    original = Response()
 
-    wrapped.messages.create(**req)
-    wrapped.messages.create(**req)
-    _flushed(m)  # both events ride one batch; queue order is preserved
+    class Anthropic:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return original
 
-    events = _all_events(cap)
-    # The first call is novel (no signal); the repeat carries a duplicate signal.
-    assert "signal" not in events[0]
-    dup = events[1]["signal"]
-    assert dup["kind"] == "duplicate" and dup["count"] == 1
-    assert len(dup["fingerprint"]) == 64  # sha256 hex, salted — no prompt text
+    assert m.wrap(Anthropic()).messages.create() is original
 
 
-def test_optimize_emits_prefix_summaries_on_flush():
-    cap = _Capture()
-    m = _opt_meter(cap, optimize_flush_interval=0.0)  # flush every call, for the test
-    wrapped = wrap(_FakeAnthropic(_anthropic_resp()), provider="anthropic", meter=m)
-    wrapped.messages.create(
-        model="claude-sonnet-4-6",
-        system="You are a security triage assistant. " * 50,
-        messages=[{"role": "user", "content": "alert 1"}],
-    )
-    _flushed(m)
+def test_a_failing_provider_call_is_recorded_and_re_raised():
+    t = Captured()
+    m = meter(t)
 
-    events = _all_events(cap)
-    prefixes = [e for e in events if e.get("signal", {}).get("kind") == "prefix"]
-    assert len(prefixes) == 1
-    sig = prefixes[0]["signal"]
-    assert sig["count"] == 1
-    assert sig["prefix_tokens"] > 0  # the large static system prompt was measured
-    assert len(sig["fingerprint"]) == 64
+    class Anthropic:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                raise RuntimeError("upstream 500: secret-detail")
 
+    with pytest.raises(RuntimeError):
+        m.wrap(Anthropic()).messages.create()
+    drain(m)
 
-def test_optimize_emits_nothing_without_a_salt():
-    cap = _Capture()
-    # An empty salt models a failed salt fetch — never emit unsalted fingerprints.
-    m = _opt_meter(cap, optimize_flush_interval=0.0, salt="")
-    wrapped = wrap(_FakeAnthropic(_anthropic_resp()), provider="anthropic", meter=m)
-    req = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "x"}]}
-    wrapped.messages.create(**req)
-    wrapped.messages.create(**req)
-    _flushed(m)
-    assert all("signal" not in e for e in _all_events(cap))
+    assert [e["event_type"] for e in t.events][-2:] == ["span.failed", "trace.failed"]
+    # The exception's text is the customer's; it is not ours to copy.
+    assert "secret-detail" not in json.dumps(t.batches)
 
 
-# --- delivery: queue, batching, bounds, shutdown ---------------------------
+# --- multi-step agents -----------------------------------------------------
+def test_an_agent_run_records_its_steps_in_order():
+    t = Captured()
+    m = meter(t)
+
+    with m.agent("resolve-ticket", feature_id="f1", customer_id="customer-123") as run:
+        run.llm("classify", lambda: Response(model="claude-haiku-4-5"))
+        run.tool("retrieve-documents", lambda: ["doc"])
+        run.llm("generate-answer", lambda: Response())
+    drain(m)
+
+    kinds = [e["event_type"] for e in t.events]
+    assert kinds[0] == "trace.started"
+    assert kinds[-1] == "trace.completed"
+    completed = t.of("span.completed")
+    assert [e["operation_name"] for e in completed] == [
+        "classify", "retrieve-documents", "generate-answer"
+    ]
+    assert [e["span_kind"] for e in completed] == ["llm", "tool", "llm"]
+    # A tool call has no tokens; only the model calls cost anything.
+    assert "tokens_in" not in completed[1]
+    assert all(e["customer_id"] == "customer-123" for e in completed)
 
 
-def test_events_are_batched_into_one_request():
-    """The point of the queue: many calls, few requests."""
-    cap = _Capture()
-    m = _meter(cap)
-    for i in range(20):
-        m.record(provider="openai", model="gpt-4o", tokens_in=i, tokens_out=1)
-    m.flush()
-
-    assert len(cap.calls) == 1, "20 events should not be 20 requests"
-    assert len(cap.calls[0]["events"]) == 20
-    # Order is preserved, so a duplicate signal still follows the call it repeats.
-    assert [e["tokens_in"] for e in cap.calls[0]["events"]] == list(range(20))
+def test_a_step_returns_its_own_value():
+    m = meter()
+    with m.agent("resolve") as run:
+        assert run.tool("fetch", lambda: {"rows": 3}) == {"rows": 3}
 
 
-def test_a_batch_is_capped_at_batch_size():
-    cap = _Capture()
-    m = _meter(cap, batch_size=5)
-    for _ in range(12):
-        m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.flush()
+def test_a_failing_step_fails_its_span_and_the_run_but_keeps_the_exception():
+    t = Captured()
+    m = meter(t)
 
-    assert [len(c["events"]) for c in cap.calls] == [5, 5, 2]
+    with pytest.raises(ValueError, match="boom"):
+        with m.agent("resolve") as run:
+            run.tool("explode", lambda: (_ for _ in ()).throw(ValueError("boom")))
+    drain(m)
 
-
-def test_recording_does_not_wait_on_the_network():
-    """The call path must not pay for a slow — or hung — ingest endpoint."""
-    releases = threading.Event()
-    m = Meter(
-        ingest_url="https://app.test/api/hook/events",
-        token="tok",
-        transport=lambda *a: releases.wait(5),  # a transport that will not return
-    )
-
-    start = time.monotonic()
-    for _ in range(100):
-        m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    elapsed = time.monotonic() - start
-
-    assert elapsed < 0.5, f"recording blocked for {elapsed:.2f}s behind the transport"
-    releases.set()
+    assert len(t.of("span.failed")) == 1
+    assert len(t.of("trace.failed")) == 1
+    assert not t.of("trace.completed")
 
 
-def test_a_full_queue_drops_oldest_and_counts_it():
-    """Bounded memory: a stalled endpoint can never grow the queue without limit."""
-    blocked = threading.Event()
-    cap = _Capture()
-
-    def _stall(url, headers, body):
-        blocked.wait(5)
-        cap(url, headers, body)
-
-    m = Meter(
-        ingest_url="https://app.test/api/hook/events",
-        token="tok",
-        transport=_stall,
-        queue_max=10,
-        batch_size=1,
-    )
-    for i in range(200):
-        m.record(provider="openai", model="gpt-4o", tokens_in=i, tokens_out=1)
-
-    assert m.dropped > 0
-    assert len(m._queue) <= 10  # noqa: SLF001  (the bound is the point)
-    blocked.set()
+def test_a_crashed_agent_is_recorded_as_failed_not_left_looking_hung():
+    t = Captured()
+    m = meter(t)
+    with pytest.raises(KeyError):
+        with m.agent("resolve"):
+            raise KeyError("nope")
+    drain(m)
+    assert t.of("trace.failed")
 
 
-def test_record_never_raises_even_when_delivery_is_broken(monkeypatch):
-    """Queueing is on the call path, so it must be as fail-safe as sending."""
-    m = _meter(_Capture())
-
-    def _boom(self):
-        raise RuntimeError("no threads left")
-
-    monkeypatch.setattr(threading.Thread, "start", _boom)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)  # must not raise
-    assert m.flush(timeout=0.1) is False  # nothing can drain it, and it says so
-
-
-def test_every_event_is_timestamped_when_it_happens_not_when_it_is_sent():
-    """Delivery is deferred, and the server bills by occurred_at.
-
-    Without a stamp at record time a call made at 23:59 on the last day of a
-    month could be posted seconds later and land in the following month.
-    """
-    cap = _Capture()
-    m = _meter(cap)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    recorded = time.time()
-    time.sleep(0.05)
-    m.flush()
-
-    stamp = cap.calls[0]["events"][0]["occurred_at"]
-    sent_at = dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-    assert abs(sent_at.timestamp() - recorded) < 5
-
-    # An explicit occurred_at still wins — backfilling stays possible.
-    m.record(
-        provider="openai",
-        model="gpt-4o",
-        tokens_in=1,
-        tokens_out=1,
-        occurred_at="2026-01-15T10:00:00Z",
-    )
-    m.flush()
-    assert cap.calls[-1]["events"][-1]["occurred_at"] == "2026-01-15T10:00:00Z"
+# --- heartbeats ------------------------------------------------------------
+def test_a_short_run_sends_no_heartbeat_at_all():
+    # Heartbeats exist for runs long enough to look hung. A fast one should
+    # cost exactly two events.
+    t = Captured()
+    m = meter(t, heartbeat_interval=1.0)
+    with m.agent("quick"):
+        pass
+    drain(m)
+    assert not t.of("trace.heartbeat")
+    assert [e["event_type"] for e in t.events] == ["trace.started", "trace.completed"]
 
 
-def test_only_one_worker_thread_regardless_of_volume():
-    """SDK overhead is constant, not a function of the customer's traffic."""
-    cap = _Capture()
-    m = _meter(cap)
+def test_the_heartbeat_interval_has_a_floor():
+    # A pathological config must not turn metering into a denial of service
+    # against the customer's own ingest endpoint.
+    m = meter(heartbeat_interval=0.001)
+    assert m._heartbeat_interval >= 1.0
+
+
+def test_heartbeats_stop_the_moment_the_run_ends():
+    t = Captured()
+    m = meter(t, heartbeat_interval=1.0)  # the floor; see the test above
+    with m.agent("slow"):
+        time.sleep(1.2)
+    drain(m)
+    beats_at_exit = len(t.of("trace.heartbeat"))
+    assert beats_at_exit >= 1  # it did beat while working
+
+    time.sleep(1.4)
+    drain(m)
+    # A completed run must never keep claiming to be alive.
+    assert len(t.of("trace.heartbeat")) == beats_at_exit
+    assert t.of("trace.completed")
+
+
+def test_no_heartbeat_thread_outlives_the_run():
+    m = meter(heartbeat_interval=1.0)
     before = threading.active_count()
-    for _ in range(500):
-        m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.flush()
-
-    assert threading.active_count() - before <= 1
-
-
-def test_flush_returns_true_when_there_is_nothing_to_send():
-    assert _meter(_Capture()).flush() is True
-    assert Meter().flush() is True  # unconfigured -> no-op
+    for _ in range(5):
+        with m.agent("x"):
+            pass
+    time.sleep(0.3)
+    # Timers are cancelled, not merely abandoned.
+    assert threading.active_count() <= before + 2
 
 
-def test_unconfigured_meter_queues_nothing():
-    m = Meter()  # no url/token
-    assert m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1) is None
-    assert len(m._queue) == 0  # noqa: SLF001
+# --- context propagation ---------------------------------------------------
+def test_exported_context_carries_identifiers_and_nothing_else():
+    m = meter(token="super-secret-token")
+    with m.agent("resolve", feature_id="f1", customer_id="customer-123") as run:
+        context = run.export_context()
+
+    assert context["trace_id"] == run.trace_id
+    assert context["application"] == "support-agent"
+    assert context["feature_id"] == "f1"
+    # A context goes on a queue, which means assuming it gets logged.
+    blob = json.dumps(context)
+    assert "super-secret-token" not in blob
+    assert "customer-123" not in blob
 
 
-# --- retries: safe because every attempt carries the same batch id ---------
+def test_resuming_continues_the_same_trace_in_another_worker():
+    t = Captured()
+    producer = meter(t)
+    with producer.agent("resolve-ticket", feature_id="f1") as run:
+        context = run.export_context()
+        run.tool("enqueue", lambda: None)
+
+    consumer = meter(t)
+    with consumer.resume(context) as resumed:
+        resumed.tool("process-document", lambda: "done")
+    drain(producer)
+    drain(consumer)
+
+    # Both processes wrote to one trace, which is the whole point.
+    assert len({e["trace_id"] for e in t.events}) == 1
+    assert resumed.trace_id == run.trace_id
 
 
-def _http_error(code):
-    return urllib.error.HTTPError("https://app.test", code, "boom", {}, None)
+def test_resumed_work_hangs_off_the_step_that_queued_it():
+    t = Captured()
+    m = meter(t)
+    with m.agent("resolve") as run:
+        context = {**run.export_context(), "parent_span_id": "queueing-step"}
+    with m.resume(context) as resumed:
+        resumed.tool("process", lambda: None)
+    drain(m)
+
+    child = [e for e in t.of("span.completed") if e["operation_name"] == "process"][0]
+    assert child["parent_span_id"] == "queueing-step"
 
 
-def test_every_batch_carries_an_id_and_retries_reuse_it():
-    """The property that makes retrying safe at all.
-
-    The server applies the first delivery of a batch id and recognises the rest
-    as replays. If a retry invented a new id it would be applied again, and
-    because costing is additive that silently doubles a feature's spend.
-    """
-    seen = []
-
-    def _fail_twice(url, headers, body):
-        payload = json.loads(body)
-        seen.append(payload["batch_id"])
-        if len(seen) < 3:
-            raise TimeoutError("ingest is waking up")
-
-    m = _meter(_fail_twice, retry_backoff=0.0)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.flush(timeout=5)
-
-    assert len(seen) == 3, "did not retry"
-    assert len(set(seen)) == 1, f"retries invented new batch ids: {set(seen)}"
-    assert len(seen[0]) >= 8
+def test_a_context_survives_json_round_tripping():
+    m = meter()
+    with m.agent("resolve") as run:
+        context = run.export_context()
+    with m.resume(json.dumps(context)) as resumed:
+        assert resumed.trace_id == run.trace_id
 
 
-def test_separate_batches_get_separate_ids():
-    cap = _Capture()
-    m = _meter(cap, batch_size=1)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.record(provider="openai", model="gpt-4o", tokens_in=2, tokens_out=1)
-    m.flush(timeout=5)
+# --- privacy ---------------------------------------------------------------
+def test_no_prompt_or_response_content_is_ever_serialized():
+    t = Captured()
+    m = meter(t)
 
-    ids = {json.loads(json.dumps(c))["events"] and c["batch_id"] for c in cap.calls}
-    assert len(ids) == 2, "distinct batches must not share an id"
+    class Anthropic:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return Response()
 
+    m.wrap(Anthropic()).messages.create(
+        model="claude-sonnet-4-6",
+        messages=[{"role": "user", "content": "MY-SECRET-PROMPT"}],
+        system="MY-SECRET-SYSTEM",
+    )
+    with m.agent("resolve") as run:
+        run.tool("search", lambda: ["MY-SECRET-DOCUMENT"])
+    drain(m)
 
-def test_a_transient_failure_is_retried_and_then_delivered():
-    """The Render-sleep case: the first attempts time out, a later one lands."""
-    attempts = []
-
-    def _wake_up(url, headers, body):
-        attempts.append(1)
-        if len(attempts) < 2:
-            raise TimeoutError("service is asleep")
-
-    m = _meter(_wake_up, retry_backoff=0.0)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.flush(timeout=5)
-
-    assert len(attempts) == 2
-    assert m.dropped == 0  # delivered, not lost
+    blob = json.dumps(t.batches)
+    for secret in ("MY-SECRET-PROMPT", "MY-SECRET-SYSTEM", "MY-SECRET-DOCUMENT"):
+        assert secret not in blob
 
 
-def test_a_client_error_is_not_retried():
-    """A bad token or a malformed event fails identically forever."""
-    attempts = []
+def test_prompt_identity_travels_without_the_prompt():
+    t = Captured()
+    m = meter(t)
+    with m.agent("resolve") as run:
+        run.llm("answer", lambda: Response(), prompt_id="answer-ticket",
+                prompt_version="5.0", prompt_hash="abc123")
+    drain(m)
 
-    def _reject(url, headers, body):
-        attempts.append(1)
-        raise _http_error(401)
-
-    m = _meter(_reject, retry_backoff=0.0)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.flush(timeout=5)
-
-    assert len(attempts) == 1, "retried a permanent failure"
-    assert m.dropped == 1  # counted, not silently forgotten
+    done = t.of("span.completed")[0]
+    assert (done["prompt_id"], done["prompt_version"]) == ("answer-ticket", "5.0")
+    assert done["prompt_hash"] == "abc123"
 
 
-def test_rate_limiting_is_retried():
-    """429 is the one 4xx that explicitly invites coming back."""
-    attempts = []
+def test_every_field_sent_is_one_the_server_allows():
+    t = Captured()
+    m = meter(t)
+    with m.agent("resolve", customer_id="c1") as run:
+        run.llm("answer", lambda: Response(cache_read=800, cache_write=200))
+    drain(m)
 
-    def _throttle(url, headers, body):
-        attempts.append(1)
-        raise _http_error(429)
+    allowed = {
+        "event_type", "event_id", "trace_id", "span_id", "parent_span_id", "span_kind",
+        "operation_name", "application", "feature_id", "provider", "model", "tokens_in",
+        "tokens_out", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        "latency_ms", "prompt_id", "prompt_version", "prompt_hash", "environment",
+        "release_version", "customer_id", "occurred_at",
+    }
+    for event in t.events:
+        assert set(event) <= allowed, set(event) - allowed
 
-    m = _meter(_throttle, retry_backoff=0.0)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.flush(timeout=5)
-    assert len(attempts) == 3
+
+# --- token extraction ------------------------------------------------------
+def test_anthropic_cache_tokens_are_extracted():
+    t = Captured()
+    m = meter(t)
+    with m.agent("x") as run:
+        run.llm("call", lambda: Response(cache_read=6100, cache_write=1200))
+    drain(m)
+    done = t.of("span.completed")[0]
+    assert done["cache_read_tokens"] == 6100
+    assert done["cache_write_tokens"] == 1200
+    assert done["provider"] == "anthropic"
 
 
-def test_giving_up_counts_the_loss_and_keeps_serving():
-    """After the last attempt the batch is dropped — and the meter carries on."""
-    cap = _Capture()
-    calls = {"n": 0}
+def test_openai_reasoning_tokens_are_extracted():
+    t = Captured()
+    m = meter(t)
 
-    def _down_then_up(url, headers, body):
-        calls["n"] += 1
-        if calls["n"] <= 3:  # the whole first batch's attempts fail
-            raise TimeoutError("down")
-        cap(url, headers, body)
+    class OpenAIResponse:
+        model = "gpt-4o"
+        usage = type("U", (), {
+            "prompt_tokens": 900, "completion_tokens": 120,
+            "prompt_tokens_details": {"cached_tokens": 400},
+            "completion_tokens_details": {"reasoning_tokens": 64},
+        })()
 
-    m = _meter(_down_then_up, retry_backoff=0.0, batch_size=1)
-    m.record(provider="openai", model="gpt-4o", tokens_in=1, tokens_out=1)
-    m.flush(timeout=5)
-    assert m.dropped == 1
-    assert cap.calls == []
+    with m.agent("x") as run:
+        run.llm("call", lambda: OpenAIResponse())
+    drain(m)
+    done = t.of("span.completed")[0]
+    assert (done["tokens_in"], done["tokens_out"]) == (900, 120)
+    assert done["cache_read_tokens"] == 400
+    assert done["reasoning_tokens"] == 64
+    assert done["provider"] == "openai"
 
-    m.record(provider="openai", model="gpt-4o", tokens_in=2, tokens_out=1)
-    m.flush(timeout=5)
-    assert len(cap.calls) == 1, "the worker died with the failed batch"
-    assert cap.calls[0]["events"][0]["tokens_in"] == 2
+
+def test_an_unfamiliar_response_still_records_the_step():
+    t = Captured()
+    m = meter(t)
+    with m.agent("x") as run:
+        run.llm("call", lambda: object())
+    drain(m)
+    # Timing and status survive even when tokens cannot be read.
+    done = t.of("span.completed")[0]
+    assert done["operation_name"] == "call"
+    assert "latency_ms" in done
+
+
+def test_latency_is_measured_without_the_caller_doing_anything():
+    t = Captured()
+    m = meter(t)
+    with m.agent("x") as run:
+        run.tool("slow", lambda: time.sleep(0.05))
+    drain(m)
+    assert t.of("span.completed")[0]["latency_ms"] >= 40
+
+
+# --- delivery --------------------------------------------------------------
+def test_unconfigured_is_a_silent_no_op():
+    m = Meter(application="x")  # no URL, no token
+    assert not m.enabled
+    with m.agent("resolve") as run:
+        assert run.tool("work", lambda: 42) == 42
+    assert m.flush() is True
+
+
+def test_a_broken_endpoint_never_reaches_the_caller():
+    def explode(url, headers, body):
+        raise OSError("connection refused")
+
+    m = meter(explode, max_attempts=1, retry_backoff=(0.0,))
+    with m.agent("resolve") as run:
+        assert run.tool("work", lambda: "value") == "value"
+    m.flush(timeout=1.0)
+    assert m.dropped > 0  # visible, not silent
+
+
+def test_a_retry_reuses_one_batch_id_so_the_server_can_dedupe():
+    t = Captured(fail=1)
+    m = meter(t, retry_backoff=(0.0,))
+    with m.agent("resolve") as run:
+        run.llm("answer", lambda: Response())
+    drain(m)
+
+    assert t.calls >= 2
+    # Identical id across attempts is what makes an ambiguous timeout safe.
+    assert len({b["batch_id"] for b in t.batches}) == 1
+
+
+def test_a_rejected_batch_is_dropped_rather_than_hammered():
+    t = Captured(fail=99, status=400)
+    m = meter(t, retry_backoff=(0.0,))
+    with m.agent("resolve"):
+        pass
+    m.flush(timeout=1.0)
+    # A 400 fails identically forever; retrying only hurts the endpoint.
+    assert t.calls == 1
+    assert m.dropped > 0
+
+
+def test_the_queue_is_bounded_and_sheds_oldest_first():
+    m = meter(queue_max=5, flush_interval=60.0)
+    m._queue.clear()
+    for i in range(50):
+        m._send([{"event_type": "trace.heartbeat", "trace_id": f"t{i}"}])
+    assert len(m._queue) <= 5
+    assert m.dropped >= 45
+    # The newest always gets in.
+    assert m._queue[-1]["trace_id"] == "t49"
+
+
+def test_flush_returns_true_when_the_queue_drains():
+    t = Captured()
+    m = meter(t)
+    with m.agent("resolve") as run:
+        run.llm("answer", lambda: Response())
+    assert m.flush(timeout=3.0) is True
+    assert t.events
+
+
+def test_ids_are_generated_client_side_and_are_unique():
+    m = meter()
+    with m.agent("a") as one, m.agent("b") as two:
+        assert one.trace_id != two.trace_id
+        assert len(one.trace_id) >= 16
+
+
+def test_environment_and_release_ride_on_every_event(monkeypatch):
+    monkeypatch.setenv("METER_RELEASE_VERSION", "2026.9.1")
+    t = Captured()
+    m = Meter(application="support-agent", environment="staging", ingest_url=URL,
+              token="tok", transport=t, flush_interval=0.01)
+    with m.agent("resolve") as run:
+        run.tool("x", lambda: None)
+    drain(m)
+    assert all(e["environment"] == "staging" for e in t.events)
+    assert all(e["release_version"] == "2026.9.1" for e in t.events)
+
+
+def test_configuration_comes_from_the_documented_environment(monkeypatch):
+    for key, value in {
+        "METER_INGEST_URL": URL,
+        "METER_INGEST_TOKEN": "env-token",
+        "METER_APPLICATION": "document-review",
+        "METER_ENVIRONMENT": "staging",
+    }.items():
+        monkeypatch.setenv(key, value)
+    m = Meter()
+    assert m.enabled
+    assert (m.application, m.environment) == ("document-review", "staging")

@@ -49,6 +49,7 @@ from . import (
     resources,
     seats,
     settings,
+    traces,
 )
 from .github import GitHubError
 from .providers import ProviderError
@@ -1227,11 +1228,34 @@ def create_app() -> FastAPI:
         return tenant_id
 
     @app.post("/api/hook/events")
-    def ingest_hook_events(body: HookEventsRequest, request: Request) -> dict:
+    def ingest_hook_events(body: dict, request: Request) -> dict:
+        """The SDK's ingest endpoint. Lifecycle events in, traces and cost out.
+
+        Typed as a raw dict on purpose. The event shape is per-event-type — a
+        heartbeat has no tokens, a tool span has no model — and a Pydantic union
+        wide enough to express that would accept a superset of what is actually
+        allowed. traces.validate is the single place that decides, working from
+        an allowlist, so a field nobody named cannot reach a column.
+        """
         tenant_id = _ingest_tenant(request)
-        return hook.ingest_events(
-            tenant_id, [e.model_dump() for e in body.events], batch_id=body.batch_id
-        )
+        events = body.get("events")
+        batch_id = body.get("batch_id")
+        if not isinstance(events, list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="events must be a list."
+            )
+        if batch_id is not None and (not isinstance(batch_id, str) or len(batch_id) > 128):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="batch_id must be a short string."
+            )
+        try:
+            return traces.ingest(tenant_id, events, batch_id=batch_id)
+        except applications.ApplicationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except traces.TraceError as exc:
+            # Every one of these is something about the payload the caller can
+            # fix, including a refusal to accept prompt or response content.
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @app.get("/api/hook/recent")
     def hook_recent(user: CurrentUser) -> dict:

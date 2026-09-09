@@ -36,7 +36,7 @@ import hashlib
 from decimal import Decimal
 from typing import Optional
 
-from . import applications
+from . import applications, compute
 from .db import app_dsn, connect, tenant_tx
 from .pricing import PRICED_PROVIDERS, price
 
@@ -52,9 +52,16 @@ MAX_TINY = 60
 #: A token count above this is a client bug, not a very large call. Bounded so
 #: one bad event cannot poison a monthly total with an absurd number.
 MAX_TOKENS = 1_000_000_000
-#: How far outside now an event's timestamp may sit before it is clamped. Guards
-#: against a wrong client clock silently writing cost into a distant month.
-MAX_CLOCK_SKEW = dt.timedelta(days=2)
+#: How far an event may sit outside now before its timestamp is clamped.
+#:
+#: Asymmetric on purpose. An event dated in the FUTURE is always a wrong clock,
+#: so that window is tight. An event dated in the past is routinely legitimate:
+#: a queue backlog, a worker resuming after an outage, an SDK flushing on a
+#: process that was suspended. Rejecting those into the current month would
+#: silently move real spend between billing periods, which is worse than the
+#: skew it guards against.
+MAX_CLOCK_SKEW_FUTURE = dt.timedelta(days=1)
+MAX_CLOCK_SKEW_PAST = dt.timedelta(days=95)
 
 TRACE_EVENTS = (
     "trace.started",
@@ -179,10 +186,10 @@ def _when(value, now: dt.datetime) -> dt.datetime:
         return now
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    if parsed > now + MAX_CLOCK_SKEW:
+    if parsed > now + MAX_CLOCK_SKEW_FUTURE:
         return now
-    if parsed < now - MAX_CLOCK_SKEW:
-        return now - MAX_CLOCK_SKEW
+    if parsed < now - MAX_CLOCK_SKEW_PAST:
+        return now - MAX_CLOCK_SKEW_PAST
     return parsed
 
 
@@ -240,6 +247,36 @@ def validate(event: dict, now: dt.datetime) -> dict:
         out["prompt_id"] = _text(event.get("prompt_id"), MAX_NAME, "prompt_id")
         out["prompt_version"] = _text(event.get("prompt_version"), MAX_TINY, "prompt_version")
         out["prompt_hash"] = _text(event.get("prompt_hash"), 128, "prompt_hash")
+        out["signal"] = _signal(event.get("signal"))
+    return out
+
+
+def _signal(raw) -> Optional[dict]:
+    """An optimization signal: a salted fingerprint and counts, never text.
+
+    Kept in the contract deliberately. It is the same privacy class as
+    `prompt_hash` — a one-way fingerprint the customer computed — and it is what
+    the duplicate/uncached-prefix detectors are built on. Dropping it would have
+    quietly removed a working feature.
+
+    Validated rather than passed through: a fingerprint reaches an aggregation
+    key, and an unbounded one is an unbounded row.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TraceError("signal must be an object.")
+    kind = _text(raw.get("kind"), MAX_TINY, "signal.kind")
+    if kind not in ("duplicate", "prefix"):
+        raise TraceError("signal.kind must be 'duplicate' or 'prefix'.")
+    fingerprint = _text(raw.get("fingerprint"), 128, "signal.fingerprint")
+    if not fingerprint:
+        return None  # unusable without one; not worth failing the batch over
+    out = {"kind": kind, "fingerprint": fingerprint}
+    for field in ("count", "tokens_in", "tokens_out", "cached_tokens", "prefix_tokens"):
+        value = _count(raw.get(field), f"signal.{field}")
+        if value is not None:
+            out[field] = value
     return out
 
 
@@ -488,10 +525,17 @@ def ingest(tenant_id: str, events: list, batch_id: Optional[str] = None) -> dict
                 return prior
         salt = hook.get_or_create_salt(tenant_id)
         valid_features = {str(r[0]) for r in conn.execute("SELECT id FROM feature").fetchall()}
+        # Self-hosted pools: a model you run yourself has no per-token price, so
+        # its usage is recorded and its cost allocated later from the pool's
+        # infrastructure bill. Without this, instrumenting a self-hosted model
+        # would silently meter nothing.
+        pools = compute.pool_labels(conn)
         # Accumulated and written once at the end, so a batch containing twenty
         # spans of one feature does twenty in-memory adds and one upsert.
         cost_acc: dict = {}
         customer_acc: dict = {}
+        signal_acc: dict = {}
+        pool_acc: dict = {}
 
         for ev in parsed:
             # An unknown feature is Unattributed, never a rejected event: the
@@ -533,6 +577,41 @@ def ingest(tenant_id: str, events: list, batch_id: Optional[str] = None) -> dict
             provider = ev.get("provider")
             tokens_in = ev.get("tokens_in") or 0
             tokens_out = ev.get("tokens_out") or 0
+            if provider in pools and ev["span_kind"] in ("llm", "embedding"):
+                # Usage now, dollars later from compute.allocate. Claiming the
+                # span keeps this exactly-once alongside the priced path.
+                if _claim_cost(conn, span_id, Decimal("0")):
+                    key = (
+                        pools[provider],
+                        feature_id,
+                        ev.get("model") or None,
+                        _period_of(ev["occurred_at"]),
+                    )
+                    entry = pool_acc.setdefault(key, {"tin": 0, "tout": 0, "count": 0})
+                    entry["tin"] += tokens_in
+                    entry["tout"] += tokens_out
+                    entry["count"] += 1
+                    _bump_trace_totals(conn, trace_id, Decimal("0"), tokens_in + tokens_out)
+                continue
+
+            signal = ev.get("signal")
+            if signal and provider in PRICED_PROVIDERS:
+                hook.accumulate_signal(
+                    signal_acc,
+                    signal,
+                    signal["kind"],
+                    feature_id,
+                    provider,
+                    ev.get("model") or "",
+                    _period_of(ev["occurred_at"]),
+                    tokens_in,
+                    tokens_out,
+                )
+                if signal["kind"] == "prefix":
+                    # A prefix signal summarises calls that were each metered
+                    # already. Recording the signal must not re-cost them.
+                    continue
+
             if ev["span_kind"] != "llm" or provider not in PRICED_PROVIDERS:
                 continue
             if tokens_in == 0 and tokens_out == 0:
@@ -565,6 +644,23 @@ def ingest(tenant_id: str, events: list, batch_id: Optional[str] = None) -> dict
             hook.upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry)
         for (customer_id, period), centry in customer_acc.items():
             hook.upsert_customer_cost(conn, tenant_id, customer_id, period, centry)
+        for (pool_id, feature_id, model, period), entry in pool_acc.items():
+            compute.record_usage(
+                conn,
+                tenant_id,
+                pool_id,
+                feature_id,
+                model,
+                period,
+                entry["tin"],
+                entry["tout"],
+                entry["count"],
+            )
+        for skey, sentry in signal_acc.items():
+            feature_id, provider, model, period, kind, fingerprint = skey
+            hook.upsert_signal(
+                conn, tenant_id, feature_id, provider, model, period, kind, fingerprint, sentry
+            )
 
         if batch_id:
             hook.record_batch(conn, tenant_id, batch_id, accepted, costed)

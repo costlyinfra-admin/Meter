@@ -1,38 +1,38 @@
-"""Meter metering hook (Python).
+"""Meter — request-level AI economics.
 
-A thin, fail-safe wrapper that reports per-call LLM usage to Meter so spend
-can be attributed per feature. It captures tokens_in, tokens_out, model and a
-feature_id and posts them to the hook-ingest endpoint. Cost is computed server
-side from Meter's pricing tables — the SDK never sees prices.
+What this measures is not requests in general. It measures AI work: an agent
+run, and the LLM calls, retrievals, tool calls, guardrails and evaluations
+inside it. Meter is a cost product, not an APM, and instrumenting a database
+query here would be noise.
 
-Design principles:
-  * **Never break the caller.** Recording appends to an in-memory queue and
-    returns; a single background worker batches and posts. Nothing on the call
-    path can block, raise, or wait on the network. If Meter is down,
-    misconfigured, or asleep, your app is unaffected.
-  * **Bounded.** One worker thread per meter, whatever the traffic, and a capped
-    queue. When the queue is full the oldest events are dropped and counted —
-    metering degrades, the application does not.
-  * **Tiny footprint.** Standard library only.
-  * **Optional.** With no ingest URL/token configured, every call is a no-op, so
-    the same code runs whether or not the hook is enabled.
+Two ways in, and the simple one needs no concepts:
 
-Delivery: events are batched (up to ``batch_size``) and flushed either when a
-batch fills or after ``flush_interval`` seconds, whichever comes first. Call
-``meter.flush()`` to force a send — do this before exiting a short-lived process
-(a script, a serverless handler) where the worker may not get a chance to run.
-An ``atexit`` hook flushes automatically, with a short deadline.
+    meter = Meter(application="support-agent")
+    client = meter.wrap(anthropic_client, feature_id="answer-generation")
+    client.messages.create(...)          # -> a one-span trace, automatically
 
-Configuration (constructor args or environment):
-  METER_INGEST_URL    e.g. https://meter.example.com/api/hook/events
-  METER_INGEST_TOKEN  the per-tenant ingest token from the dashboard
+    with meter.agent("resolve-ticket", feature_id="ticket-resolution") as run:
+        run.llm("classify", lambda: anthropic_client.messages.create(...))
+        docs = run.tool("retrieve-documents", retrieve_documents)
+        run.llm("generate-answer", lambda: anthropic_client.messages.create(...))
+
+**What is never sent.** Prompts, responses, messages, tool arguments, tool
+results, retrieved documents, exception messages and stack traces. Not
+truncated, not hashed unless you pass a `prompt_hash` yourself, not behind a
+setting — the events this SDK can construct have no field for them, and the
+server refuses a payload that carries one. What travels is identity, counts,
+timing and money: which prompt version, how many tokens, how long, how much.
+
+**It must never break your agent.** Every path here is wrapped: a Meter failure
+degrades to sending nothing. Delivery happens on a background worker off your
+request path, over a bounded queue that sheds oldest-first rather than growing,
+and `meter.dropped` tells you if it ever came to that.
 """
 
 from __future__ import annotations
 
 import atexit
 import datetime as dt
-import hashlib
 import json
 import os
 import random
@@ -41,86 +41,101 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-import weakref
-from collections import OrderedDict, deque
-from typing import Any, Optional
+from collections import deque
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Optional
 
-__version__ = "0.4.0"
+__version__ = "1.0.0"
 
-#: Delivery defaults. Batch size is well under the server's 10,000-event cap;
-#: the interval bounds how much is lost if the process is killed outright.
+FLUSH_INTERVAL = 2.0
 BATCH_SIZE = 50
-FLUSH_INTERVAL = 5.0
 QUEUE_MAX = 10_000
-#: Delivery is retried on failures that might clear: a timeout, a refused
-#: connection, a 5xx — or a Render free instance waking from sleep, which takes
-#: 30-60s and is the case this exists for. Seconds, jittered per attempt.
-RETRY_BACKOFF = (1.0, 4.0, 15.0)
 MAX_ATTEMPTS = 3
+RETRY_BACKOFF = (0.5, 2.0)
+SHUTDOWN_TIMEOUT = 3.0
+#: How often a long-running trace says "still here". Well inside a sensible
+#: stale threshold (the server's default is 10 minutes), so an agent that is
+#: genuinely working is never mistaken for one that has hung.
+HEARTBEAT_INTERVAL = 30.0
 
-#: How long atexit waits for the queue to drain. Deliberately short: metering
-#: must never noticeably delay a deploy, restart or scale-down.
-SHUTDOWN_TIMEOUT = 2.0
+_METERS: "set" = set()
 
-#: Live meters, so one atexit hook can flush them all without keeping any alive.
-_METERS: weakref.WeakSet = weakref.WeakSet()
+SPAN_KINDS = ("workflow", "llm", "embedding", "retrieval", "tool", "guardrail", "evaluation")
+
+
+def _now_iso() -> str:
+    """An event timestamp, with sub-second precision.
+
+    The precision is not cosmetic. Spans are ordered by when they started, and
+    most agent steps finish in well under a second — at whole-second resolution
+    an entire workflow shares one timestamp and its waterfall renders in
+    arbitrary order, which is the one thing that view exists to show.
+    """
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _new_id() -> str:
+    """Generated here, not by the server.
+
+    A client-side id is what lets a span be referred to before the server has
+    seen it — which is what makes out-of-order delivery, resumed work in another
+    process, and retry-safe replay all work.
+    """
+    return uuid.uuid4().hex
 
 
 class Meter:
+    """The client. One per process is plenty.
+
+    Unconfigured (no ingest URL or token) it is a no-op: every method still
+    works and returns your value, and nothing is sent. That is deliberate —
+    importing Meter into a test suite or a local script should cost nothing and
+    require no conditionals at the call sites.
+    """
+
     def __init__(
         self,
-        feature_id: Optional[str] = None,
         *,
+        application: Optional[str] = None,
+        environment: Optional[str] = None,
+        release_version: Optional[str] = None,
         ingest_url: Optional[str] = None,
         token: Optional[str] = None,
+        feature_id: Optional[str] = None,
         timeout: float = 5.0,
-        metadata: Optional[dict] = None,
-        optimize: bool = False,
-        prefix_chars: int = 2000,
         flush_interval: float = FLUSH_INTERVAL,
         batch_size: int = BATCH_SIZE,
         queue_max: int = QUEUE_MAX,
         max_attempts: int = MAX_ATTEMPTS,
         retry_backoff: tuple = RETRY_BACKOFF,
-        optimize_flush_interval: float = 60.0,
-        salt: Optional[str] = None,
+        heartbeat_interval: float = HEARTBEAT_INTERVAL,
         transport: Optional[Any] = None,
     ):
-        self.feature_id = feature_id
+        self.application = application or os.environ.get("METER_APPLICATION") or "default"
+        self.environment = environment or os.environ.get("METER_ENVIRONMENT") or "production"
+        self.release_version = release_version or os.environ.get("METER_RELEASE_VERSION")
         self.ingest_url = ingest_url or os.environ.get("METER_INGEST_URL")
         self.token = token or os.environ.get("METER_INGEST_TOKEN")
+        self.feature_id = feature_id
         self.timeout = timeout
-        # Default tags applied to every event (e.g. environment). Per-call
-        # metadata is merged on top. Optional — omit for the simplest setup.
-        self.metadata = dict(metadata) if metadata else {}
-        # transport(url, headers, body) -> None lets tests capture posts.
         self._transport = transport
-        # Optimize mode (opt spec §4): measure traffic SHAPE — salted-hash
-        # fingerprints and counts, never prompt text — to find duplicate calls
-        # and uncached repeated prefixes. Off by default; all work is off the
-        # call path, bounded, and fail-safe.
-        self._salt = salt
-        self._optimizer = (
-            _Optimizer(self, prefix_chars=prefix_chars, flush_interval=optimize_flush_interval)
-            if optimize
-            else None
-        )
+        self._heartbeat_interval = max(1.0, float(heartbeat_interval))
 
-        # --- delivery: a bounded queue drained by one background worker ----
         self._batch_size = max(1, int(batch_size))
         self._flush_interval = max(0.0, float(flush_interval))
         self._queue_max = max(1, int(queue_max))
         self._max_attempts = max(1, int(max_attempts))
         self._retry_backoff = tuple(retry_backoff) or (1.0,)
         self._queue: deque = deque()
-        # One condition guards the queue and every flag below it.
         self._cv = threading.Condition()
         self._worker: Optional[threading.Thread] = None
         self._worker_pid: Optional[int] = None
         self._sending = False
         self._flush_now = False
-        #: Events discarded because the queue was full. Metering degrades
-        #: visibly rather than silently, and never at the application's expense.
+        #: Events discarded because the queue was full or delivery failed for
+        #: good. Metering degrades visibly rather than silently.
         self.dropped = 0
         _METERS.add(self)
 
@@ -128,171 +143,131 @@ class Meter:
     def enabled(self) -> bool:
         return bool(self.ingest_url and self.token)
 
-    def record(
-        self,
-        *,
-        provider: str,
-        model: str,
-        tokens_in: int,
-        tokens_out: int,
-        feature_id: Optional[str] = None,
-        occurred_at: Optional[str] = None,
-        latency_ms: Optional[int] = None,
-        metadata: Optional[dict] = None,
-    ) -> None:
-        """Report a single metered call. Queues it and returns immediately."""
-        event = {
-            "provider": provider,
-            "model": model,
-            "tokens_in": int(tokens_in or 0),
-            "tokens_out": int(tokens_out or 0),
-            "feature_id": feature_id or self.feature_id,
-            # Stamped HERE, not at send time: delivery is deferred, and the
-            # server derives the billing month from this field (falling back to
-            # arrival). Without it a call made at 23:59 on the last of the month
-            # could be posted seconds later and land in the wrong month.
-            "occurred_at": occurred_at or _now_iso(),
-        }
-        if latency_ms is not None:
-            event["latency_ms"] = int(latency_ms)
-        merged = {**self.metadata, **(metadata or {})}
-        if merged:
-            event["metadata"] = merged
-        return self._send([event])
+    # -- the two entry points ---------------------------------------------
+    def wrap(self, client: Any, *, feature_id: Optional[str] = None,
+             application: Optional[str] = None, provider: Optional[str] = None) -> Any:
+        """Instrument a provider client so each call becomes its own trace.
 
-    def record_anthropic(
-        self,
-        response: Any,
-        *,
-        feature_id: Optional[str] = None,
-        model: Optional[str] = None,
-        latency_ms: Optional[int] = None,
-        metadata: Optional[dict] = None,
-    ) -> None:
-        """Record from an Anthropic Messages response (usage.input_tokens/output_tokens)."""
-        tin, tout = _usage(response, ("input_tokens", "output_tokens"))
-        return self.record(
-            provider="anthropic",
-            model=model or _attr(response, "model", ""),
-            tokens_in=tin,
-            tokens_out=tout,
-            feature_id=feature_id,
-            latency_ms=latency_ms,
-            metadata=metadata,
-        )
+        For the common case — one model call, no workflow around it — explicit
+        trace management would be ceremony with no payoff. A wrapped call opens
+        a trace, records one LLM span, and closes it.
 
-    def record_openai(
-        self,
-        response: Any,
-        *,
-        feature_id: Optional[str] = None,
-        model: Optional[str] = None,
-        latency_ms: Optional[int] = None,
-        metadata: Optional[dict] = None,
-    ) -> None:
-        """Record from an OpenAI response (usage.prompt_tokens/completion_tokens)."""
-        tin, tout = _usage(response, ("prompt_tokens", "completion_tokens"))
-        return self.record(
-            provider="openai",
-            model=model or _attr(response, "model", ""),
-            tokens_in=tin,
-            tokens_out=tout,
-            feature_id=feature_id,
-            latency_ms=latency_ms,
-            metadata=metadata,
-        )
-
-    def record_gemini(
-        self,
-        response: Any,
-        *,
-        feature_id: Optional[str] = None,
-        model: Optional[str] = None,
-        latency_ms: Optional[int] = None,
-        metadata: Optional[dict] = None,
-    ) -> None:
-        """Record from a Google Gemini response (usage_metadata token counts)."""
-        usage = _attr(response, "usage_metadata", {}) or {}
-        tin = int(_attr(usage, "prompt_token_count", 0) or 0)
-        tout = int(_attr(usage, "candidates_token_count", 0) or 0)
-        return self.record(
-            provider="google",
-            model=model or _attr(response, "model_version", "") or _attr(response, "model", ""),
-            tokens_in=tin,
-            tokens_out=tout,
-            feature_id=feature_id,
-            latency_ms=latency_ms,
-            metadata=metadata,
-        )
-
-    def record_openai_compatible(
-        self,
-        response: Any,
-        *,
-        provider: str,
-        feature_id: Optional[str] = None,
-        model: Optional[str] = None,
-        latency_ms: Optional[int] = None,
-        metadata: Optional[dict] = None,
-    ) -> None:
-        """Record from any OpenAI-compatible response (hosted open-source models).
-
-        Together, Fireworks, Groq, OpenRouter, DeepInfra, etc. all return the
-        OpenAI usage shape (prompt_tokens/completion_tokens). Pass the provider
-        name so Meter prices it against that host's rates.
+        `provider` is inferred from the client's type, which works for the
+        official SDKs and fails quietly for a wrapper, a subclass or a test
+        double — so it can be stated outright. Passing it wrong instruments
+        nothing rather than instrumenting the wrong thing.
         """
-        tin, tout = _usage(response, ("prompt_tokens", "completion_tokens"))
-        return self.record(
-            provider=provider,
-            model=model or _attr(response, "model", ""),
-            tokens_in=tin,
-            tokens_out=tout,
-            feature_id=feature_id,
-            latency_ms=latency_ms,
-            metadata=metadata,
-        )
+        return _Wrapped(client, self, provider or _detect_provider(client),
+                        feature_id=feature_id or self.feature_id,
+                        application=application or self.application)
 
-    # ----------------------------------------------------------------------
-    # Delivery: enqueue on the call path, batch and post on one worker
-    # ----------------------------------------------------------------------
+    @contextmanager
+    def agent(self, operation_name: str, *, feature_id: Optional[str] = None,
+              customer_id: Optional[str] = None, application: Optional[str] = None,
+              trace_id: Optional[str] = None,
+              parent_span_id: Optional[str] = None) -> Iterator["AgentRun"]:
+        """A multi-step run. Steps recorded inside it become its spans.
+
+        The context manager is the point: leaving the block ends the trace and
+        stops its heartbeat, on the happy path and on an exception alike, so a
+        crashed agent is recorded as failed rather than left looking hung
+        forever.
+        """
+        run = AgentRun(
+            self,
+            operation_name=operation_name,
+            feature_id=feature_id or self.feature_id,
+            customer_id=customer_id,
+            application=application or self.application,
+            trace_id=trace_id,
+            parent_span_id=parent_span_id,
+        )
+        run._start()
+        try:
+            yield run
+        except BaseException:
+            # The status, never the exception. What went wrong is in the
+            # customer's own logs; it is not ours to copy off their machine.
+            run._finish("trace.failed")
+            raise
+        else:
+            run._finish("trace.completed")
+
+    @contextmanager
+    def resume(self, context: Any, **overrides: Any) -> Iterator["AgentRun"]:
+        """Continue a trace started elsewhere — a queue worker, another service.
+
+        The exported context carries identifiers only, so passing it through a
+        message broker moves no customer data and no credentials.
+        """
+        ctx = context if isinstance(context, dict) else json.loads(context or "{}")
+        with self.agent(
+            overrides.get("operation_name") or ctx.get("operation_name") or "resumed",
+            feature_id=overrides.get("feature_id", ctx.get("feature_id")),
+            customer_id=overrides.get("customer_id", ctx.get("customer_id")),
+            application=overrides.get("application", ctx.get("application")),
+            trace_id=ctx.get("trace_id"),
+            parent_span_id=ctx.get("parent_span_id"),
+        ) as run:
+            yield run
+
+    # -- event construction ------------------------------------------------
+    def _event(self, event_type: str, trace_id: str, **fields: Any) -> dict:
+        event = {
+            "event_type": event_type,
+            "event_id": _new_id(),
+            "trace_id": trace_id,
+            "application": fields.pop("application", None) or self.application,
+            "environment": self.environment,
+            "occurred_at": _now_iso(),
+        }
+        if self.release_version:
+            event["release_version"] = self.release_version
+        for key, value in fields.items():
+            if value is not None:
+                event[key] = value
+        return event
+
+    def _emit(self, event: dict) -> None:
+        self._send([event])
+
+    # -- delivery ----------------------------------------------------------
     def _send(self, events: list) -> None:
-        """Queue events for delivery. Returns immediately; never raises."""
+        """Queue events. Returns immediately; never raises."""
         if not self.enabled or not events:
-            return  # not configured -> no-op
+            return
         try:
             with self._cv:
                 self._reset_after_fork_locked()
                 for event in events:
                     if len(self._queue) >= self._queue_max:
-                        # Full: shed the oldest so the newest always gets in, and
-                        # so a stalled endpoint can never grow this unboundedly.
+                        # Shed the oldest so the newest always gets in, and a
+                        # stalled endpoint can never grow this unboundedly.
                         self._queue.popleft()
                         self.dropped += 1
                     self._queue.append(event)
                 self._ensure_worker_locked()
                 self._cv.notify()
         except Exception:
-            pass  # metering must never raise into the caller's request path
+            pass  # metering must never raise into the caller's path
 
     def _reset_after_fork_locked(self) -> None:
         """Start clean in a forked child.
 
-        Threads do not survive fork, so a child inherits a worker object that
-        will never run again — and a copy of the parent's queue, which the parent
-        is still going to send. Under gunicorn/uWSGI pre-fork (how these apps are
-        usually deployed) that would mean silently metering nothing per worker,
-        and duplicating whatever was in flight at fork time.
+        Threads do not survive fork, so a child inherits a worker that will
+        never run and a copy of the parent's queue the parent is still going to
+        send. Under pre-fork servers that would mean metering nothing per worker
+        and duplicating whatever was in flight.
         """
         pid = os.getpid()
         if self._worker_pid is not None and self._worker_pid != pid:
-            self._queue.clear()  # the parent still owns these
+            self._queue.clear()
             self._worker = None
             self._worker_pid = None
             self._sending = False
             self._flush_now = False
 
     def _ensure_worker_locked(self) -> None:
-        """Start the single worker on first use. Failure degrades to a no-op."""
         if self._worker is not None:
             return
         worker = _spawn(self._run)
@@ -301,13 +276,10 @@ class Meter:
             self._worker_pid = os.getpid()
 
     def _run(self) -> None:
-        """Drain the queue in batches, forever. One of these per meter."""
         while True:
             with self._cv:
                 while not self._queue:
-                    self._cv.wait()  # idle: costs nothing until an event arrives
-                # Something arrived. Give it a moment to be joined by others, so
-                # a busy process sends one request per batch rather than per call.
+                    self._cv.wait()
                 deadline = time.monotonic() + self._flush_interval
                 while len(self._queue) < self._batch_size and not self._flush_now:
                     remaining = deadline - time.monotonic()
@@ -325,15 +297,10 @@ class Meter:
                     self._sending = False
                     if not self._queue:
                         self._flush_now = False
-                    self._cv.notify_all()  # wake any flush() waiting on us
+                    self._cv.notify_all()
 
     def flush(self, timeout: float = SHUTDOWN_TIMEOUT) -> bool:
-        """Send what is queued now. True if the queue drained within `timeout`.
-
-        Worth calling before a short-lived process exits — a script, a serverless
-        handler — where the worker may not otherwise get scheduled. Never raises,
-        and never waits longer than `timeout`.
-        """
+        """Send what is queued now. True if it drained within `timeout`."""
         if not self.enabled:
             return True
         try:
@@ -344,7 +311,7 @@ class Meter:
                 self._reset_after_fork_locked()
                 self._ensure_worker_locked()
                 if self._worker is None:
-                    return False  # no worker could be started; nothing will drain
+                    return False
                 self._flush_now = True
                 self._cv.notify_all()
                 while self._queue or self._sending:
@@ -359,15 +326,14 @@ class Meter:
     def _deliver(self, events: list) -> None:
         """Deliver one batch, retrying transient failures. Never raises.
 
-        The batch id is generated ONCE and reused for every attempt, which is
+        The batch id is generated ONCE and reused for every attempt. That is
         what makes retrying safe: the server applies the first delivery and
-        recognises the rest as replays. Without it a retry after an ambiguous
-        timeout — server committed, response lost — would silently double a
-        feature's cost.
+        recognises the rest as replays, so a retry after an ambiguous timeout —
+        server committed, response lost — cannot double a run's cost.
         """
         if not self.enabled or not events:
             return
-        batch_id = uuid.uuid4().hex
+        batch_id = _new_id()
         for attempt in range(self._max_attempts):
             outcome = self._post_once(events, batch_id)
             if outcome != "retry":
@@ -376,20 +342,16 @@ class Meter:
                 return
             if attempt + 1 >= self._max_attempts:
                 break
-            # Backoff with jitter, so many processes recovering from the same
-            # outage don't return in lockstep.
             delay = self._retry_backoff[min(attempt, len(self._retry_backoff) - 1)]
+            # Jitter, so many processes recovering from one outage do not
+            # return in lockstep.
             time.sleep(delay * (0.5 + random.random()))
         self.dropped += len(events)
 
     def _post_once(self, events: list, batch_id: str) -> str:
-        """One delivery attempt -> "ok" | "retry" | "drop". Never raises."""
-        payload = {"events": events, "batch_id": batch_id}
-        body = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
+        """One attempt -> "ok" | "retry" | "drop". Never raises."""
+        body = json.dumps({"events": events, "batch_id": batch_id}).encode("utf-8")
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         try:
             if self._transport is not None:
                 self._transport(self.ingest_url, headers, body)
@@ -398,108 +360,376 @@ class Meter:
             urllib.request.urlopen(req, timeout=self.timeout).read()
             return "ok"
         except urllib.error.HTTPError as exc:
-            # 4xx is our fault and will fail identically forever: a bad token, a
+            # 4xx is our fault and fails identically forever: a bad token, a
             # malformed event. Retrying only hammers the endpoint. 429 is the
-            # exception — it is explicitly an invitation to come back later.
+            # exception — it is an explicit invitation to come back.
             if 400 <= exc.code < 500 and exc.code != 429:
                 return "drop"
             return "retry"
         except Exception:
-            return "retry"  # timeout, DNS, refused, TLS: the endpoint may return
+            return "retry"  # timeout, DNS, refused, TLS: it may yet return
 
-    def _salt_url(self) -> Optional[str]:
-        if not self.ingest_url:
-            return None
-        if self.ingest_url.endswith("/events"):
-            return self.ingest_url[: -len("/events")] + "/salt"
-        return self.ingest_url.rstrip("/") + "/salt"
 
-    def _fetch_salt(self) -> Optional[str]:
-        """Fetch (once) the per-tenant fingerprint salt. Fail-safe -> None."""
-        if self._salt is not None:
-            return self._salt
-        if not self.enabled:
-            return None
-        try:
-            url = self._salt_url()
-            req = urllib.request.Request(
-                url, headers={"Authorization": f"Bearer {self.token}"}, method="GET"
+class AgentRun:
+    """One agent or workflow run, and the steps recorded inside it."""
+
+    def __init__(self, meter: Meter, *, operation_name: str, feature_id: Optional[str],
+                 customer_id: Optional[str], application: Optional[str],
+                 trace_id: Optional[str] = None, parent_span_id: Optional[str] = None):
+        self._meter = meter
+        self.operation_name = operation_name
+        self.trace_id = trace_id or _new_id()
+        self.feature_id = feature_id
+        self.customer_id = customer_id
+        self.application = application
+        #: Steps nest under this when the run was resumed from another process,
+        #: so work continued in a worker still hangs off the step that queued it.
+        self.parent_span_id = parent_span_id
+        self._heartbeat: Optional[threading.Timer] = None
+        self._done = threading.Event()
+
+    # -- lifecycle ---------------------------------------------------------
+    def _start(self) -> None:
+        self._meter._emit(
+            self._meter._event(
+                "trace.started", self.trace_id,
+                operation_name=self.operation_name,
+                feature_id=self.feature_id,
+                customer_id=self.customer_id,
+                application=self.application,
             )
-            data = urllib.request.urlopen(req, timeout=self.timeout).read()
-            self._salt = json.loads(data).get("salt")
-        except Exception:
-            self._salt = None
-        return self._salt
+        )
+        self._schedule_heartbeat()
 
-    def _record_wrapped(self, provider: str, request: dict, response: Any, latency_ms: int) -> None:
-        """Record an auto-instrumented (wrap()) call. Queues it and returns.
+    def _schedule_heartbeat(self) -> None:
+        """Say "still here" while the run is long.
 
-        The event is built here, on the caller's thread, rather than deferred:
-        the queue then holds small fixed-shape dicts instead of references to
-        whole request/response objects, so its memory bound means something. The
-        work is a handful of attribute reads (and, only with optimize mode on, a
-        JSON dump plus a hash) — microseconds against an LLM call's milliseconds.
-        The network is what stays off the call path, and it does.
+        Without this a slow-but-healthy agent looks identical to a hung one.
+        The timer is a daemon so it can never hold the process open, and it
+        re-arms itself only while the run is unfinished.
         """
-        if not self.enabled:
+        if self._done.is_set() or not self._meter.enabled:
             return
         try:
-            model, tokens_in, tokens_out, cache_read = _extract_usage(provider, response)
-            event = {
-                "provider": provider,
-                "model": model,
-                "tokens_in": int(tokens_in or 0),
-                "tokens_out": int(tokens_out or 0),
-                "feature_id": self.feature_id,
-                "latency_ms": int(latency_ms),
-                "occurred_at": _now_iso(),  # see record(): the month comes from this
-            }
-            if self.metadata:
-                event["metadata"] = dict(self.metadata)
-            extra: list = []
-            if self._optimizer is not None:
-                signal = self._optimizer.on_call(
-                    provider, model, request, tokens_in, tokens_out, cache_read
-                )
-                if signal:
-                    event["signal"] = signal
-                extra = self._optimizer.due_summaries()
-            self._send([event, *extra])
+            timer = threading.Timer(self._meter._heartbeat_interval, self._beat)
+            timer.daemon = True
+            timer.start()
+            self._heartbeat = timer
         except Exception:
-            pass  # metering must never raise into the caller
+            self._heartbeat = None  # cannot start a thread: degrade, never raise
 
+    def _beat(self) -> None:
+        if self._done.is_set():
+            return
+        self._meter._emit(self._meter._event("trace.heartbeat", self.trace_id,
+                                             application=self.application))
+        self._schedule_heartbeat()
 
-def _now_iso() -> str:
-    """UTC, ISO-8601 with a Z — the shape the ingest endpoint parses."""
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def _finish(self, event_type: str) -> None:
+        # Set BEFORE cancelling, so a beat racing us sees the run is over and
+        # returns rather than re-arming a timer nothing will ever cancel.
+        self._done.set()
+        timer, self._heartbeat = self._heartbeat, None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        self._meter._emit(
+            self._meter._event(event_type, self.trace_id,
+                               operation_name=self.operation_name,
+                               application=self.application)
+        )
 
+    # -- steps -------------------------------------------------------------
+    def span(self, kind: str, operation_name: str, fn: Callable[[], Any], *,
+             feature_id: Optional[str] = None, prompt_id: Optional[str] = None,
+             prompt_version: Optional[str] = None, prompt_hash: Optional[str] = None,
+             parent_span_id: Optional[str] = None) -> Any:
+        """Run `fn`, record it as a step, and return whatever it returned.
 
-@atexit.register
-def _flush_all_meters() -> None:
-    """Give every live meter a brief chance to drain as the process winds down.
-
-    Workers are daemon threads, so without this whatever is queued at exit is
-    simply dropped. The deadline is short and shared: metering must never be the
-    reason a deploy or a restart takes noticeably longer.
-    """
-    deadline = time.monotonic() + SHUTDOWN_TIMEOUT
-    for meter in list(_METERS):
+        The step's status follows the call: an exception makes it `error` and is
+        re-raised unchanged. Nothing about the exception is transmitted.
+        """
+        if kind not in SPAN_KINDS:
+            kind = "tool"
+        span_id = _new_id()
+        parent = parent_span_id or self.parent_span_id
+        self._emit_span("span.started", span_id, kind, operation_name, parent=parent)
+        began = time.perf_counter()
         try:
-            meter.flush(timeout=max(0.0, deadline - time.monotonic()))
+            result = fn()
+        except BaseException:
+            self._emit_span(
+                "span.failed", span_id, kind, operation_name, parent=parent,
+                latency_ms=int((time.perf_counter() - began) * 1000),
+                prompt_id=prompt_id, prompt_version=prompt_version, prompt_hash=prompt_hash,
+            )
+            raise
+        latency_ms = int((time.perf_counter() - began) * 1000)
+        usage = _usage_of(result) if kind in ("llm", "embedding") else {}
+        self._emit_span(
+            "span.completed", span_id, kind, operation_name, parent=parent,
+            latency_ms=latency_ms, feature_id=feature_id,
+            prompt_id=prompt_id, prompt_version=prompt_version, prompt_hash=prompt_hash,
+            **usage,
+        )
+        return result
+
+    def llm(self, operation_name: str, fn: Callable[[], Any], **kw: Any) -> Any:
+        """A model call. Tokens and model are read from the response."""
+        return self.span("llm", operation_name, fn, **kw)
+
+    def tool(self, operation_name: str, fn: Callable[[], Any], **kw: Any) -> Any:
+        """A tool call. Its arguments and result are never looked at."""
+        return self.span("tool", operation_name, fn, **kw)
+
+    def retrieval(self, operation_name: str, fn: Callable[[], Any], **kw: Any) -> Any:
+        return self.span("retrieval", operation_name, fn, **kw)
+
+    def embedding(self, operation_name: str, fn: Callable[[], Any], **kw: Any) -> Any:
+        return self.span("embedding", operation_name, fn, **kw)
+
+    def guardrail(self, operation_name: str, fn: Callable[[], Any], **kw: Any) -> Any:
+        return self.span("guardrail", operation_name, fn, **kw)
+
+    def evaluation(self, operation_name: str, fn: Callable[[], Any], **kw: Any) -> Any:
+        return self.span("evaluation", operation_name, fn, **kw)
+
+    def _emit_span(self, event_type: str, span_id: str, kind: str, operation_name: str, *,
+                   parent: Optional[str] = None, **fields: Any) -> None:
+        self._meter._emit(
+            self._meter._event(
+                event_type, self.trace_id,
+                span_id=span_id, parent_span_id=parent, span_kind=kind,
+                operation_name=operation_name,
+                feature_id=fields.pop("feature_id", None) or self.feature_id,
+                customer_id=self.customer_id,
+                application=self.application,
+                **fields,
+            )
+        )
+
+    # -- propagation -------------------------------------------------------
+    def export_context(self) -> dict:
+        """Identifiers a worker needs to continue this run — and nothing else.
+
+        No token, no customer content, no credentials: this is designed to be
+        put on a queue, which means assuming it will be logged somewhere.
+        """
+        context = {
+            "trace_id": self.trace_id,
+            "parent_span_id": self.parent_span_id,
+            "application": self.application,
+            "feature_id": self.feature_id,
+            "environment": self._meter.environment,
+            "operation_name": self.operation_name,
+        }
+        if self._meter.release_version:
+            context["release_version"] = self._meter.release_version
+        return {k: v for k, v in context.items() if v is not None}
+
+
+# ---------------------------------------------------------------------------
+# Response introspection
+# ---------------------------------------------------------------------------
+def _attr(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_of(resp: Any) -> dict:
+    """Tokens, model and provider from a provider response.
+
+    Shapes differ per provider and are all read defensively: a response this
+    does not recognise yields no token fields rather than an exception, and the
+    span is still recorded with its timing and status.
+    """
+    out: dict = {}
+    if resp is None:
+        return out
+    try:
+        model = _attr(resp, "model", None) or _attr(resp, "model_version", None)
+        usage = _attr(resp, "usage", None)
+        if usage is None:
+            usage = _attr(resp, "usage_metadata", None)
+        if usage is None:
+            return {"model": model} if model else {}
+
+        # Anthropic
+        tin = _int(_attr(usage, "input_tokens", None))
+        tout = _int(_attr(usage, "output_tokens", None))
+        cache_read = _int(_attr(usage, "cache_read_input_tokens", None))
+        cache_write = _int(_attr(usage, "cache_creation_input_tokens", None))
+        provider = "anthropic" if (tin or tout or cache_read or cache_write) else None
+
+        if not tin and not tout:  # OpenAI
+            tin = _int(_attr(usage, "prompt_tokens", None))
+            tout = _int(_attr(usage, "completion_tokens", None))
+            details = _attr(usage, "prompt_tokens_details", {}) or {}
+            cache_read = _int(_attr(details, "cached_tokens", None))
+            out_details = _attr(usage, "completion_tokens_details", {}) or {}
+            reasoning = _int(_attr(out_details, "reasoning_tokens", None))
+            if reasoning:
+                out["reasoning_tokens"] = reasoning
+            if tin or tout:
+                provider = "openai"
+
+        if not tin and not tout:  # Google
+            tin = _int(_attr(usage, "prompt_token_count", None))
+            tout = _int(_attr(usage, "candidates_token_count", None))
+            cache_read = _int(_attr(usage, "cached_content_token_count", None))
+            reasoning = _int(_attr(usage, "thoughts_token_count", None))
+            if reasoning:
+                out["reasoning_tokens"] = reasoning
+            if tin or tout:
+                provider = "google"
+
+        if model:
+            out["model"] = model
+        if provider:
+            out["provider"] = provider
+        if tin:
+            out["tokens_in"] = tin
+        if tout:
+            out["tokens_out"] = tout
+        if cache_read:
+            out["cache_read_tokens"] = cache_read
+        if cache_write:
+            out["cache_write_tokens"] = cache_write
+    except Exception:
+        return out  # an unfamiliar response is not a reason to lose the span
+    return out
+
+
+_COMPLETION_PATHS = {
+    "anthropic": {("messages", "create"), ("completions", "create")},
+    "openai": {("chat", "completions", "create"), ("responses", "create"),
+               ("embeddings", "create")},
+    "google": {("models", "generate_content"), ("generate_content",)},
+}
+
+
+def _detect_provider(client: Any) -> str:
+    """Best-effort provider from the client's type.
+
+    Checks the whole MRO, not just the concrete class: a client is often held
+    behind a thin wrapper or subclass whose own name says nothing. When nothing
+    matches, the OpenAI-compatible shape is the common default — and `wrap(...,
+    provider=...)` exists for when that guess is wrong.
+    """
+    for klass in type(client).__mro__:
+        module = (getattr(klass, "__module__", "") or "").lower()
+        name = (getattr(klass, "__name__", "") or "").lower()
+        for provider in ("anthropic", "openai", "mistral", "cohere", "groq"):
+            if provider in module or provider in name:
+                return provider
+        if "google" in module or "genai" in module or "gemini" in name or "google" in name:
+            return "google"
+    return "openai"
+
+
+def _has_usage(resp: Any) -> bool:
+    return _attr(resp, "usage", None) is not None or _attr(resp, "usage_metadata", None) is not None
+
+
+class _Wrapped:
+    """A transparent proxy that records the completion call and returns the real
+    response unchanged. Anything off the instrumented path is handed straight
+    back, so a wrapped client behaves exactly like the original."""
+
+    def __init__(self, target: Any, meter: Meter, provider: str, *, path: tuple = (),
+                 feature_id: Optional[str] = None, application: Optional[str] = None):
+        object.__setattr__(self, "_t", target)
+        object.__setattr__(self, "_m", meter)
+        object.__setattr__(self, "_p", provider)
+        object.__setattr__(self, "_path", path)
+        object.__setattr__(self, "_feature", feature_id)
+        object.__setattr__(self, "_app", application)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._t, name)
+        new_path = self._path + (name,)
+        paths = _COMPLETION_PATHS.get(self._p, set())
+        if any(p[: len(new_path)] == new_path for p in paths):
+            return _Wrapped(attr, self._m, self._p, path=new_path,
+                            feature_id=self._feature, application=self._app)
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._t, name, value)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._path not in _COMPLETION_PATHS.get(self._p, set()):
+            return self._t(*args, **kwargs)
+        began = time.perf_counter()
+        trace_id, span_id = _new_id(), _new_id()
+        operation = ".".join(self._path) or "completion"
+        meter = self._m
+        try:
+            meter._send([
+                meter._event("trace.started", trace_id, operation_name=operation,
+                             feature_id=self._feature, application=self._app),
+                meter._event("span.started", trace_id, span_id=span_id, span_kind="llm",
+                             operation_name=operation, feature_id=self._feature,
+                             application=self._app),
+            ])
         except Exception:
             pass
+        try:
+            resp = self._t(*args, **kwargs)
+        except BaseException:
+            latency = int((time.perf_counter() - began) * 1000)
+            try:
+                meter._send([
+                    meter._event("span.failed", trace_id, span_id=span_id, span_kind="llm",
+                                 operation_name=operation, latency_ms=latency,
+                                 feature_id=self._feature, application=self._app),
+                    meter._event("trace.failed", trace_id, operation_name=operation,
+                                 application=self._app),
+                ])
+            except Exception:
+                pass
+            raise
+        latency = int((time.perf_counter() - began) * 1000)
+        try:
+            # A stream or a coroutine has no usage yet; recording it as a
+            # completed call would report zero tokens for real spend.
+            usage = _usage_of(resp) if _has_usage(resp) else {}
+            usage.setdefault("provider", self._p)
+            meter._send([
+                meter._event("span.completed", trace_id, span_id=span_id, span_kind="llm",
+                             operation_name=operation, latency_ms=latency,
+                             feature_id=self._feature, application=self._app, **usage),
+                meter._event("trace.completed", trace_id, operation_name=operation,
+                             application=self._app),
+            ])
+        except Exception:
+            pass  # metering must never raise into the caller
+        return resp
 
 
+def wrap(client: Any, meter: Meter, *, feature_id: Optional[str] = None) -> Any:
+    """Module-level convenience for `meter.wrap(client)`."""
+    return meter.wrap(client, feature_id=feature_id)
+
+
+# ---------------------------------------------------------------------------
+# Process lifetime
+# ---------------------------------------------------------------------------
 def _spawn(work) -> Optional[threading.Thread]:
-    """Run `work` on a daemon thread, or give up quietly if one can't be started.
+    """A daemon worker, or None if threads are unavailable.
 
-    Thread creation is itself a failure point: an application already at its
-    thread limit — which metering, at one thread per call, helps it reach — makes
-    Thread.start() raise RuntimeError. Unguarded, that propagated out of
-    Meter.record() and into the caller's request path, so the SDK could break the
-    very application it promises never to affect. Losing a metering event is the
-    correct trade against raising here; the bill stays right either way, because
-    reconciliation routes anything the hook misses to Unattributed.
+    Daemon so metering can never hold a process open; atexit below is what
+    gives queued events a last chance to leave.
     """
     try:
         thread = threading.Thread(target=work, daemon=True)
@@ -509,293 +739,14 @@ def _spawn(work) -> Optional[threading.Thread]:
         return None
 
 
-def _attr(obj: Any, name: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(name, default)
-    return getattr(obj, name, default)
-
-
-def _usage(response: Any, keys: tuple) -> tuple:
-    usage = _attr(response, "usage", {}) or {}
-    return int(_attr(usage, keys[0], 0) or 0), int(_attr(usage, keys[1], 0) or 0)
-
-
-# --------------------------------------------------------------------------
-# wrap() — auto-instrument a provider client (zero code at the call sites)
-# --------------------------------------------------------------------------
-# The completion method path per provider, and the recorder that reads its
-# response shape. Only these exact paths are instrumented; every other attribute
-# passes straight through to the real client untouched.
-_COMPLETION_PATHS = {
-    "anthropic": {("messages", "create")},
-    "openai": {("chat", "completions", "create"), ("responses", "create")},
-    "google": {("models", "generate_content")},
-}
-
-
-def _extract_usage(provider: str, resp: Any) -> tuple:
-    """Pull (model, tokens_in, tokens_out, cache_read) from a provider response.
-
-    cache_read is True when the provider served input tokens from its prompt
-    cache — used by optimize mode to not recommend caching what's already cached.
-    """
-    if provider == "anthropic":
-        usage = _attr(resp, "usage", {}) or {}
-        tin = int(_attr(usage, "input_tokens", 0) or 0)
-        tout = int(_attr(usage, "output_tokens", 0) or 0)
-        cache_read = int(_attr(usage, "cache_read_input_tokens", 0) or 0) > 0
-        return _attr(resp, "model", ""), tin, tout, cache_read
-    if provider == "google":
-        usage = _attr(resp, "usage_metadata", {}) or {}
-        tin = int(_attr(usage, "prompt_token_count", 0) or 0)
-        tout = int(_attr(usage, "candidates_token_count", 0) or 0)
-        cache_read = int(_attr(usage, "cached_content_token_count", 0) or 0) > 0
-        model = _attr(resp, "model_version", "") or _attr(resp, "model", "")
-        return model, tin, tout, cache_read
-    # openai and OpenAI-compatible hosts
-    usage = _attr(resp, "usage", {}) or {}
-    tin = int(_attr(usage, "prompt_tokens", 0) or 0)
-    tout = int(_attr(usage, "completion_tokens", 0) or 0)
-    details = _attr(usage, "prompt_tokens_details", {}) or {}
-    cache_read = int(_attr(details, "cached_tokens", 0) or 0) > 0
-    return _attr(resp, "model", ""), tin, tout, cache_read
-
-
-def _detect_provider(client: Any) -> str:
-    module = (type(client).__module__ or "").lower()
-    root = module.split(".")[0]
-    if root.startswith("anthropic"):
-        return "anthropic"
-    if root.startswith("openai"):
-        return "openai"
-    if root in ("google", "genai") or "genai" in module or "generativeai" in module:
-        return "google"
-    raise ValueError("Could not detect the LLM provider from the client; pass provider= to wrap().")
-
-
-def _has_usage(resp: Any) -> bool:
-    """Only concrete responses carry usage; streams/awaitables don't -> skip them."""
-    return bool(_attr(resp, "usage") or _attr(resp, "usage_metadata"))
-
-
-class _Wrapped:
-    """Transparent proxy that records the provider's completion call, then returns
-    the real response unchanged. Anything off the instrumented path is handed back
-    as-is, so the wrapped client behaves exactly like the original."""
-
-    def __init__(self, target: Any, meter: Meter, provider: str, path: tuple = ()):
-        object.__setattr__(self, "_t", target)
-        object.__setattr__(self, "_m", meter)
-        object.__setattr__(self, "_p", provider)
-        object.__setattr__(self, "_path", path)
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._t, name)
-        new_path = self._path + (name,)
-        paths = _COMPLETION_PATHS.get(self._p, set())
-        # Keep wrapping only while we're still on a prefix of a completion path.
-        if any(p[: len(new_path)] == new_path for p in paths):
-            return _Wrapped(attr, self._m, self._p, new_path)
-        return attr
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        setattr(self._t, name, value)
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if self._path not in _COMPLETION_PATHS.get(self._p, set()):
-            return self._t(*args, **kwargs)
-        start = time.perf_counter()
-        resp = self._t(*args, **kwargs)
-        latency_ms = int((time.perf_counter() - start) * 1000)
+def _flush_all_meters() -> None:
+    for meter in list(_METERS):
         try:
-            if _has_usage(resp):  # concrete response; streams/coroutines skipped
-                # kwargs carry the request (messages/system/tools) optimize mode
-                # fingerprints; all recording work happens off the call path.
-                self._m._record_wrapped(self._p, kwargs, resp, latency_ms)
+            meter.flush()
         except Exception:
-            pass  # metering must never raise into the caller
-        return resp
+            pass
 
 
-def wrap(
-    client: Any,
-    *,
-    feature_id: Optional[str] = None,
-    provider: Optional[str] = None,
-    metadata: Optional[dict] = None,
-    ingest_url: Optional[str] = None,
-    token: Optional[str] = None,
-    meter: Optional[Meter] = None,
-) -> Any:
-    """Wrap an LLM client so every completion call is metered automatically.
+atexit.register(_flush_all_meters)
 
-    Returns a drop-in proxy: your existing calls (``client.messages.create(...)``,
-    ``client.chat.completions.create(...)``) are unchanged, and each is recorded
-    with its latency after it returns. Non-completion attributes pass through, and
-    streaming/async responses are skipped (use ``Meter.record_*`` for those).
-
-    Provider is auto-detected from the client; pass ``provider=`` to override. If
-    you pass your own ``meter=``, it is used as-is (configure ``feature_id`` /
-    ``metadata`` on that meter).
-    """
-    m = meter or Meter(feature_id=feature_id, ingest_url=ingest_url, token=token, metadata=metadata)
-    return _Wrapped(client, m, provider or _detect_provider(client))
-
-
-# --------------------------------------------------------------------------
-# Optimize mode — measured optimization signals (opt spec §4). Traffic SHAPE
-# only: salted-hash fingerprints and counts, never prompt or response text.
-# --------------------------------------------------------------------------
-def _sha(*parts: str) -> str:
-    h = hashlib.sha256()
-    h.update("\x1f".join(parts).encode("utf-8"))
-    return h.hexdigest()
-
-
-def _normalize(request: dict) -> str:
-    """Stable string for the request body (the parts that make calls identical)."""
-    if not isinstance(request, dict):
-        return ""
-    payload = request.get("messages")
-    if payload is None:
-        payload = request.get("input")  # OpenAI Responses API
-    if payload is None:
-        payload = request.get("contents")  # Google generate_content
-    try:
-        return json.dumps(payload, sort_keys=True, default=str)
-    except Exception:
-        return str(payload)
-
-
-def _static_prefix(request: dict, prefix_chars: int) -> tuple:
-    """The cacheable static part of a request + a representative token estimate.
-
-    Prefer the explicit static blocks (system prompt + tool defs); otherwise fall
-    back to the leading slice of the normalized request. Tokens are estimated at
-    ~4 chars/token (opt spec §4) — we can't isolate the prefix's real token count.
-    """
-    static = ""
-    if isinstance(request, dict):
-        system = request.get("system")
-        tools = request.get("tools")
-        if system is not None or tools is not None:
-            try:
-                static = json.dumps([system, tools], sort_keys=True, default=str)
-            except Exception:
-                static = f"{system}{tools}"
-    if not static:
-        static = _normalize(request)[:prefix_chars]
-    return static, max(0, len(static) // 4)
-
-
-class _Optimizer:
-    """Client-side, bounded, thread-safe signal collector (opt spec §4.1).
-
-    - A duplicate LRU (request_fp -> recency): a repeat within the window emits a
-      one-off 'duplicate' signal that rides on the metered call.
-    - A prefix counter map (prefix_fp -> counts) flushed as 'prefix' summaries on
-      a timer or at capacity, so only bounded aggregates ever leave the process.
-    """
-
-    def __init__(
-        self,
-        meter: Meter,
-        *,
-        prefix_chars: int = 2000,
-        flush_interval: float = 60.0,
-        dup_capacity: int = 5000,
-        prefix_capacity: int = 512,
-    ):
-        self._m = meter
-        self._prefix_chars = prefix_chars
-        self._flush_interval = flush_interval
-        self._dup_capacity = dup_capacity
-        self._prefix_capacity = prefix_capacity
-        self._salt: Optional[str] = None
-        self._salt_ready = False
-        self._seen: OrderedDict[str, None] = OrderedDict()
-        self._prefixes: dict = {}
-        self._last_flush = time.monotonic()
-        self._lock = threading.Lock()
-
-    def _get_salt(self) -> Optional[str]:
-        if not self._salt_ready:
-            self._salt = self._m._fetch_salt()
-            self._salt_ready = True
-        return self._salt
-
-    def on_call(
-        self,
-        provider: str,
-        model: str,
-        request: dict,
-        tokens_in: int,
-        tokens_out: int,
-        cache_read: bool,
-    ) -> Optional[dict]:
-        """Fold one call into the collector; return a 'duplicate' signal if it repeats."""
-        salt = self._get_salt()
-        if not salt:
-            return None  # no salt -> no signals (never emit unsalted hashes)
-        req_fp = _sha(salt, provider, model, _normalize(request))
-        static, prefix_tokens = _static_prefix(request, self._prefix_chars)
-        prefix_fp = _sha(salt, provider, model, static)
-        with self._lock:
-            duplicate = req_fp in self._seen
-            if duplicate:
-                self._seen.move_to_end(req_fp)
-            else:
-                self._seen[req_fp] = None
-                while len(self._seen) > self._dup_capacity:
-                    self._seen.popitem(last=False)
-            entry = self._prefixes.setdefault(
-                prefix_fp,
-                {
-                    "provider": provider,
-                    "model": model,
-                    "count": 0,
-                    "prefix_tokens": prefix_tokens,
-                    "cached": 0,
-                    "tin": 0,
-                    "tout": 0,
-                },
-            )
-            entry["count"] += 1
-            entry["tin"] += int(tokens_in or 0)
-            entry["tout"] += int(tokens_out or 0)
-            entry["prefix_tokens"] = max(entry["prefix_tokens"], prefix_tokens)
-            if cache_read:
-                entry["cached"] += 1
-        if duplicate:
-            return {"kind": "duplicate", "fingerprint": req_fp, "count": 1}
-        return None
-
-    def due_summaries(self) -> list:
-        """Flush prefix counters as events when the timer elapses or the map is full."""
-        now = time.monotonic()
-        with self._lock:
-            if now - self._last_flush < self._flush_interval and (
-                len(self._prefixes) < self._prefix_capacity
-            ):
-                return []
-            self._last_flush = now
-            items, self._prefixes = self._prefixes, {}
-        events = []
-        for fingerprint, entry in items.items():
-            events.append(
-                {
-                    "provider": entry["provider"],
-                    "model": entry["model"],
-                    "feature_id": self._m.feature_id,
-                    "signal": {
-                        "kind": "prefix",
-                        "fingerprint": fingerprint,
-                        "count": entry["count"],
-                        "prefix_tokens": entry["prefix_tokens"],
-                        "cached_count": entry["cached"],
-                        "tokens_in": entry["tin"],
-                        "tokens_out": entry["tout"],
-                    },
-                }
-            )
-        return events
+__all__ = ["Meter", "AgentRun", "wrap", "__version__"]

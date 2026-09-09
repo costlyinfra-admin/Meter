@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 from meter.api import create_app
@@ -17,6 +20,13 @@ def client(admin_conn, admin_conninfo, app_conninfo, monkeypatch):
     c = TestClient(create_app())
     c.post("/api/auth/signup", json={"email": "cto@acme.com", "password": PASSWORD})
     return c
+
+
+# The SDK reports live, so an event's timestamp is clamped to a believable
+# window — a wrong clock must not move real spend into a period nobody looks at.
+# This test therefore meters into the CURRENT month rather than a fixed one.
+NOW = dt.datetime.now(dt.timezone.utc)
+PERIOD = NOW.strftime("%Y-%m")
 
 
 def test_register_pool_meter_and_allocate(client):
@@ -41,23 +51,29 @@ def test_register_pool_meter_and_allocate(client):
         json={
             "events": [
                 {
+                    "event_type": "span.completed",
+                    "trace_id": f"t-{uuid.uuid4().hex[:8]}",
+                    "span_id": "s1",
+                    "span_kind": "llm",
+                    "operation_name": "summarize",
+                    "application": "support-agent",
                     "provider": "self_hosted",
                     "model": "llama-3.1-70b",
                     "tokens_in": 1_000_000,
                     "tokens_out": 0,
                     "feature_id": triage["id"],
-                    "occurred_at": "2026-05-10T00:00:00Z",
+                    "occurred_at": NOW.isoformat(),
                 }
             ]
         },
     )
 
     # Allocate the pool's bill across features by usage share.
-    result = client.post("/api/compute/allocate", json={"period": "2026-05"}).json()
+    result = client.post("/api/compute/allocate", json={"period": PERIOD}).json()
     assert result[0]["allocated"] == 1000.0
 
     # The feature now shows the self-hosted inference cost on the dashboard.
-    dash = client.get("/api/dashboard", params={"period": "2026-05"}).json()
+    dash = client.get("/api/dashboard", params={"period": PERIOD}).json()
     triage_row = next(f for f in dash["features"] if f["name"] == "AI threat triage")
     assert triage_row["inference_cost"] == 1000.0
     assert triage_row["confidence"] == "med"  # allocation, not a metered price
