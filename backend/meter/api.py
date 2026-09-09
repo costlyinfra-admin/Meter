@@ -150,6 +150,61 @@ _ALERT_TEMPLATES = [
             "cooldown": "day",
         },
     },
+    # Request-level templates. Their thresholds are starting points a customer
+    # is expected to move: the right number for "too many steps" is a property
+    # of their workflow, not of ours.
+    {
+        "id": "stale_agents",
+        "label": "An agent run goes quiet",
+        "rule": {
+            "name": "Agent runs stuck",
+            "metric": "stale_agents",
+            "scope_type": "organization",
+            "condition_type": "exceeds",
+            "threshold": 0,
+            "window": "hourly",
+            "cooldown": "hour",
+        },
+    },
+    {
+        "id": "run_cost_spike",
+        "label": "Cost per agent run jumps 25%",
+        "rule": {
+            "name": "Cost per run spike",
+            "metric": "cost_per_run",
+            "scope_type": "organization",
+            "condition_type": "increase_pct",
+            "threshold": 25,
+            "window": "daily",
+            "cooldown": "day",
+        },
+    },
+    {
+        "id": "retry_loop",
+        "label": "A step repeats too many times in one run",
+        "rule": {
+            "name": "Retry loop detected",
+            "metric": "retry_loop",
+            "scope_type": "organization",
+            "condition_type": "exceeds",
+            "threshold": 5,
+            "window": "hourly",
+            "cooldown": "hour",
+        },
+    },
+    {
+        "id": "cache_efficiency",
+        "label": "Prompt cache hit rate drops below 40%",
+        "rule": {
+            "name": "Cache efficiency dropped",
+            "metric": "cache_hit_rate",
+            "scope_type": "organization",
+            "condition_type": "falls_below",
+            "threshold": 40,
+            "window": "daily",
+            "cooldown": "day",
+        },
+    },
 ]
 
 
@@ -1124,6 +1179,9 @@ def create_app() -> FastAPI:
             "channels": list(alerts.CHANNELS),
             "valid_conditions": {m: list(alerts.valid_conditions(m)) for m in alerts.METRICS},
             "valid_scopes": {m: list(alerts.valid_scopes(m)) for m in alerts.METRICS},
+            # What each threshold is counted in, so the form can label it "$",
+            # "minutes" or "steps" rather than calling everything dollars.
+            "metric_units": dict(alerts.METRIC_UNITS),
             "templates": _ALERT_TEMPLATES,
             # Whether a budget-percentage rule can be saved at all right now, and
             # what to say if it cannot. The form asks once rather than each

@@ -95,6 +95,7 @@ describe("AlertsPage", () => {
           event_type: "triggered",
           metric: "combined_cost",
           metric_label: "Combined AI cost",
+          condition_type: "exceeds",
           scope_type: "organization",
           scope_ref: null,
           scope_label: null,

@@ -24,7 +24,7 @@ from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from . import budgets, notify
+from . import ai_reads, alerts, budgets, notify
 from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .providers import month_start
 
@@ -75,6 +75,156 @@ def _scope_sql(rule: dict) -> tuple[str, list]:
 def _sum(conn, sql: str, params: list) -> tuple[Decimal, int]:
     row = conn.execute(sql, params).fetchone()
     return (Decimal(str(row[0])) if row[0] is not None else Decimal("0")), int(row[1])
+
+
+# ---- Request-level metrics (measured over traces, not months) -------------
+# These read ai_trace/ai_span over the rule's own window ending at `end`, which
+# is what lets the same function produce the previous period's value: ask for
+# the window ending one window earlier.
+#
+# A trace tagged environment 'ignore' is excluded, as ignored spend is
+# everywhere else in reporting.
+_TRACE_ACTIVE = "(t.environment IS NULL OR t.environment <> 'ignore')"
+
+
+def _trace_scope_sql(rule: dict) -> tuple[str, list]:
+    """Scope clause for a query whose ai_trace is aliased `t`.
+
+    Only organization/application/feature reach here: alerts.valid_scopes()
+    refuses provider and model for these metrics, because one run can call
+    several providers and belongs wholly to none of them.
+    """
+    st, ref = rule["scope_type"], rule["scope_ref"]
+    if st == "application":
+        return " AND t.application_id = %s", [ref]
+    if st == "feature":
+        return " AND t.feature_id = %s", [ref]
+    return "", []
+
+
+def _trace_metric_value(conn, rule: dict, end: dt.datetime) -> Optional[Decimal]:
+    """The request-level metric over the window ending at `end`, or None.
+
+    None means "cannot be evaluated" and always maps to insufficient_data — it
+    is never conflated with zero. Zero stale agents is a real, healthy reading;
+    no traces at all is not a reading.
+    """
+    metric = rule["metric"]
+    scope, sp = _trace_scope_sql(rule)
+    start = end - _WINDOW_DELTA[rule["window"]]
+    # Half-open the other way round: (start, end]. `end` is the moment of
+    # evaluation, so a run that started this instant belongs to the window being
+    # evaluated -- an exclusive upper bound would drop it, and with an hourly
+    # window on a short workflow that is most of them. Excluding `start` keeps
+    # this window and the previous one from both claiming the same instant.
+    window = " AND t.started_at > %s AND t.started_at <= %s"
+    wp = [start, end]
+
+    if metric == "stale_agents":
+        # Deliberately NOT windowed by started_at: a run that began three hours
+        # ago and went quiet ten minutes ago is exactly the one to alert on, and
+        # an hourly window would have already forgotten it. Staleness uses the
+        # tenant's own threshold, so the alert agrees with what the Traces page
+        # shows rather than inventing a second definition.
+        cutoff = end - dt.timedelta(minutes=ai_reads.stale_threshold(conn))
+        row = conn.execute(
+            f"SELECT count(*) FILTER (WHERE t.status = 'running' "
+            f"                        AND t.last_activity_at <= %s), count(*) "
+            f"FROM ai_trace t WHERE {_TRACE_ACTIVE}{scope}",  # noqa: S608
+            [cutoff, *sp],
+        ).fetchone()
+        return Decimal(int(row[0])) if int(row[1]) else None
+
+    if metric == "agent_runtime":
+        # A run still in flight counts at its runtime SO FAR — the whole point
+        # is to catch the one that has not come back.
+        row = conn.execute(
+            f"SELECT MAX(COALESCE(t.duration_ms, "
+            f"           EXTRACT(EPOCH FROM (%s - t.started_at)) * 1000)), count(*) "
+            f"FROM ai_trace t WHERE {_TRACE_ACTIVE}{window}{scope}",  # noqa: S608
+            [end, *wp, *sp],
+        ).fetchone()
+        if not int(row[1]) or row[0] is None:
+            return None
+        return Decimal(str(row[0])) / Decimal("60000")  # ms -> minutes
+
+    if metric == "agent_steps":
+        row = conn.execute(
+            f"SELECT MAX(t.span_count), count(*) "
+            f"FROM ai_trace t WHERE {_TRACE_ACTIVE}{window}{scope}",  # noqa: S608
+            [*wp, *sp],
+        ).fetchone()
+        return Decimal(int(row[0])) if int(row[1]) and row[0] is not None else None
+
+    if metric == "cost_per_run":
+        # Finished runs only. A run that is still going has only part of its
+        # cost recorded, and averaging it in makes every busy period look cheap.
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(t.total_cost), 0), count(*) FROM ai_trace t "
+            f"WHERE {_TRACE_ACTIVE} AND t.status <> 'running'{window}{scope}",  # noqa: S608
+            [*wp, *sp],
+        ).fetchone()
+        n = int(row[1])
+        return (Decimal(str(row[0])) / Decimal(n)) if n else None
+
+    if metric == "retry_loop":
+        # The most times any ONE step repeated inside a SINGLE run. A workflow
+        # that calls "search" twice by design reads as 2 forever; one stuck in a
+        # retry loop climbs, which is what a threshold above the design catches.
+        row = conn.execute(
+            f"""
+            SELECT MAX(repeats), COUNT(*) FROM (
+                SELECT COUNT(*) AS repeats
+                FROM ai_span s JOIN ai_trace t ON t.id = s.trace_id
+                WHERE {_TRACE_ACTIVE}{window}{scope}
+                GROUP BY s.trace_id, s.span_kind, s.operation_name
+            ) AS per_step
+            """,  # noqa: S608
+            [*wp, *sp],
+        ).fetchone()
+        return Decimal(int(row[0])) if int(row[1]) and row[0] is not None else None
+
+    if metric == "failed_run_cost":
+        # Money spent on runs that returned nothing. Zero is a real reading, so
+        # the denominator is "were there any runs", not "were there any errors".
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(t.total_cost) FILTER (WHERE t.status = 'error'), 0), "
+            f"       count(*) "
+            f"FROM ai_trace t WHERE {_TRACE_ACTIVE}{window}{scope}",  # noqa: S608
+            [*wp, *sp],
+        ).fetchone()
+        return Decimal(str(row[0])) if int(row[1]) else None
+
+    if metric == "cache_hit_rate":
+        # Share of input tokens served from the prompt cache. Cache writes are
+        # excluded from the denominator: a write is the price of a later hit,
+        # not a missed one.
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(s.cache_read_tokens), 0), "
+            f"       COALESCE(SUM(s.cache_read_tokens), 0) + COALESCE(SUM(s.tokens_in), 0) "
+            f"FROM ai_span s JOIN ai_trace t ON t.id = s.trace_id "
+            f"WHERE s.span_kind = 'llm' AND {_TRACE_ACTIVE}{window}{scope}",  # noqa: S608
+            [*wp, *sp],
+        ).fetchone()
+        denominator = int(row[1])
+        if not denominator:
+            return None  # nothing read any input tokens -> no rate to speak of
+        return Decimal(int(row[0])) / Decimal(denominator) * Decimal("100")
+
+    return None
+
+
+def _current_value(conn, rule: dict, month: dt.date, now: dt.datetime) -> Optional[Decimal]:
+    if rule["metric"] in alerts.TRACE_METRICS:
+        return _trace_metric_value(conn, rule, now)
+    return _metric_value(conn, rule, month)
+
+
+def _prior_value(conn, rule: dict, month: dt.date, now: dt.datetime) -> Optional[Decimal]:
+    """The same metric one period earlier — the denominator for increase_pct."""
+    if rule["metric"] in alerts.TRACE_METRICS:
+        return _trace_metric_value(conn, rule, now - _WINDOW_DELTA[rule["window"]])
+    return _metric_value(conn, rule, month_start(_prev_month(month)))
 
 
 def _metric_value(conn, rule: dict, month: dt.date) -> Optional[Decimal]:
@@ -142,22 +292,25 @@ def _metric_value(conn, rule: dict, month: dt.date) -> Optional[Decimal]:
 
 
 def _observed_and_breach(
-    conn, rule: dict, month: dt.date, *, tenant_id: str
+    conn, rule: dict, month: dt.date, *, tenant_id: str, now: dt.datetime
 ) -> tuple[Optional[Decimal], bool]:
     """Return (observed_lhs, breached) or (None, False) when insufficient data.
 
     observed_lhs is the number the user compares against the threshold: the metric
-    value for 'exceeds', or the computed percentage for the pct conditions.
+    value for 'exceeds'/'falls_below', or the computed percentage for the pct
+    conditions.
     """
-    value = _metric_value(conn, rule, month)
+    value = _current_value(conn, rule, month, now)
     if value is None:
         return None, False
     threshold = Decimal(str(rule["threshold"]))
     cond = rule["condition_type"]
     if cond == "exceeds":
         return value, value > threshold
+    if cond == "falls_below":
+        return value, value < threshold
     if cond == "increase_pct":
-        prev = _metric_value(conn, rule, month_start(_prev_month(month)))
+        prev = _prior_value(conn, rule, month, now)
         if prev is None or prev <= 0:
             return None, False  # can't compute a percentage change reliably
         pct = (value - prev) / prev * Decimal("100")
@@ -227,7 +380,7 @@ def evaluate_rule(tenant_id: str, alert_id: str, *, now: Optional[dt.datetime] =
         if rule is None or not rule["enabled"]:
             return {"status": "skipped"}
 
-        observed, breached = _observed_and_breach(conn, rule, month, tenant_id=tenant_id)
+        observed, breached = _observed_and_breach(conn, rule, month, tenant_id=tenant_id, now=now)
         next_eval = now + _WINDOW_DELTA[rule["window"]]
 
         if observed is None:
@@ -352,11 +505,53 @@ def _cooldown_ok(rule: dict, now: dt.datetime) -> bool:
     return (now - last) >= _COOLDOWN_DELTA[rule["cooldown"]]
 
 
+#: Kept in step with UNIT_LABELS/quantity() in web/src/alertLabels.ts, so the
+#: Slack message and the in-app feed say the same thing about the same number.
+_UNIT_SUFFIX = {
+    "money": "",
+    "tokens": " tokens",
+    "runs": " runs",
+    "minutes": " minutes",
+    "steps": " steps",
+    "repeats": "x",
+    "percent": "%",
+}
+
+
+def _round(value) -> str:
+    """One decimal place, with a bare integer left bare. "45 minutes", not "45.0"."""
+    return f"{float(value):,.1f}".removesuffix(".0")
+
+
+def _suffix(unit: str, value) -> str:
+    """The unit word, singular when there is exactly one of the thing."""
+    word = _UNIT_SUFFIX[unit]
+    return word[:-1] if float(value) == 1 and word.endswith("s") else word
+
+
+def _quantity(rule: dict, value) -> str:
+    """A number in the units the rule is actually about.
+
+    A percentage CONDITION overrides the metric's own unit: the observed value
+    for an increase_pct rule is a percentage change, whatever the metric counts.
+    """
+    if rule["condition_type"] in ("increase_pct", "budget_pct"):
+        return f"{_round(value)}%"
+    unit = alerts.METRIC_UNITS.get(rule["metric"], "money")
+    if unit == "money":
+        return f"${float(value):,.2f}"
+    if unit in ("runs", "steps", "repeats", "tokens"):
+        return f"{float(value):,.0f}{_suffix(unit, value)}"
+    return f"{_round(value)}{_suffix(unit, value)}"
+
+
 def _message(event_type: str, rule: dict, observed: Decimal, threshold) -> str:
     verb = "triggered" if event_type == "triggered" else "resolved"
+    comparison = "below" if rule["condition_type"] == "falls_below" else "vs"
+    label = alerts.METRIC_LABELS.get(rule["metric"], rule["metric"])
     return (
-        f"{rule['metric']} {verb}: observed {float(observed):,.2f} "
-        f"vs threshold {float(threshold):,.2f}."
+        f"{label} {verb}: observed {_quantity(rule, observed)} "
+        f"{comparison} threshold {_quantity(rule, threshold)}."
     )
 
 
@@ -368,6 +563,8 @@ def _deep_link_path(scope_type: str, scope_ref) -> str:
     """
     if scope_type == "feature" and scope_ref:
         return f"/features/{scope_ref}"
+    if scope_type == "application" and scope_ref:
+        return f"/applications/{scope_ref}"
     if scope_type in ("provider", "model"):
         return "/cost-sources"
     return "/"
@@ -379,10 +576,11 @@ def _payload(
     base = os.environ.get("APP_BASE_URL", "")
     link = f"{base}{_deep_link_path(rule['scope_type'], rule['scope_ref'])}"
     org = _org_name(tenant_id)
+    label = alerts.METRIC_LABELS.get(rule["metric"], rule["metric"])
     text = (
         f"[{org}] Alert {'RESOLVED' if event_type == 'resolved' else 'TRIGGERED'}: "
-        f"{rule['metric']} ({rule['scope_type']}) — observed {float(observed):,.2f}, "
-        f"threshold {float(threshold):,.2f} over the {rule['window']} window. {link}"
+        f"{label} ({rule['scope_type']}) — observed {_quantity(rule, observed)}, "
+        f"threshold {_quantity(rule, threshold)} over the {rule['window']} window. {link}"
     )
     return {
         "org": org,

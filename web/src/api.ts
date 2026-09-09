@@ -496,6 +496,8 @@ export interface AlertActivityEvent {
   alert_name: string;
   metric: string;
   metric_label: string;
+  /** The rule's condition, so the feed can format the observed value. */
+  condition_type: string;
   scope_type: string;
   scope_ref: string | null;
   scope_label: string | null;
@@ -518,6 +520,8 @@ export interface AlertMeta {
   channels: string[];
   valid_conditions: Record<string, string[]>;
   valid_scopes: Record<string, string[]>;
+  /** What each metric's threshold is counted in — "money", "minutes", "steps". */
+  metric_units: Record<string, string>;
   templates: { id: string; label: string; requires_budget?: boolean; rule: Partial<AlertRule> }[];
   /** Whether the organization has a budget for budget_pct rules to measure
    *  against. False means such a rule cannot be saved, and the form says so. */

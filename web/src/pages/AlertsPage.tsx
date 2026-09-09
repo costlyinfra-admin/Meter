@@ -15,8 +15,8 @@ import {
   STATUS_LABELS,
   statusClass,
   WINDOW_LABELS,
+  ruleQuantity,
 } from "../alertLabels";
-import { money } from "../format";
 
 type Tab = "rules" | "activity";
 
@@ -443,8 +443,8 @@ function ActivityTab({
             <div className="activity-detail muted">
               {e.observed_value != null && (
                 <span>
-                  Observed {money(e.observed_value)}
-                  {e.threshold != null ? ` vs threshold ${money(e.threshold)}` : ""}
+                  Observed {ruleQuantity(e, e.observed_value)}
+                  {e.threshold != null ? ` vs threshold ${ruleQuantity(e, e.threshold)}` : ""}
                 </span>
               )}
               {e.deliveries.length > 0 && (

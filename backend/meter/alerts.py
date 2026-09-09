@@ -22,6 +22,16 @@ METRICS = (
     "cost_per_user",
     "token_usage",
     "unattributed_cost",
+    # Request-level metrics. These read ai_trace/ai_span rather than the monthly
+    # tables, so they can say something a monthly total cannot: this run is
+    # stuck, this workflow is looping, this release made every run dearer.
+    "stale_agents",
+    "agent_runtime",
+    "agent_steps",
+    "cost_per_run",
+    "retry_loop",
+    "failed_run_cost",
+    "cache_hit_rate",
 )
 METRIC_LABELS = {
     "inference_cost": "Inference cost",
@@ -30,9 +40,50 @@ METRIC_LABELS = {
     "cost_per_user": "Cost per active user",
     "token_usage": "Token usage",
     "unattributed_cost": "Unattributed spend",
+    "stale_agents": "Stale agent runs",
+    "agent_runtime": "Longest agent runtime (minutes)",
+    "agent_steps": "Steps in a single run",
+    "cost_per_run": "Cost per agent run",
+    "retry_loop": "Repeats of one step in a run",
+    "failed_run_cost": "Cost incurred by failed runs",
+    "cache_hit_rate": "Prompt cache hit rate (%)",
 }
-SCOPES = ("organization", "provider", "model", "feature")
-CONDITIONS = ("exceeds", "increase_pct", "budget_pct")
+SCOPES = ("organization", "provider", "model", "feature", "application")
+CONDITIONS = ("exceeds", "increase_pct", "budget_pct", "falls_below")
+
+#: What a threshold is COUNTED IN, per metric. Without this the form labels every
+#: threshold "$", and "notify me when a run takes more than $30" is nonsense.
+METRIC_UNITS = {
+    "inference_cost": "money",
+    "build_cost": "money",
+    "combined_cost": "money",
+    "cost_per_user": "money",
+    "token_usage": "tokens",
+    "unattributed_cost": "money",
+    "stale_agents": "runs",
+    "agent_runtime": "minutes",
+    "agent_steps": "steps",
+    "cost_per_run": "money",
+    "retry_loop": "repeats",
+    "failed_run_cost": "money",
+    "cache_hit_rate": "percent",
+}
+
+#: Metrics whose healthy reading is zero, so "exceeds 0" is a real rule.
+_ZERO_IS_MEANINGFUL = frozenset({"stale_agents", "failed_run_cost"})
+
+#: Request-level metrics, measured over recent traces rather than a whole month.
+TRACE_METRICS = frozenset(
+    {
+        "stale_agents",
+        "agent_runtime",
+        "agent_steps",
+        "cost_per_run",
+        "retry_loop",
+        "failed_run_cost",
+        "cache_hit_rate",
+    }
+)
 WINDOWS = ("hourly", "daily", "weekly", "monthly")
 COOLDOWNS = ("none", "hour", "day", "week")
 CHANNELS = ("in_app", "email", "slack", "webhook")
@@ -41,8 +92,26 @@ CHANNELS = ("in_app", "email", "slack", "webhook")
 _BUDGET_METRICS = {"inference_cost", "build_cost", "combined_cost", "unattributed_cost"}
 
 
+#: Conditions for the request-level metrics, stated explicitly rather than
+#: derived. Most of them only ever make sense as "exceeds": a run taking 40
+#: minutes is the problem, and "40 minutes, 12% longer than last hour" is a
+#: statistic, not an alert. Cost per run is the exception the spec asks for --
+#: a release that makes every run 30% dearer is exactly the thing to catch.
+_TRACE_CONDITIONS = {
+    "stale_agents": ("exceeds",),
+    "agent_runtime": ("exceeds",),
+    "agent_steps": ("exceeds",),
+    "cost_per_run": ("exceeds", "increase_pct"),
+    "retry_loop": ("exceeds",),
+    "failed_run_cost": ("exceeds",),
+    "cache_hit_rate": ("falls_below",),
+}
+
+
 def valid_conditions(metric: str) -> tuple[str, ...]:
     """Conditions that make sense for a metric (drives the form's condition list)."""
+    if metric in _TRACE_CONDITIONS:
+        return _TRACE_CONDITIONS[metric]
     conds = ["exceeds", "increase_pct"]
     if metric in _BUDGET_METRICS:
         conds.append("budget_pct")
@@ -55,6 +124,10 @@ _PROVIDER_MODEL_METRICS = {"inference_cost", "token_usage", "unattributed_cost"}
 
 
 def valid_scopes(metric: str) -> tuple[str, ...]:
+    if metric in TRACE_METRICS:
+        # A trace belongs to an application and a feature; it has no single
+        # provider or model, because a run can call several.
+        return ("organization", "application", "feature")
     scopes = ["organization", "feature"]
     if metric in _PROVIDER_MODEL_METRICS:
         scopes[1:1] = ["provider", "model"]
@@ -63,6 +136,22 @@ def valid_scopes(metric: str) -> tuple[str, ...]:
 
 class AlertError(ValueError):
     """Invalid alert input (maps to HTTP 400)."""
+
+
+def _application_ref(tenant_id: str, scope_ref: str) -> str:
+    """Confirm `scope_ref` names one of this tenant's applications; return its id.
+
+    Accepts an id or a slug, because the form sends an id and a template or an
+    API caller is more likely to have the slug the SDK uses.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            "SELECT id FROM ai_application WHERE slug = %s OR id::text = %s",
+            (scope_ref, scope_ref),
+        ).fetchone()
+    if row is None:
+        raise AlertError(f"No application named {scope_ref!r}.")
+    return str(row[0])
 
 
 # ---- Validation -----------------------------------------------------------
@@ -110,14 +199,31 @@ def _validate(payload: dict, *, tenant_id: str) -> dict:
         raise AlertError(f"A {scope_type} must be selected for a {scope_type}-scoped alert.")
     if scope_type == "organization":
         scope_ref = None
+    if scope_type == "application":
+        # Checked here rather than at evaluation time: an application id that is
+        # not a uuid would otherwise reach the evaluator and fail there, turning
+        # a typo in a form into a nightly job that logs an error every night.
+        scope_ref = _application_ref(tenant_id, scope_ref)
 
     condition = payload.get("condition_type")
     if condition not in valid_conditions(metric):
         raise AlertError(f"Condition {condition!r} is not valid for {METRIC_LABELS.get(metric)}.")
 
-    threshold = _pos_number(payload.get("threshold"), "Threshold", allow_zero=False)
+    # Zero is normally a nonsense threshold — "notify me when spend exceeds $0"
+    # is an alert that fires forever. For the two metrics whose healthy value IS
+    # zero it is the only threshold anyone actually wants: tell me when ANY run
+    # is stuck, tell me when ANY money is spent on runs that failed.
+    threshold = _pos_number(
+        payload.get("threshold"), "Threshold", allow_zero=metric in _ZERO_IS_MEANINGFUL
+    )
     if condition in ("increase_pct", "budget_pct") and threshold > Decimal("100000"):
         raise AlertError("Percentage threshold looks too large.")
+    if METRIC_UNITS.get(metric) == "percent" and threshold > Decimal("100"):
+        # A rule that fires when the cache hit rate falls below 150% would never
+        # stop firing, and would read to its author as if it were working.
+        raise AlertError(
+            f"{METRIC_LABELS[metric]} is a percentage, so the threshold must be 100 or less."
+        )
 
     # A budget-percentage rule is measured against the organization's real,
     # persisted budget — not a number typed into the alert form, and never a
@@ -243,6 +349,9 @@ def _scope_label(conn, scope_type: str, scope_ref) -> Optional[str]:
         return None
     if scope_type == "feature":
         row = conn.execute("SELECT name FROM feature WHERE id = %s", (scope_ref,)).fetchone()
+        return row[0] if row else scope_ref
+    if scope_type == "application":
+        row = conn.execute("SELECT name FROM ai_application WHERE id = %s", (scope_ref,)).fetchone()
         return row[0] if row else scope_ref
     return scope_ref
 
@@ -458,9 +567,9 @@ def list_activity(tenant_id: str, *, limit: int = 100) -> list[dict]:
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         rows = conn.execute(
             """
-            SELECT e.id, e.alert_id, r.name, r.metric, r.scope_type, r.scope_ref,
-                   e.event_type, e.observed_value, e.threshold, e."window", e.message,
-                   e.read, e.occurred_at
+            SELECT e.id, e.alert_id, r.name, r.metric, r.condition_type, r.scope_type,
+                   r.scope_ref, e.event_type, e.observed_value, e.threshold, e."window",
+                   e.message, e.read, e.occurred_at
             FROM alert_event e JOIN alert_rule r ON r.id = e.alert_id
             ORDER BY e.occurred_at DESC LIMIT %s
             """,
@@ -473,6 +582,9 @@ def list_activity(tenant_id: str, *, limit: int = 100) -> list[dict]:
                 "alert_name": name,
                 "metric": metric,
                 "metric_label": METRIC_LABELS.get(metric, metric),
+                # The feed formats the observed value, and a percentage rule
+                # reports a percentage whatever its metric counts.
+                "condition_type": condition_type,
                 "scope_type": scope_type,
                 "scope_ref": scope_ref,
                 "scope_label": _scope_label(conn, scope_type, scope_ref),
@@ -489,6 +601,7 @@ def list_activity(tenant_id: str, *, limit: int = 100) -> list[dict]:
                 aid,
                 name,
                 metric,
+                condition_type,
                 scope_type,
                 scope_ref,
                 etype,

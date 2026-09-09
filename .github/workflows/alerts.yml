@@ -1,0 +1,56 @@
+name: Hourly alert evaluation
+
+# Alert rules used to measure only monthly spend totals, so evaluating them once
+# a night alongside ingest was enough. The request-level metrics are not like
+# that: "an agent run has gone quiet" told to you twenty hours later is not an
+# alert, it is a post-mortem. Runtime, retry loops and cache efficiency have the
+# same shape — they describe what is happening now.
+#
+# So alerts get their own schedule, hourly and independent of ingest. It costs
+# nothing when nothing is due: `run_scheduled_alert_eval` only looks at rules
+# whose `next_eval_at` has passed, and each rule sets that one window ahead. A
+# monthly-window rule still evaluates monthly no matter how often this runs.
+#
+# The nightly ingest workflow still evaluates alerts as its last step. That is
+# deliberate and not a duplicate: it means a rule sees freshly-ingested cost
+# data immediately rather than waiting for the top of the next hour.
+#
+# GitHub's scheduled runs are best-effort and can be delayed under load, so
+# treat this as "about hourly", not as a real-time guarantee.
+
+on:
+  schedule:
+    - cron: "42 * * * *" # hourly, off the top of the hour to dodge the rush
+  workflow_dispatch: {}
+
+# One evaluation at a time. Two overlapping runs would not corrupt anything --
+# each rule is locked FOR UPDATE and incidents are idempotent -- but there is
+# no point paying for the contention.
+concurrency:
+  group: alert-eval
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: Evaluate due alert rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Evaluate alert rules
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: python -m meter.alerts_eval

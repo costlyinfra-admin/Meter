@@ -17,8 +17,8 @@ import {
   STATUS_LABELS,
   statusClass,
   WINDOW_LABELS,
+  ruleQuantity,
 } from "../alertLabels";
-import { money } from "../format";
 
 interface Detail extends AlertRule {
   history: {
@@ -161,13 +161,10 @@ export function AlertDetailPage() {
             }
           />
           <Field label="Condition" value={CONDITION_LABELS[rule.condition_type]} />
-          <Field
-            label="Threshold"
-            value={rule.condition_type === "exceeds" ? money(rule.threshold) : `${rule.threshold}%`}
-          />
+          <Field label="Threshold" value={ruleQuantity(rule, rule.threshold)} />
           <Field
             label="Current observed"
-            value={rule.last_observed != null ? money(rule.last_observed) : "—"}
+            value={rule.last_observed != null ? ruleQuantity(rule, rule.last_observed) : "—"}
           />
           <Field label="Evaluation window" value={WINDOW_LABELS[rule.window]} />
           <Field label="Cooldown" value={COOLDOWN_LABELS[rule.cooldown]} />
@@ -192,8 +189,11 @@ export function AlertDetailPage() {
                   {EVENT_LABELS[e.event_type] ?? e.event_type}
                 </span>
                 <span className="muted">
-                  {e.observed_value != null ? `observed ${money(e.observed_value)}` : ""}
-                  {e.threshold != null ? ` vs ${money(e.threshold)}` : ""} · {when(e.occurred_at)}
+                  {e.observed_value != null
+                    ? `observed ${ruleQuantity(rule, e.observed_value)}`
+                    : ""}
+                  {e.threshold != null ? ` vs ${ruleQuantity(rule, e.threshold)}` : ""} ·{" "}
+                  {when(e.occurred_at)}
                 </span>
               </li>
             ))}

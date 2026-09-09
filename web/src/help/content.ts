@@ -813,21 +813,70 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             [
               [
                 "**Metric**",
-                "Inference cost, build cost, combined AI cost, cost per active user, token usage, unattributed cost",
+                "A monthly spend figure — inference cost, build cost, combined AI cost, cost per active user, token usage, unattributed cost — or one of the run-level metrics below",
               ],
               [
                 "**Scope**",
-                "The whole organization, a feature, or (for inference metrics) a provider or model",
+                "The whole organization, a feature, an AI application, or (for inference metrics) a provider or model",
               ],
               [
                 "**Condition**",
-                "Exceeds a threshold, increases by a percentage, or reaches a percentage of a budget",
+                "Exceeds a threshold, falls below one, increases by a percentage, or reaches a percentage of a budget",
               ],
               ["**Window**", "Hourly, daily, weekly or monthly"],
             ],
           ),
           p(
             "A cooldown stops one ongoing problem from paging you repeatedly, and recovery notifications tell you when it clears.",
+          ),
+        ],
+      },
+      {
+        slug: "run-level",
+        title: "Alerting on agent runs",
+        summary: "Stuck runs, retry loops, cost per run and cache efficiency.",
+        blocks: [
+          p(
+            "The metrics above answer *how much did we spend this month*. These answer *what is happening to our runs right now*, and are measured from the [traces](/traces) your SDK reports — never from an estimate.",
+          ),
+          table(
+            ["Metric", "What it measures"],
+            [
+              [
+                "**Stale agent runs**",
+                "Runs still marked running that have not reported anything for longer than your staleness threshold. Set the threshold to 0 to hear about the first one.",
+              ],
+              [
+                "**Longest agent runtime**",
+                "The longest run in the window, in minutes. A run still in flight counts at its runtime so far — which is the only way an unfinished run can be caught.",
+              ],
+              [
+                "**Steps in a single run**",
+                "The worst single run's step count, not the average, so one runaway workflow is not hidden by quiet ones beside it.",
+              ],
+              [
+                "**Repeats of one step in a run**",
+                "How many times any one step ran inside a single run. A workflow that calls the same tool twice by design reads as 2 forever; one stuck in a retry loop climbs.",
+              ],
+              [
+                "**Cost per agent run**",
+                "Average cost of the runs that finished in the window. Runs still in flight are excluded, so a busy period is not made to look cheap by partial costs. This is the one run-level metric that can also alert on a percentage increase — which is how you catch a release that made every run dearer.",
+              ],
+              [
+                "**Cost incurred by failed runs**",
+                'Money spent on runs that ended in error. Zero is a real, healthy reading, so a threshold of 0 means "tell me about any of it".',
+              ],
+              [
+                "**Prompt cache hit rate**",
+                "The share of input tokens served from the prompt cache. This is the one metric where the alarm is a *fall*: efficiency dropping is what costs money.",
+              ],
+            ],
+          ),
+          note(
+            "Scope a run-level alert to an **AI application** to alert per product surface. Provider and model scopes are not offered here, because a single run can call several providers and belongs wholly to none of them.",
+          ),
+          p(
+            "These reuse everything else about alerts — the same channels, cooldowns, incidents and recovery notifications.",
           ),
         ],
       },

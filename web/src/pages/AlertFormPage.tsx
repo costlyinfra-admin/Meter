@@ -5,14 +5,23 @@
  */
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, type AlertInput, type AlertMeta, type Feature } from "../api";
+import {
+  api,
+  ApiError,
+  type AiApplication,
+  type AlertInput,
+  type AlertMeta,
+  type Feature,
+} from "../api";
 import {
   CHANNEL_LABELS,
   CONDITION_LABELS,
   COOLDOWN_LABELS,
   METRIC_LABELS,
+  METRIC_UNITS,
   previewText,
   SCOPE_LABELS,
+  UNIT_LABELS,
   WINDOW_LABELS,
 } from "../alertLabels";
 import { useAuth } from "../auth/AuthContext";
@@ -40,6 +49,7 @@ export function AlertFormPage() {
   const { user } = useAuth();
   const [meta, setMeta] = useState<AlertMeta | null>(null);
   const [features, setFeatures] = useState<Feature[]>([]);
+  const [applications, setApplications] = useState<AiApplication[]>([]);
   const [form, setForm] = useState<AlertInput>(EMPTY);
   const [timezone, setTimezone] = useState<string>("UTC");
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +68,10 @@ export function AlertFormPage() {
       .listFeatures()
       .then(setFeatures)
       .catch(() => setFeatures([]));
+    api
+      .aiApplications()
+      .then((r) => setApplications(r.applications))
+      .catch(() => setApplications([]));
     if (id) {
       api
         .getAlert(id)
@@ -150,7 +164,11 @@ export function AlertFormPage() {
   }
 
   const selected = (ch: string) => form.channels.some((c) => c.channel === ch);
-  const isPct = form.condition_type !== "exceeds";
+  // A percentage CONDITION overrides the metric's units — an increase_pct rule
+  // on cost per run is measured in %, not dollars.
+  const isPct = form.condition_type === "increase_pct" || form.condition_type === "budget_pct";
+  const unit = meta?.metric_units?.[form.metric] ?? METRIC_UNITS[form.metric] ?? "money";
+  const thresholdLabel = isPct ? "Threshold (%)" : `Threshold (${UNIT_LABELS[unit] ?? unit})`;
   // Whether this rule needs a budget, and whether the organization has one. Both
   // come from the server: the form does not decide which conditions are
   // budget-backed, and it never falls back to a figure of its own.
@@ -262,6 +280,21 @@ export function AlertFormPage() {
               ))}
             </select>
           )}
+          {form.scope_type === "application" && (
+            <select
+              className="scope-ref"
+              value={form.scope_ref ?? ""}
+              onChange={(e) => patch({ scope_ref: e.target.value })}
+              aria-label="Application to scope to"
+            >
+              <option value="">Select an application…</option>
+              {applications.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          )}
           {(form.scope_type === "provider" || form.scope_type === "model") && (
             <input
               className="scope-ref"
@@ -291,7 +324,7 @@ export function AlertFormPage() {
         </div>
 
         <div className="settings-field">
-          <label htmlFor="a-threshold">{isPct ? "Threshold (%)" : "Threshold ($)"}</label>
+          <label htmlFor="a-threshold">{thresholdLabel}</label>
           <input
             id="a-threshold"
             type="number"
@@ -411,9 +444,7 @@ export function AlertFormPage() {
         <div className="settings-actions">
           <button
             onClick={save}
-            disabled={
-              saving || !form.name.trim() || form.channels.length === 0 || blockedOnBudget
-            }
+            disabled={saving || !form.name.trim() || form.channels.length === 0 || blockedOnBudget}
           >
             {saving ? "Saving…" : editing ? "Save changes" : "Create alert"}
           </button>
