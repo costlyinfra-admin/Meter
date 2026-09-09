@@ -59,6 +59,11 @@ KNOWN_CONNECTORS = [
     # a different credential reading a narrow slice of the same Azure bill.
     {"type": "azure_cloud", "name": "Microsoft Azure", "category": "infrastructure"},
     {"type": "gcp", "name": "Google Cloud Platform", "category": "infrastructure"},
+    # Managed platforms that publish a real billed figure (see infra_providers.py).
+    {"type": "digitalocean", "name": "DigitalOcean", "category": "infrastructure"},
+    {"type": "mongodb_atlas", "name": "MongoDB Atlas", "category": "infrastructure"},
+    {"type": "cloudflare", "name": "Cloudflare", "category": "infrastructure"},
+    {"type": "snowflake", "name": "Snowflake", "category": "infrastructure"},
     {"type": "cursor", "name": "Cursor for Teams", "category": "build_activity"},
     # Identity provider for SSO/SCIM seat rosters (Cursor, Tabnine, Cody, …).
     {"type": "okta", "name": "Okta (SSO seats)", "category": "build_activity"},

@@ -125,6 +125,63 @@ export const CONNECTOR_GUIDES: Record<string, ConnectorGuide> = {
     multiline: true,
     docUrl: "https://docs.aws.amazon.com/cost-management/latest/userguide/ce-api.html",
   },
+  digitalocean: {
+    blurb:
+      "Read-only. We read your DigitalOcean invoices — the real line items, product by product.",
+    steps: [
+      "In the DigitalOcean control panel, open API → Tokens and generate a personal access token with READ scope only. Read scope cannot create, resize or destroy anything.",
+      "Paste it below as JSON.",
+      "DigitalOcean has no arbitrary cost-allocation tags, so spend is attributed to features by PROJECT — the grouping you already organise resources into. Map a project name to a feature and its spend follows; anything unmapped lands in Unattributed.",
+      "Invoices are issued monthly, so a sync reads whole invoices rather than daily usage. The current month appears once DigitalOcean issues it.",
+    ],
+    placeholder: '{"token":"dop_v1_…"}',
+    multiline: true,
+    docUrl: "https://cloud.digitalocean.com/account/api/tokens",
+  },
+  mongodb_atlas: {
+    blurb:
+      "Read-only. We read your Atlas organisation invoices — per-cluster line items, priced by Atlas.",
+    steps: [
+      "In Atlas, open Organization Access Manager → Applications → API Keys and create a programmatic API key.",
+      "Give it only the Organization Billing Viewer role. That role can read invoices and nothing else — not your data, not your clusters' contents.",
+      "If your organisation uses an API access list, add Meter's egress IP, or Atlas will reject the key.",
+      "Copy the organization ID from the URL or Organization Settings, and paste everything below as JSON.",
+      "Spend is attributed to features by Atlas PROJECT, which is how Atlas separates workloads. Unmapped projects land in Unattributed.",
+    ],
+    placeholder: '{"public_key":"…","private_key":"…","org_id":"…"}',
+    multiline: true,
+    docUrl: "https://www.mongodb.com/docs/atlas/configure-api-access/",
+  },
+  cloudflare: {
+    blurb:
+      "Read-only. Cloudflare does not publish per-resource cost, so we read what you subscribe to and what each subscription costs.",
+    steps: [
+      "In the Cloudflare dashboard, open My Profile → API Tokens → Create Token, and use a custom token with just one permission: Account → Billing → Read. It cannot read traffic, logs, or zone content.",
+      "Copy your account ID from any zone's Overview page, and paste both below as JSON.",
+      "Important: a Cloudflare subscription describes its CURRENT billing period. There is no historical series to backfill, so a first sync records this period only and history builds up from the nightly sync onward.",
+      "Spend is attributed by zone, or by product for account-wide subscriptions like Workers. Map a zone to a feature and its plan cost follows.",
+      "Workers AI is model inference rather than infrastructure. It is recorded as inference and kept out of infrastructure totals — but it is still counted, because no other connector reads it.",
+    ],
+    placeholder: '{"api_token":"…","account_id":"…"}',
+    multiline: true,
+    docUrl: "https://dash.cloudflare.com/profile/api-tokens",
+  },
+  snowflake: {
+    blurb:
+      "Read-only. Snowflake meters in credits, and credits are not dollars — we read the one view that reports actual currency.",
+    steps: [
+      "Create a Snowflake user for Meter and generate an RSA key pair, then register the public key on that user (ALTER USER … SET RSA_PUBLIC_KEY = '…'). Key-pair auth means no password is stored anywhere.",
+      "Grant that user the ORGADMIN role. Snowflake only exposes spend in currency through SNOWFLAKE.ORGANIZATION_USAGE.USAGE_IN_CURRENCY_DAILY, and that view is ORGADMIN-only — that is Snowflake's design, not ours.",
+      "Find your account identifier (ORGNAME-ACCOUNTNAME) under Admin → Accounts.",
+      "Paste the account, the user, and the unencrypted private key PEM below as JSON. Optionally add a warehouse to run the query on.",
+      "We read spend in currency rather than credits on purpose: a credit's dollar value depends on your edition, region and contract, so pricing credits ourselves would produce an estimate rather than your bill.",
+      "Cortex (SERVICE_TYPE = AI_SERVICES) is model inference. It is recorded as inference and kept out of infrastructure totals, while warehouse compute and storage are infrastructure.",
+    ],
+    placeholder:
+      '{"account":"ORGNAME-ACCOUNTNAME","user":"METER_SVC","private_key":"-----BEGIN PRIVATE KEY-----\n…"}',
+    multiline: true,
+    docUrl: "https://docs.snowflake.com/en/developer-guide/sql-api/authenticating",
+  },
   azure_cloud: {
     blurb:
       "Read-only. We read your whole Azure subscription through Cost Management and " +

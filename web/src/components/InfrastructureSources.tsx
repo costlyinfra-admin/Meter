@@ -64,7 +64,10 @@ function syncedAt(iso: string | null | undefined): string {
 
 /** The one-line status under a provider's name. */
 function statusLine(p: InfraProvider): string {
-  if (!p.connected) return "Cloud infrastructure";
+  // Before it is connected, the useful thing to say is what we would read —
+  // "Reads your DigitalOcean invoices" answers a question "Cloud
+  // infrastructure" does not.
+  if (!p.connected) return p.note || "Cloud infrastructure";
   if (!p.last_sync) return "Connected — not synced yet";
   if (p.last_sync.status === "error")
     return `Last sync failed — ${syncedAt(p.last_sync.started_at)}`;
@@ -187,8 +190,10 @@ export function InfrastructureSources() {
         and compute around your model calls. Connect a cloud and we read the whole bill, classify
         every line item, and attribute spend to features by a cost-allocation tag or label. Nothing
         is dropped for being an unfamiliar service, and nothing is guessed: untagged spend lands in
-        Unattributed. Model services each cloud bills — Bedrock, Azure OpenAI, Vertex AI — stay with
-        their own connectors on the Inference tab and are never counted twice.
+        Unattributed. Where a bill includes model inference, it is separated out rather than counted
+        as infrastructure — Bedrock, Azure OpenAI and Vertex AI stay with their own connectors on
+        the Inference tab and are never counted twice, while Cloudflare Workers AI and Snowflake
+        Cortex are counted here, because nothing else reads them.
       </p>
       {error && (
         <p className="error" role="alert">

@@ -774,12 +774,19 @@ _DEFAULT_GROUP_BY = ("SERVICE", "TAG")
 
 
 @dataclass
-class AwsCostItem:
-    """One AWS billing line item, as billed.
+class CloudCostItem:
+    """One cloud or platform billing line item, as billed.
+
+    Provider-neutral on purpose. AWS calls these dimensions service/usage type/
+    operation, Azure calls them service name/meter, GCP calls them service/SKU,
+    DigitalOcean calls them product/description, Atlas calls them SKU/cluster —
+    but they are the same five questions: what was it, what kind of usage, where,
+    whose, and how much. One shape keeps the ingest and the classifier from
+    growing a branch per vendor.
 
     Not a ``CostRecord``: that shape is per-token inference spend (models, token
-    counts, api keys) and none of it applies to a NAT gateway. Dimensions absent
-    from the configured group-by stay None rather than being guessed at.
+    counts, api keys) and none of it applies to a NAT gateway. Dimensions a
+    provider does not report stay None rather than being guessed at.
     """
 
     period: dt.date  # the day (DAILY) or month anchor (MONTHLY) billed
@@ -854,14 +861,14 @@ class AwsCostExplorerClient(_BaseCostClient):
             for k in self.group_by
         ]
 
-    def fetch_items(self, start: dt.date, end: dt.date) -> list[AwsCostItem]:
+    def fetch_items(self, start: dt.date, end: dt.date) -> list[CloudCostItem]:
         """Every line item AWS reports for ``[start, end)``. No service filter.
 
         Cost Explorer paginates with ``NextPageToken``; a real month grouped by
         service and tag runs to several pages, so following them is not
         optional — stopping at page one would quietly under-report the bill.
         """
-        items: list[AwsCostItem] = []
+        items: list[CloudCostItem] = []
         token: Optional[str] = None
         for _ in range(100):  # a hard stop; 100 pages is far beyond any real bill
             payload = {
@@ -912,7 +919,7 @@ def _parse_group_key(raw: str, dimension: str, tag_key: str) -> tuple[str, Optio
     return dimension, (raw or None)
 
 
-#: Where each Cost Explorer dimension lands on an AwsCostItem.
+#: Where each Cost Explorer dimension lands on an CloudCostItem.
 _DIMENSION_FIELD = {
     "SERVICE": "service",
     "USAGE_TYPE": "usage_type",
@@ -924,7 +931,7 @@ _DIMENSION_FIELD = {
 
 def _parse_aws_cost(
     payload: dict, metric: str, group_by: list[str], tag_key: str
-) -> list[AwsCostItem]:
+) -> list[CloudCostItem]:
     """Line items from a GetCostAndUsage response.
 
     A window with no GroupBy (or a total alongside groups) reports its money in
@@ -932,7 +939,7 @@ def _parse_aws_cost(
     an item with no service, so the bill stays whole. Zero-dollar rows are
     dropped — AWS emits a great many of them and they carry no information.
     """
-    out: list[AwsCostItem] = []
+    out: list[CloudCostItem] = []
     for window in payload.get("ResultsByTime", []):
         period = _window_start(window)
         if period is None:
@@ -945,7 +952,7 @@ def _parse_aws_cost(
             amount = _to_decimal(cell.get("Amount"))
             if amount is None or amount == 0:
                 continue
-            item = AwsCostItem(
+            item = CloudCostItem(
                 period=period, amount=amount, currency=cell.get("Unit", "USD") or "USD"
             )
             for raw, dimension in zip(keys, group_by):
@@ -962,7 +969,7 @@ def _parse_aws_cost(
             amount = _to_decimal(total.get("Amount"))
             if amount is not None and amount != 0:
                 out.append(
-                    AwsCostItem(
+                    CloudCostItem(
                         period=period, amount=amount, currency=total.get("Unit", "USD") or "USD"
                     )
                 )
@@ -1541,10 +1548,10 @@ class AzureCloudCostClient(_BaseCostClient):
             for k in self.group_by
         ]
 
-    def fetch_items(self, start: dt.date, end: dt.date) -> list[AwsCostItem]:
+    def fetch_items(self, start: dt.date, end: dt.date) -> list[CloudCostItem]:
         """Every line item Azure reports for ``[start, end)``. No service filter.
 
-        Returns the same ``AwsCostItem`` shape as the AWS client — despite the
+        Returns the same ``CloudCostItem`` shape as the AWS client — despite the
         name, it is a provider-neutral cloud billing line item, and one shape
         keeps the ingest and the classifier from growing a per-provider branch.
         """
@@ -1567,7 +1574,7 @@ class AzureCloudCostClient(_BaseCostClient):
             f"{self._base}/subscriptions/{self._sub}"
             f"/providers/Microsoft.CostManagement/query?api-version={self._API_VERSION}"
         )
-        items: list[AwsCostItem] = []
+        items: list[CloudCostItem] = []
         for _ in range(100):  # hard stop; far beyond any real subscription
             data = self._query(url, body, token)
             items.extend(_parse_azure_cloud(data, self.tag))
@@ -1613,7 +1620,7 @@ def _cell(row: list, index: Optional[int]):
     return row[index] if index is not None and index < len(row) else None
 
 
-def _parse_azure_cloud(payload: dict, tag_key: str) -> list[AwsCostItem]:
+def _parse_azure_cloud(payload: dict, tag_key: str) -> list[CloudCostItem]:
     """Line items from a Cost Management query response.
 
     Columns are matched by name, not position: asking for a tag adds TagKey and
@@ -1636,7 +1643,7 @@ def _parse_azure_cloud(payload: dict, tag_key: str) -> list[AwsCostItem]:
     i_tag_value = index("tagvalue")
     i_tag_key = index("tagkey")
 
-    out: list[AwsCostItem] = []
+    out: list[CloudCostItem] = []
     for row in props.get("rows") or []:
         if not isinstance(row, list):
             continue
@@ -1647,7 +1654,7 @@ def _parse_azure_cloud(payload: dict, tag_key: str) -> list[AwsCostItem]:
         day = _azure_day(_cell(row, i_date))
         if day is None:
             continue
-        item = AwsCostItem(
+        item = CloudCostItem(
             period=day,
             amount=amount,
             currency=str(_cell(row, i_currency) or "USD"),
@@ -1858,7 +1865,7 @@ GROUP BY service, sku, project_id, region, day, currency, tag_value
 HAVING total_cost != 0
 """.strip()
 
-    def fetch_items(self, start: dt.date, end: dt.date) -> list[AwsCostItem]:
+    def fetch_items(self, start: dt.date, end: dt.date) -> list[CloudCostItem]:
         """Every line item in the export for ``[start, end)``. No service filter."""
         token = self._token()
         body = {
@@ -1876,7 +1883,7 @@ HAVING total_cost != 0
             "maxResults": 5000,
         }
         url = f"{self._base}/bigquery/v2/projects/{self._project}/queries"
-        items: list[AwsCostItem] = []
+        items: list[CloudCostItem] = []
         page_token = None
         job_id = None
         for _ in range(100):  # hard stop, far beyond any real bill
@@ -1937,7 +1944,7 @@ def _bq_param(name: str, type_: str, value) -> dict:
     }
 
 
-def _parse_gcp_billing(payload: dict, tag_key: str) -> list[AwsCostItem]:
+def _parse_gcp_billing(payload: dict, tag_key: str) -> list[CloudCostItem]:
     """Line items from a BigQuery query response.
 
     BigQuery returns every value as a STRING regardless of column type, and
@@ -1946,7 +1953,7 @@ def _parse_gcp_billing(payload: dict, tag_key: str) -> list[AwsCostItem]:
     """
     schema = (payload.get("schema") or {}).get("fields") or []
     fields = [str((f or {}).get("name", "")) for f in schema]
-    out: list[AwsCostItem] = []
+    out: list[CloudCostItem] = []
     for row in payload.get("rows") or []:
         cells = row.get("f") or []
         values = {
@@ -1962,7 +1969,7 @@ def _parse_gcp_billing(payload: dict, tag_key: str) -> list[AwsCostItem]:
         except (ValueError, TypeError):
             continue
         tag_value = values.get("tag_value")
-        item = AwsCostItem(
+        item = CloudCostItem(
             period=period,
             amount=amount,
             currency=str(values.get("currency") or "USD"),

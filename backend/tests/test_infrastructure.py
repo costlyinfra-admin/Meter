@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 from meter import credentials, features, infrastructure
 from meter.db import app_dsn, connect, tenant_tx
-from meter.providers import AwsCostItem
+from meter.providers import CloudCostItem, ProviderError
 
 DAY = dt.date(2026, 5, 4)
 MONTH = dt.date(2026, 5, 1)
@@ -18,7 +18,7 @@ WINDOW = (dt.date(2026, 5, 1), dt.date(2026, 6, 1))
 
 def item(service, amount, *, tag=None, usage_type=None, operation=None, region=None, account=None):
     """One AWS line item, shaped as the Cost Explorer client returns it."""
-    return AwsCostItem(
+    return CloudCostItem(
         period=DAY,
         amount=Decimal(str(amount)),
         service=service,
@@ -564,13 +564,6 @@ def test_the_same_tag_attributes_across_every_cloud(tenant_id):
         assert rows_for(tenant_id, provider_type)[0][5] == "direct"
 
 
-def test_the_registry_lists_all_three_clouds_as_available(tenant_id):
-    by_type = {p["type"]: p for p in infrastructure.provider_status(tenant_id)}
-    assert [p["type"] for p in infrastructure.PROVIDERS] == ["aws", "azure_cloud", "gcp"]
-    assert all(by_type[t]["status"] == "available" for t in ("aws", "azure_cloud", "gcp"))
-    assert set(infrastructure.LIVE_PROVIDERS) == {"aws", "azure_cloud", "gcp"}
-
-
 def test_each_cloud_s_config_is_described_in_its_own_vocabulary(tenant_id):
     credentials.save_credential(
         tenant_id,
@@ -618,3 +611,129 @@ def test_the_nightly_run_covers_every_cloud_a_tenant_connected(tenant_id, monkey
     results = infrastructure.run_scheduled_infra_sync(months=1)
 
     assert {r["provider"] for r in results} == {"aws", "azure_cloud", "gcp"}
+
+
+# ---------------------------------------------------------------------------
+# Managed platforms: DigitalOcean, MongoDB Atlas, Cloudflare, Snowflake.
+# ---------------------------------------------------------------------------
+PLATFORMS = ["digitalocean", "mongodb_atlas", "cloudflare", "snowflake"]
+
+
+def test_a_platform_bill_imports_as_infrastructure(tenant_id):
+    summary = store_for(
+        tenant_id,
+        "digitalocean",
+        [item("Droplets", "480.00"), item("Spaces", "22.50"), item("Managed Databases", "310.00")],
+        metric="invoice",
+    )
+    assert summary["infrastructure"] == 812.5
+    assert summary["excluded"] == 0.0
+    assert {r[0] for r in rows_for(tenant_id, "digitalocean")} == {
+        "Droplets",
+        "Spaces",
+        "Managed Databases",
+    }
+
+
+def test_a_platform_s_own_ai_product_is_counted_as_inference_not_excluded(tenant_id):
+    # Cloudflare Workers AI and Snowflake Cortex are real inference spend that no
+    # other connector ingests. Excluding them would delete money from the books;
+    # calling them infrastructure would overstate infrastructure. Neither.
+    cf = store_for(
+        tenant_id, "cloudflare", [item("Workers AI", "120.00"), item("Pro Plan", "20.00")]
+    )
+    assert cf["infrastructure"] == 20.0
+    assert cf["excluded"] == 0.0
+    assert cf["by_category"]["inference"] == 120.0
+
+    sf = store_for(
+        tenant_id, "snowflake", [item("AI_SERVICES", "96.20"), item("WAREHOUSE_METERING", "412.75")]
+    )
+    assert sf["infrastructure"] == 412.75
+    assert sf["excluded"] == 0.0
+    assert sf["by_category"]["inference"] == 96.2
+
+    by_service = {r[0]: r for r in rows_for(tenant_id, "cloudflare")}
+    # counted = True: nothing else is counting this dollar.
+    assert by_service["Workers AI"][2:5] == ("inference", True, None)
+
+
+def test_atlas_bills_only_infrastructure(tenant_id):
+    summary = store_for(
+        tenant_id,
+        "mongodb_atlas",
+        [item("ATLAS_AWS_INSTANCE_M30", "1234.56"), item("ATLAS_BACKUP", "88.00")],
+    )
+    assert summary["infrastructure"] == 1322.56
+    assert summary["by_category"] == {"infrastructure": 1322.56}
+
+
+@pytest.mark.parametrize("provider_type", PLATFORMS)
+def test_every_platform_is_idempotent_and_independent(tenant_id, provider_type):
+    items = [item("Some Service", "10.00"), item("Another Service", "20.00")]
+    first = store_for(tenant_id, provider_type, items)
+    second = store_for(tenant_id, provider_type, items)
+
+    assert first == second
+    assert len(rows_for(tenant_id, provider_type)) == 2
+    # A sync of one platform leaves the others' rows alone.
+    store_for(tenant_id, "aws", [item("Amazon S3", "5.00")])
+    assert len(rows_for(tenant_id, provider_type)) == 2
+
+
+@pytest.mark.parametrize("provider_type", PLATFORMS)
+def test_every_platform_attributes_by_the_same_tag(tenant_id, provider_type):
+    triage = features.add_feature(tenant_id, f"Feature for {provider_type}")
+    features.add_signal(tenant_id, triage["id"], "usage_tag", "triage")
+
+    summary = store_for(tenant_id, provider_type, [item("Some Service", "40.00", tag="triage")])
+
+    assert summary["attributed"] == 40.0
+    assert rows_for(tenant_id, provider_type)[0][5] == "direct"
+
+
+def test_the_registry_lists_every_connected_cloud_and_platform(tenant_id):
+    types = [p["type"] for p in infrastructure.PROVIDERS]
+    assert types == [
+        "aws",
+        "azure_cloud",
+        "gcp",
+        "digitalocean",
+        "mongodb_atlas",
+        "cloudflare",
+        "snowflake",
+    ]
+    assert set(infrastructure.LIVE_PROVIDERS) == set(types)
+    assert all(p["status"] == "available" for p in infrastructure.PROVIDERS)
+
+
+@pytest.mark.parametrize("provider_type", PLATFORMS)
+def test_every_platform_has_a_client(provider_type):
+    # A registry entry with no client behind it would fail only at sync time,
+    # on a customer's first attempt, after they had pasted a credential.
+    with pytest.raises(ProviderError):
+        infrastructure.make_client(provider_type, "{}")
+
+
+def test_no_platform_config_panel_can_show_a_secret(tenant_id):
+    secrets = {
+        "digitalocean": ('{"token":"dop_v1_SECRETTOKENVALUE"}', "dop_v1_SECRETTOKENVALUE"),
+        "mongodb_atlas": (
+            '{"public_key":"pk","private_key":"ATLASSECRETVALUE","org_id":"org1"}',
+            "ATLASSECRETVALUE",
+        ),
+        "cloudflare": (
+            '{"api_token":"CFSECRETTOKENVALUE","account_id":"acct-1"}',
+            "CFSECRETTOKENVALUE",
+        ),
+        "snowflake": (
+            '{"account":"MYORG-ACME","user":"u","private_key":"SNOWFLAKEPEMSECRET"}',
+            "SNOWFLAKEPEMSECRET",
+        ),
+    }
+    for connector, (blob, _) in secrets.items():
+        credentials.save_credential(tenant_id, connector, blob)
+
+    status = repr(infrastructure.provider_status(tenant_id))
+    for _, (_, secret) in secrets.items():
+        assert secret not in status, secret

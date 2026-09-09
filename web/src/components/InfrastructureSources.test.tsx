@@ -69,6 +69,10 @@ const REGISTRY = [
   provider(),
   provider({ type: "azure_cloud", name: "Microsoft Azure", short: "Azure" }),
   provider({ type: "gcp", name: "Google Cloud Platform", short: "GCP" }),
+  provider({ type: "digitalocean", name: "DigitalOcean", short: "DigitalOcean" }),
+  provider({ type: "mongodb_atlas", name: "MongoDB Atlas", short: "Atlas" }),
+  provider({ type: "cloudflare", name: "Cloudflare", short: "Cloudflare" }),
+  provider({ type: "snowflake", name: "Snowflake", short: "Snowflake" }),
 ];
 
 describe("InfrastructureSources", () => {
@@ -78,14 +82,22 @@ describe("InfrastructureSources", () => {
     vi.mocked(api.infraSummary).mockResolvedValue(summary());
   });
 
-  it("offers all three clouds as connectable", async () => {
+  it("offers every cloud and platform as connectable", async () => {
     render(<InfrastructureSources />);
 
-    expect(await screen.findByText("Amazon Web Services")).toBeInTheDocument();
-    expect(screen.getByText("Microsoft Azure")).toBeInTheDocument();
-    expect(screen.getByText("Google Cloud Platform")).toBeInTheDocument();
+    for (const name of [
+      "Amazon Web Services",
+      "Microsoft Azure",
+      "Google Cloud Platform",
+      "DigitalOcean",
+      "MongoDB Atlas",
+      "Cloudflare",
+      "Snowflake",
+    ]) {
+      expect(await screen.findByText(name)).toBeInTheDocument();
+    }
     // Every one is connectable — nothing is listed but withheld.
-    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(REGISTRY.length);
     expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
   });
 
@@ -283,5 +295,52 @@ describe("InfrastructureSources", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Sync now" }));
     await waitFor(() => expect(api.syncInfrastructure).toHaveBeenCalledWith("gcp"));
     expect(await screen.findByText(/Read 88 line items/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["DigitalOcean", /READ scope only/],
+    ["MongoDB Atlas", /Organization Billing Viewer/],
+    ["Cloudflare", /Billing → Read/],
+    ["Snowflake", /ORGADMIN/],
+  ])("shows %s's setup steps and the least privilege it needs", async (name, permission) => {
+    render(<InfrastructureSources />);
+    await connect(name);
+    expect(screen.getByText(permission)).toBeInTheDocument();
+  });
+
+  it("warns that Cloudflare has no history to backfill", async () => {
+    // A subscription describes its current period, so a first sync looks empty
+    // for past months. Someone should learn that here, not from a blank chart.
+    render(<InfrastructureSources />);
+    await connect("Cloudflare");
+    expect(screen.getByText(/no historical series to backfill/)).toBeInTheDocument();
+  });
+
+  it("explains why Snowflake reads currency rather than credits", async () => {
+    render(<InfrastructureSources />);
+    await connect("Snowflake");
+    expect(screen.getByText(/estimate rather than your bill/)).toBeInTheDocument();
+  });
+
+  it("does not claim spend was excluded for a platform nothing else counts", async () => {
+    // Cloudflare Workers AI is inference, but no other connector reads it, so it
+    // is counted here. The excluded note must stay away.
+    vi.mocked(api.infraProviders).mockResolvedValue([
+      provider({ ...CONNECTED, type: "cloudflare", name: "Cloudflare" }),
+    ]);
+    vi.mocked(api.infraSummary).mockResolvedValue(
+      summary({
+        excluded: 0,
+        by_category: [
+          { category: "infrastructure", amount: 5200 },
+          { category: "inference", amount: 120 },
+        ],
+      }),
+    );
+    render(<InfrastructureSources />);
+    fireEvent.click(await screen.findByRole("button", { name: /Configure/ }));
+
+    expect(await screen.findByText("Inference")).toBeInTheDocument();
+    expect(screen.queryByText(/recorded but not counted here/)).not.toBeInTheDocument();
   });
 });

@@ -265,6 +265,76 @@ GCP_RULES: tuple[Rule, ...] = (
     ),
 )
 
+# --- managed platforms -----------------------------------------------------
+# These are narrower than a hyperscaler: a database platform bills databases and
+# a CDN bills a CDN, so almost everything is infrastructure by definition. What
+# the rules are for is the exception — the AI product each has bolted on, which
+# is inference and must not be counted as infrastructure.
+
+#: DigitalOcean. GPU Droplets are the one accelerator SKU; everything else —
+#: Droplets, Spaces, Managed Databases, Load Balancers — is infrastructure.
+DIGITALOCEAN_RULES: tuple[Rule, ...] = (
+    Rule(
+        name="do-gpu-droplet",
+        category="self_hosted",
+        services=("GPU Droplets", "Droplets"),
+        usage_type_pattern=r"\bgpu\b|\bh100\b|\ba100\b|\bl40s\b|\bmi300x\b",
+        why="The SKU names GPU hardware. An ordinary Droplet is NOT matched.",
+    ),
+    Rule(
+        name="do-gradient-inference",
+        category="inference",
+        services=("GenAI Platform", "Gradient", "GradientAI"),
+        why="DigitalOcean's managed model-serving product: inference, not infrastructure.",
+    ),
+    Rule(
+        name="do-container-registry",
+        category="build",
+        services=("Container Registry",),
+        why="An artifact store for builds — spend that exists to ship the product.",
+    ),
+)
+
+#: MongoDB Atlas. A database platform: everything it bills is infrastructure.
+#: The rule table is empty on purpose rather than absent, so the reason is
+#: written down instead of looking like an oversight.
+ATLAS_RULES: tuple[Rule, ...] = ()
+
+#: Cloudflare. Workers AI is model inference billed by Cloudflare, and no other
+#: connector owns it, so it is recorded as inference and simply stays out of
+#: infrastructure totals.
+CLOUDFLARE_RULES: tuple[Rule, ...] = (
+    Rule(
+        name="cloudflare-workers-ai",
+        category="inference",
+        services=("Workers AI", "AI Gateway", "Vectorize"),
+        why=(
+            "Cloudflare's model-serving products. No other connector ingests them, "
+            "so they are counted as inference here rather than deduplicated away."
+        ),
+    ),
+    Rule(
+        name="cloudflare-pages-build",
+        category="build",
+        services=("Pages", "Cloudflare Pages"),
+        why="Build minutes for deploying the product.",
+    ),
+)
+
+#: Snowflake. SERVICE_TYPE is the dimension: AI_SERVICES is Cortex, Snowflake's
+#: LLM layer. Warehouse compute and storage are infrastructure.
+SNOWFLAKE_RULES: tuple[Rule, ...] = (
+    Rule(
+        name="snowflake-cortex-inference",
+        category="inference",
+        services=("AI_SERVICES", "CORTEX"),
+        why=(
+            "Snowflake Cortex is LLM inference billed by Snowflake. No other "
+            "connector ingests it, so it is counted as inference here."
+        ),
+    ),
+)
+
 #: Which rule table applies to which infrastructure provider. A provider with no
 #: entry gets no rules — every item defaults to `infrastructure`, which is still
 #: a correct answer rather than a dropped row.
@@ -272,6 +342,10 @@ RULES_BY_PROVIDER: dict[str, tuple[Rule, ...]] = {
     "aws": AWS_RULES,
     "azure_cloud": AZURE_RULES,
     "gcp": GCP_RULES,
+    "digitalocean": DIGITALOCEAN_RULES,
+    "mongodb_atlas": ATLAS_RULES,
+    "cloudflare": CLOUDFLARE_RULES,
+    "snowflake": SNOWFLAKE_RULES,
 }
 
 #: Back-compat alias: the AWS table was `RULES` when AWS was the only provider.

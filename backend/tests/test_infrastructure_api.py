@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from meter import infrastructure
 from meter.api import create_app
-from meter.providers import AwsCostItem, ProviderError
+from meter.providers import CloudCostItem, ProviderError
 
 PASSWORD = "correct horse battery"
 SECRET = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
@@ -20,7 +20,7 @@ CREDENTIAL = json.dumps(
 
 
 def _item(service, amount, *, tag=None):
-    return AwsCostItem(
+    return CloudCostItem(
         period=dt.date.today(),
         amount=Decimal(str(amount)),
         service=service,
@@ -74,7 +74,15 @@ def test_providers_lists_every_cloud_as_connectable(client):
 
     # "azure_cloud", not "azure": that id belongs to the Azure OpenAI inference
     # connector, and the two must not be confused for one another.
-    assert [p["type"] for p in providers] == ["aws", "azure_cloud", "gcp"]
+    assert [p["type"] for p in providers] == [
+        "aws",
+        "azure_cloud",
+        "gcp",
+        "digitalocean",
+        "mongodb_atlas",
+        "cloudflare",
+        "snowflake",
+    ]
     assert all(p["status"] == "available" for p in providers)
     assert all(p["connected"] is False for p in providers)
     assert all(p["last_sync"] is None for p in providers)
@@ -180,12 +188,23 @@ def test_an_unreachable_provider_is_named_correctly(client, monkeypatch):
 
 
 def test_an_unknown_cloud_is_refused(client):
-    r = client.post("/api/infrastructure/ingest", json={"provider": "digitalocean"})
+    # A provider that is not in the registry at all, as opposed to one that is
+    # simply not connected yet — the two get different messages on purpose.
+    r = client.post("/api/infrastructure/ingest", json={"provider": "heroku"})
     assert r.status_code == 400
     assert "Unknown infrastructure provider" in r.json()["detail"]
 
 
-@pytest.mark.parametrize("provider", ["azure_cloud", "gcp"])
+def test_a_known_but_unconnected_cloud_says_to_connect_it(client):
+    r = client.post("/api/infrastructure/ingest", json={"provider": "snowflake"})
+    assert r.status_code == 400
+    assert "Connect snowflake" in r.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["azure_cloud", "gcp", "digitalocean", "mongodb_atlas", "cloudflare", "snowflake"],
+)
 def test_every_cloud_syncs_through_the_same_route(client, monkeypatch, provider):
     r = client.post(f"/api/connectors/{provider}/credential", json={"secret": CREDENTIAL})
     assert r.status_code == 204
@@ -202,7 +221,15 @@ def test_every_cloud_syncs_through_the_same_route(client, monkeypatch, provider)
 def test_every_cloud_appears_under_the_infrastructure_category(client):
     connectors = client.get("/api/connectors").json()
     infra = {c["type"] for c in connectors if c["category"] == "infrastructure"}
-    assert infra == {"aws", "azure_cloud", "gcp"}
+    assert infra == {
+        "aws",
+        "azure_cloud",
+        "gcp",
+        "digitalocean",
+        "mongodb_atlas",
+        "cloudflare",
+        "snowflake",
+    }
     # The Azure OpenAI connector stays where it was, on the inference side.
     azure_openai = next(c for c in connectors if c["type"] == "azure")
     assert azure_openai["category"] == "inference"

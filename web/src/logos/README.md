@@ -31,3 +31,9 @@ Azure OpenAI connector's, and the glob keys on the id. Google Cloud still has no
 Cloud's mark, and the wrong product's logo beside "Google Cloud Platform" reads
 worse than initials — so the GCP row shows a "GC" monogram until the real mark
 is added. `ConnectorMark.test.tsx` records that exception explicitly.
+
+DigitalOcean, MongoDB Atlas, Cloudflare and Snowflake are on the same list.
+Their marks are not in the repo and we do not approximate a company's logo by
+hand, so those rows show a monogram. Dropping `src/logos/<connector type>.svg`
+in is all it takes — the glob picks it up and the test's exception list will
+then fail until the entry is removed.

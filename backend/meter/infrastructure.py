@@ -42,6 +42,12 @@ from typing import Optional
 from . import credentials
 from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .infra_classify import LineItem, classify
+from .infra_providers import (
+    CloudflareCostClient,
+    DigitalOceanCostClient,
+    MongoAtlasCostClient,
+    SnowflakeCostClient,
+)
 from .providers import (
     AwsCostExplorerClient,
     AzureCloudCostClient,
@@ -84,12 +90,53 @@ PROVIDERS: tuple[dict, ...] = (
         # and it has no history before the customer switched it on.
         "note": "Reads the BigQuery billing export — the whole bill, read-only.",
     },
+    # Managed platforms. Narrower bills than a hyperscaler, but the same
+    # contract: the vendor must report DOLLARS. Platforms that publish only
+    # usage are deliberately absent — see infra_providers.py.
+    {
+        "type": "digitalocean",
+        "name": "DigitalOcean",
+        "short": "DigitalOcean",
+        "status": "available",
+        "note": "Reads your DigitalOcean invoices — real line items, read-only.",
+    },
+    {
+        "type": "mongodb_atlas",
+        "name": "MongoDB Atlas",
+        "short": "Atlas",
+        "status": "available",
+        "note": "Reads your Atlas organisation invoices — per-cluster line items, read-only.",
+    },
+    {
+        "type": "cloudflare",
+        "name": "Cloudflare",
+        "short": "Cloudflare",
+        "status": "available",
+        # Cloudflare reports what you subscribe to, not per-resource usage, and a
+        # subscription only describes its current period.
+        "note": "Reads your Cloudflare subscriptions — current period, read-only.",
+    },
+    {
+        "type": "snowflake",
+        "name": "Snowflake",
+        "short": "Snowflake",
+        "status": "available",
+        "note": "Reads ORGANIZATION_USAGE spend in currency — read-only SQL.",
+    },
 )
 _BY_TYPE = {p["type"]: p for p in PROVIDERS}
 
 #: Connector types that ingest through this module. Kept separate from PROVIDERS
 #: so a provider can be listed before it is syncable.
-LIVE_PROVIDERS = ("aws", "azure_cloud", "gcp")
+LIVE_PROVIDERS = (
+    "aws",
+    "azure_cloud",
+    "gcp",
+    "digitalocean",
+    "mongodb_atlas",
+    "cloudflare",
+    "snowflake",
+)
 
 #: How far back a manual "Sync now" reaches. Cloud bills are restated for days
 #: after the fact, so a sync always re-reads recent history rather than trusting
@@ -118,6 +165,14 @@ def make_client(provider_type: str, secret: str):
         return AzureCloudCostClient(secret)
     if provider_type == "gcp":
         return GcpBillingCostClient(secret)
+    if provider_type == "digitalocean":
+        return DigitalOceanCostClient(secret)
+    if provider_type == "mongodb_atlas":
+        return MongoAtlasCostClient(secret)
+    if provider_type == "cloudflare":
+        return CloudflareCostClient(secret)
+    if provider_type == "snowflake":
+        return SnowflakeCostClient(secret)
     if provider_type in _BY_TYPE:
         raise InfraError(f"{_BY_TYPE[provider_type]['name']} ingestion is not available yet.")
     raise InfraError(f"Unknown infrastructure provider: {provider_type}")
@@ -143,6 +198,36 @@ _CONFIG_DEFAULTS = {
         "granularity": "Daily",
         "group_by": ["ServiceName", "TAG"],
         "scope_key": "subscription_id",
+        "scope_default": "",
+    },
+    "digitalocean": {
+        "metric": "invoice",
+        "granularity": "MONTHLY",
+        "group_by": ["product", "project"],
+        # DigitalOcean's credential is a bare token with no account identifier,
+        # and the token is the LAST thing that may appear in a config panel.
+        "scope_key": "team",
+        "scope_default": "",
+    },
+    "mongodb_atlas": {
+        "metric": "invoice",
+        "granularity": "MONTHLY",
+        "group_by": ["sku", "project"],
+        "scope_key": "org_id",
+        "scope_default": "",
+    },
+    "cloudflare": {
+        "metric": "subscription",
+        "granularity": "MONTHLY",
+        "group_by": ["product", "zone"],
+        "scope_key": "account_id",
+        "scope_default": "",
+    },
+    "snowflake": {
+        "metric": "usage_in_currency",
+        "granularity": "DAILY",
+        "group_by": ["service_type", "account"],
+        "scope_key": "account",
         "scope_default": "",
     },
     "gcp": {

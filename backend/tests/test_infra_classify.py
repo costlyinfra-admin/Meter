@@ -193,10 +193,22 @@ def test_a_provider_with_no_rules_still_classifies_rather_than_dropping():
     assert verdict.rule == "default-infrastructure"
 
 
-@pytest.mark.parametrize("provider", ["aws", "azure_cloud", "gcp"])
+ALL_PROVIDERS = [
+    "aws",
+    "azure_cloud",
+    "gcp",
+    "digitalocean",
+    "mongodb_atlas",
+    "cloudflare",
+    "snowflake",
+]
+#: The three whose model service another connector already ingests.
+DEDUPED_PROVIDERS = ["aws", "azure_cloud", "gcp"]
+
+
+@pytest.mark.parametrize("provider", ALL_PROVIDERS)
 def test_every_provider_table_is_data_and_explainable(provider):
     table = rule_table(provider)
-    assert table, f"{provider} has no rules"
     names = [r["name"] for r in table]
     assert len(names) == len(set(names))
     for rule in table:
@@ -204,15 +216,67 @@ def test_every_provider_table_is_data_and_explainable(provider):
         assert rule["why"], f"{provider} rule {rule['name']} has no stated reason"
 
 
-@pytest.mark.parametrize("provider", ["aws", "azure_cloud", "gcp"])
-def test_every_provider_has_exactly_one_deduped_inference_owner(provider):
+def test_a_platform_that_bills_only_infrastructure_has_an_empty_table_on_purpose():
+    # Atlas is a database platform: everything it bills is infrastructure, so
+    # there is nothing to except. The table is empty, and the default carries it.
+    assert rule_table("mongodb_atlas") == []
+    assert classify(LineItem(service="ATLAS_AWS_INSTANCE_M30"), "mongodb_atlas").category == (
+        "infrastructure"
+    )
+
+
+@pytest.mark.parametrize("provider", DEDUPED_PROVIDERS)
+def test_every_hyperscaler_has_exactly_one_deduped_inference_owner(provider):
     # Each cloud bills exactly one model service that another connector already
     # ingests. More than one owner here would mean an ambiguous dedupe.
     owners = {r["dedupe_owner"] for r in rule_table(provider) if r["dedupe_owner"]}
     assert len(owners) == 1, f"{provider} has dedupe owners {owners}"
 
 
-@pytest.mark.parametrize("provider", ["aws", "azure_cloud", "gcp"])
+@pytest.mark.parametrize("provider", ["digitalocean", "mongodb_atlas", "cloudflare", "snowflake"])
+def test_a_platform_s_own_model_service_is_counted_not_deduped(provider):
+    # Cloudflare Workers AI and Snowflake Cortex ARE model inference, but no
+    # other connector ingests them. Marking them deduped would delete real money
+    # from the totals instead of moving it somewhere it is already counted.
+    assert not any(r["dedupe_owner"] for r in rule_table(provider))
+
+
+@pytest.mark.parametrize(
+    "provider, service",
+    [
+        ("cloudflare", "Workers AI"),
+        ("snowflake", "AI_SERVICES"),
+        ("digitalocean", "GenAI Platform"),
+    ],
+)
+def test_a_platform_s_ai_product_is_inference_not_infrastructure(provider, service):
+    verdict = classify(LineItem(service=service), provider)
+    assert verdict.category == "inference"
+    assert verdict.dedupe_owner is None
+
+
+def test_digitalocean_gpu_droplets_are_self_hosted_but_plain_droplets_are_not():
+    gpu = LineItem(service="GPU Droplets", usage_type="gpu-h100x8-640gb")
+    assert classify(gpu, "digitalocean").category == "self_hosted"
+    plain = LineItem(service="Droplets", usage_type="s-2vcpu-4gb")
+    assert classify(plain, "digitalocean").category == "infrastructure"
+
+
+def test_snowflake_warehouse_and_storage_are_infrastructure():
+    for service in ("WAREHOUSE_METERING", "STORAGE", "DATA_TRANSFER", "AUTO_CLUSTERING"):
+        assert classify(LineItem(service=service), "snowflake").category == "infrastructure"
+
+
+@pytest.mark.parametrize("provider", ALL_PROVIDERS)
 def test_no_provider_ever_drops_an_item(provider):
     for item in [LineItem(service="x"), LineItem(service=""), LineItem(service="Totally Unknown")]:
         assert classify(item, provider).category in CATEGORIES
+
+
+def test_platform_tables_do_not_bleed_into_one_another():
+    # "AI_SERVICES" is Snowflake's dimension value. On any other bill it is just
+    # an unfamiliar service name, not a licence to call it inference.
+    cortex = LineItem(service="AI_SERVICES")
+    assert classify(cortex, "snowflake").category == "inference"
+    for other in ("aws", "cloudflare", "digitalocean", "mongodb_atlas"):
+        assert classify(cortex, other).category == "infrastructure", other
