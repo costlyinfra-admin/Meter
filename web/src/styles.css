@@ -5375,6 +5375,65 @@ button.kpi-note-link:active {
   line-height: 1.7;
 }
 
+/* The application slug. Monospaced because it is a literal that goes into an
+   env var, and narrow because a slug that needs more than this is one nobody
+   wants to type into a deploy config. */
+input.slug-input {
+  max-width: 340px;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+}
+
+/* Two-column reference lists: env vars and step kinds. The term is a literal,
+   the description is prose, and on a narrow screen they stack. */
+.env-table {
+  margin: 0.9rem 0 0;
+  display: grid;
+  gap: 0.5rem 1rem;
+}
+
+.env-table > div {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: 0.25rem 1rem;
+  align-items: baseline;
+}
+
+.env-table dt {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.env-table dt code {
+  word-break: break-all;
+}
+
+.env-table dd {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.badge-required {
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .env-table > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Package-manager switch: one command visible at a time. */
 .pm-switch {
   display: inline-flex;

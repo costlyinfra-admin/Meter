@@ -29,6 +29,7 @@ export function agentPrompt(
   ingestUrl: string,
   features: Feature[],
   projectId?: string | null,
+  application?: string | null,
 ): string {
   return `Add Meter metering to this codebase.
 
@@ -52,7 +53,7 @@ CONFIGURE
 Environment variables, set wherever this app already keeps its secrets:
   METER_INGEST_URL=${ingestUrl}
   METER_INGEST_TOKEN=<ask me for this; it is a secret>
-  METER_APPLICATION=<ask me: a short slug naming this app, e.g. support-agent>
+  METER_APPLICATION=${application || "<ask me: a short slug naming this app, e.g. support-agent>"}
   METER_ENVIRONMENT=<production | staging | development, matching this deploy>
   METER_RELEASE_VERSION=<optional; your build or release identifier>
 ${projectId ? `Our Meter project id is ${projectId}, for reference if you need to ask about\nthis install. It is not a credential and the SDK does not read it.\n` : ""}Also add these names to .env.example (or whatever this repository uses to
@@ -61,8 +62,13 @@ exist. Never put a real token in that file, never hardcode it in source, and
 never commit it. The SDK is a silent no-op until the URL and token are set, so
 this is safe to merge and deploy before the token exists.
 
-If you do not know the application slug, ASK ME. It groups every workflow in
-this codebase and is awkward to change later.
+${
+  application
+    ? `The application slug above is already decided — use it exactly as written. It
+groups every workflow in this codebase.`
+    : `If you do not know the application slug, ASK ME. It groups every workflow in
+this codebase and is awkward to change later.`
+}
 
 WHAT TO CHANGE — two cases, and most codebases need both
 
@@ -240,8 +246,9 @@ export function agentPromptFor(
   ingestUrl: string,
   features: Feature[],
   projectId?: string | null,
+  application?: string | null,
 ): string {
-  return `${agentPrompt(ingestUrl, features, projectId)}\n\n${AGENT_NOTES[id]}`;
+  return `${agentPrompt(ingestUrl, features, projectId, application)}\n\n${AGENT_NOTES[id]}`;
 }
 
 /**

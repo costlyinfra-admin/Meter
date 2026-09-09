@@ -19,6 +19,21 @@ import { ConnectorMark } from "../components/ConnectorMark";
 import { Snippet } from "../components/Snippet";
 import { TabPanel, Tabs } from "../components/Tabs";
 import {
+  AGENT_NODE,
+  AGENT_PYTHON,
+  ENV_VARS,
+  envSnippet,
+  FLUSH_NODE,
+  FLUSH_PYTHON,
+  normalizeSlug,
+  RESUME_NODE,
+  RESUME_PYTHON,
+  SPAN_KINDS,
+  suggestSlug,
+  WRAP_NODE,
+  WRAP_PYTHON,
+} from "./installSnippets";
+import {
   AGENT_GUIDES,
   agentPromptFor,
   MIN_SDK,
@@ -52,12 +67,21 @@ function isGuide(value: string | null): value is AgentId {
 }
 
 export function InstallSdkPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [params, setParams] = useSearchParams();
   const [token, setToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [nodePm, setNodePm] = useState<NodePm>("npm");
+  // The application slug, which groups every workflow this codebase reports.
+  // Held raw so the field is typeable ("support " on the way to "support-agent"
+  // must not collapse under the cursor); normalized only where it is used.
+  const [slugDraft, setSlugDraft] = useState<string>("");
+  const [slugTouched, setSlugTouched] = useState(false);
+  // A ref as well as state: the suggestion effect must know whether someone has
+  // typed WITHOUT re-running every keystroke, and a late-arriving suggestion
+  // must never land on top of what they typed.
+  const slugEdited = useRef(false);
 
   const tabParam = params.get("tab");
   const guideParam = params.get("guide");
@@ -85,6 +109,36 @@ export function InstallSdkPage() {
       .catch(() => setFeatures([]));
   }, []);
 
+  // Suggest a slug rather than demanding one. An organization that has already
+  // reported traces has the answer in its own data, so reuse the application it
+  // is already sending to instead of inventing a second name for it; a first
+  // install has nothing to reuse and falls back to the organization's name.
+  useEffect(() => {
+    // Wait for the session. Suggesting before the org name has loaded would
+    // fill the field with the generic fallback and then have to correct it,
+    // which reads as the page changing its mind under the cursor.
+    if (authLoading) return;
+    let live = true;
+    void (async () => {
+      let suggestion = "";
+      try {
+        const { applications } = await api.aiApplications();
+        suggestion = applications[0]?.slug ?? "";
+      } catch {
+        // No answer here is not an error — it only means there is nothing to
+        // reuse, and the organization's name still gives a suggestion.
+      }
+      if (!suggestion) suggestion = suggestSlug(user?.org_name);
+      // Never overwrite what someone has typed, however slow the fetch was.
+      if (live && !slugEdited.current) setSlugDraft(suggestion);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [authLoading, user?.org_name]);
+
+  const slug = normalizeSlug(slugDraft) || suggestSlug(null);
+
   async function generate() {
     setError(null);
     try {
@@ -102,11 +156,22 @@ export function InstallSdkPage() {
 
       <p className="muted">
         Optional precision upgrade — connectors already give you per-feature cost, so this is never
-        required to go live. Use the SDK when you want exact, per-call inference numbers, or when
-        you route calls through <strong>one shared API key</strong> (a provider's cost API can't
-        tell your features apart, but the SDK can). It reports only token counts and a{" "}
-        <code>feature_id</code> — <strong>never your prompts or responses</strong> — on a background
-        thread, and is a no-op until configured, so it can't break your request path.
+        required to go live. Use the SDK when you want exact, per-call inference numbers, when you
+        route calls through <strong>one shared API key</strong> (a provider's cost API can't tell
+        your features apart, but the SDK can), or when a request makes several model calls and you
+        want to see what a whole{" "}
+        <Link to="/traces" className="link">
+          run
+        </Link>{" "}
+        cost, step by step.
+      </p>
+      <p className="muted">
+        It reports identity, counts, timing and cost — token counts, the model, latency, a{" "}
+        <code>feature_id</code>, and optionally a prompt id and version.{" "}
+        <strong>Never your prompts, responses, tool arguments or retrieved documents</strong>: there
+        is no field for any of them and the server rejects a payload that carries one. Delivery is
+        on a background thread, and the SDK is a no-op until configured, so it can't break or slow
+        your request path.
       </p>
 
       <div className="hint">
@@ -123,6 +188,14 @@ export function InstallSdkPage() {
         token={token}
         error={error}
         onGenerate={() => void generate()}
+        slugDraft={slugDraft}
+        slug={slug}
+        slugTouched={slugTouched}
+        onSlug={(value) => {
+          slugEdited.current = true;
+          setSlugTouched(true);
+          setSlugDraft(value);
+        }}
       />
 
       <Tabs
@@ -163,7 +236,7 @@ export function InstallSdkPage() {
               <AgentGuidePanel
                 heading={g.heading}
                 instruction={g.instruction}
-                prompt={agentPromptFor(g.id, ingestUrl, features, user?.tenant_id)}
+                prompt={agentPromptFor(g.id, ingestUrl, features, user?.tenant_id, slug)}
                 hasFeatures={features.length > 0}
               />
             )}
@@ -172,7 +245,7 @@ export function InstallSdkPage() {
       </TabPanel>
 
       <TabPanel id="manual" idPrefix="install" active={tab === "manual"}>
-        <ManualGuide nodePm={nodePm} onNodePm={setNodePm} ingestUrl={ingestUrl} />
+        <ManualGuide nodePm={nodePm} onNodePm={setNodePm} ingestUrl={ingestUrl} slug={slug} />
       </TabPanel>
 
       <Verification />
@@ -188,20 +261,66 @@ function TokenSection({
   token,
   error,
   onGenerate,
+  slugDraft,
+  slug,
+  slugTouched,
+  onSlug,
 }: {
   ingestUrl: string;
   token: string | null;
   error: string | null;
   onGenerate: () => void;
+  slugDraft: string;
+  slug: string;
+  slugTouched: boolean;
+  onSlug: (value: string) => void;
 }) {
+  // The typed text and the slug the SDK will actually send diverge while
+  // someone is typing ("Support Agent" -> "support-agent"). Showing what it
+  // becomes is kinder than silently rewriting the field under the cursor or
+  // rejecting a capital letter — the server normalizes it either way.
+  const normalizedDiffers = slugDraft.trim() !== "" && slugDraft.trim() !== slug;
   return (
     <section className="source-section">
-      <h2>Generate your ingest token</h2>
+      <h2>Name this application, then generate a token</h2>
       <p className="muted">
-        One token per workspace. It authorizes the SDK to send usage to Meter. Set these{" "}
-        <strong>two</strong> environment variables where your app runs (your <code>.env</code>,
-        secrets manager, or deploy config) — both routes below need them.
+        Two things every route below needs. The <strong>application</strong> groups every workflow
+        this codebase reports — it is what you will see on{" "}
+        <Link to="/applications" className="link">
+          Applications
+        </Link>{" "}
+        — and the <strong>token</strong> authorizes the SDK to send usage to Meter. One token per
+        workspace.
       </p>
+
+      <div className="settings-field">
+        <label htmlFor="app-slug">Application</label>
+        <input
+          id="app-slug"
+          className="slug-input"
+          value={slugDraft}
+          onChange={(e) => onSlug(e.target.value)}
+          placeholder="support-agent"
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+        />
+        <span className="settings-hint muted">
+          {normalizedDiffers ? (
+            <>
+              The SDK will send <code>{slug}</code>. Lowercase, with dashes — it lives in a URL.
+            </>
+          ) : slugTouched ? (
+            <>Pick a name for the app, not for your company — you can have several.</>
+          ) : (
+            <>
+              Suggested for you. Change it if this codebase is a different app — it is awkward to
+              change once events carry it, because a new slug is a new application.
+            </>
+          )}
+        </span>
+      </div>
+
       {error && (
         <p className="error" role="alert">
           {error}
@@ -209,19 +328,28 @@ function TokenSection({
       )}
       {token ? (
         <>
-          <Snippet className="token" sensitive>{`METER_INGEST_URL=${ingestUrl}
-METER_INGEST_TOKEN=${token}`}</Snippet>
+          <Snippet className="token" sensitive>
+            {envSnippet(ingestUrl, slug, token)}
+          </Snippet>
           <p className="muted">Copy the token now — it isn't shown again. Keep it secret.</p>
         </>
       ) : (
         <>
-          <Snippet>{`METER_INGEST_URL=${ingestUrl}
-METER_INGEST_TOKEN=…    # click "Generate" to create yours`}</Snippet>
+          <Snippet>
+            {envSnippet(ingestUrl, slug).replace(
+              "METER_INGEST_TOKEN=<your token>",
+              'METER_INGEST_TOKEN=…    # click "Generate" to create yours',
+            )}
+          </Snippet>
           <button className="secondary" onClick={onGenerate}>
             Generate ingest token
           </button>
         </>
       )}
+      <p className="muted">
+        Meter creates the application the first time an event arrives naming it, so there is nothing
+        to set up here first.
+      </p>
     </section>
   );
 }
@@ -309,10 +437,12 @@ function ManualGuide({
   nodePm,
   onNodePm,
   ingestUrl,
+  slug,
 }: {
   nodePm: NodePm;
   onNodePm: (pm: NodePm) => void;
   ingestUrl: string;
+  slug: string;
 }) {
   return (
     <>
@@ -351,7 +481,7 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
         <Snippet>{NODE_INSTALL[nodePm]}</Snippet>
         <p className="muted">
           The Node package is <strong>ESM only</strong>: use <code>import</code>. In a CommonJS
-          project, load it with <code>{`const { wrap } = await import("costlyinfra-meter")`}</code>{" "}
+          project, load it with <code>{`const { Meter } = await import("costlyinfra-meter")`}</code>{" "}
           — <code>require()</code> will not work.
         </p>
       </section>
@@ -359,68 +489,102 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
       <section className="source-section">
         <h2>2. Configure the environment</h2>
         <p className="muted">
-          The same two variables from the token step above, set where your app already keeps its
-          secrets. The SDK is a silent no-op until both are present, so deploying before the token
-          exists is safe.
+          Set these where your app already keeps its secrets. The SDK is a silent no-op until the
+          URL and token are both present, so deploying before the token exists is safe.
         </p>
-        <Snippet>{`METER_INGEST_URL=${ingestUrl}
-METER_INGEST_TOKEN=<your token>`}</Snippet>
+        {/* The placeholder, never the real token. The generated token is shown
+            once, above, inside a snippet marked for session-replay masking —
+            repeating it here would put a live secret outside that masking. */}
+        <Snippet>{envSnippet(ingestUrl, slug)}</Snippet>
+        <dl className="env-table">
+          {ENV_VARS.map((v) => (
+            <div key={v.name}>
+              <dt>
+                <code>{v.name}</code>
+                {v.required && <span className="badge-required">Required</span>}
+              </dt>
+              <dd className="muted">{v.note}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="muted">
+          Add these names to your <code>.env.example</code> with empty values so the next person
+          knows they exist — never a real token.
+        </p>
       </section>
 
       <section className="source-section">
         <h2>3. Wrap your LLM client</h2>
         <p className="muted">
-          Wrap the client you already use, once, with the feature the calls belong to (copy a
-          feature's id from its page under{" "}
+          For a single model call with no workflow around it, wrap the client once where it is
+          constructed and pass the feature the calls belong to (copy a feature's id from its page
+          under{" "}
           <Link to="/features" className="link">
             Features
           </Link>
-          ). Every call through it is then metered automatically, with latency — no per-call code.
-          The provider is auto-detected.
+          ). Every call through it is metered automatically — no per-call code — and each becomes
+          its own one-step trace. The provider is detected from the client; pass{" "}
+          <code>provider=</code> if you have subclassed or wrapped it and detection is wrong.
         </p>
         <span className="chart-title">Python</span>
-        <Snippet>{`from anthropic import Anthropic
-from costlyinfra_meter import wrap
-
-client = wrap(Anthropic(), feature_id="<feature-id>")   # reads the env vars above
-
-# unchanged — this call is metered automatically:
-resp = client.messages.create(model="claude-sonnet-4-6", messages=[...])`}</Snippet>
+        <Snippet>{WRAP_PYTHON}</Snippet>
         <span className="chart-title">Node</span>
-        <Snippet>{`import OpenAI from "openai";
-import { wrap } from "costlyinfra-meter";
-
-const client = wrap(new OpenAI(), { featureId: "<feature-id>" });
-
-// unchanged — this call is metered automatically:
-const resp = await client.chat.completions.create({ model: "gpt-4o", messages: [...] });`}</Snippet>
-        <p className="muted">
-          Optional: pass <code>metadata</code> at wrap time (e.g.{" "}
-          <code>{`metadata={ "environment": "prod" }`}</code>) and it is attached to every call
-          through that client. For cost <em>per customer</em>, where the value changes call to call,
-          wrap per request with that customer's id, or record the call explicitly.
-        </p>
+        <Snippet>{WRAP_NODE}</Snippet>
       </section>
 
       <section className="source-section">
-        <h2>4. Instrument what the wrapper skips</h2>
+        <h2>4. Record a multi-step run</h2>
         <p className="muted">
-          Streaming and async responses are not metered by <code>wrap()</code>. Record those
-          yourself — and for that you need a meter of your own rather than the one{" "}
-          <code>wrap()</code> makes internally:
+          If one request makes several model calls, or mixes model calls with retrieval and tools,
+          wrap the <strong>whole run</strong> so its steps are recorded as one trace. This is what
+          makes <em>“why did this run cost $1.42”</em> answerable, and it is what the{" "}
+          <Link to="/traces" className="link">
+            Traces
+          </Link>{" "}
+          page draws.
         </p>
-        <Snippet>{`from costlyinfra_meter import Meter
-
-meter = Meter(feature_id="<feature-id>")     # reads the same two env vars
-meter.record_anthropic(resp)                 # or meter.record_openai(resp)
-
-# In a short-lived process — a script, a job, a Lambda — the background worker
-# may not get to send before the process ends. Flush before you exit:
-meter.flush()`}</Snippet>
+        <span className="chart-title">Python</span>
+        <Snippet>{AGENT_PYTHON}</Snippet>
+        <span className="chart-title">Node</span>
+        <Snippet>{AGENT_NODE}</Snippet>
         <p className="muted">
-          In Node the equivalents are <code>meter.recordAnthropic(resp)</code>,{" "}
-          <code>meter.recordOpenAI(resp)</code> and <code>await meter.flush()</code>.
+          Each step returns whatever your function returned, so wrapping one does not change control
+          flow. Leaving the block ends the trace — on an exception too, so a crashed agent is
+          recorded as failed rather than left looking like it is still running. Name steps after
+          what they <em>do</em> (<code>classify</code>, <code>retrieve-documents</code>), not after
+          the function that implements them.
         </p>
+        <dl className="env-table">
+          {SPAN_KINDS.map(([kind, what]) => (
+            <div key={kind}>
+              <dt>
+                <code>run.{kind}(…)</code>
+              </dt>
+              <dd className="muted">{what}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <section className="source-section">
+        <h2>5. Queues, workers and short-lived processes</h2>
+        <p className="muted">
+          If a run continues in a background worker, export the context and resume it there, so both
+          halves are one trace. The exported context carries identifiers only — no prompts, no
+          customer data — so it is safe to put on a queue.
+        </p>
+        <span className="chart-title">Python</span>
+        <Snippet>{RESUME_PYTHON}</Snippet>
+        <span className="chart-title">Node</span>
+        <Snippet>{RESUME_NODE}</Snippet>
+        <p className="muted">
+          Two cases to watch. <strong>Streaming and async responses</strong> have no usage until
+          they finish, so a wrapped client skips them — record those inside{" "}
+          <code>meter.agent(…)</code>, where you control when the step ends. And a{" "}
+          <strong>short-lived process</strong> — a script, a cron job, a Lambda — can exit before
+          the background worker has sent anything:
+        </p>
+        <Snippet>{`${FLUSH_PYTHON}\n${FLUSH_NODE}`}</Snippet>
       </section>
     </>
   );

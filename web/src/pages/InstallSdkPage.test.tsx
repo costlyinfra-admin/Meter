@@ -14,6 +14,7 @@ vi.mock("../api", async (importActual) => {
       createHookToken: vi.fn(),
       listFeatures: vi.fn(),
       recentHookEvent: vi.fn(),
+      aiApplications: vi.fn(),
     },
   };
 });
@@ -44,6 +45,11 @@ beforeEach(() => {
   vi.mocked(api.me).mockResolvedValue({ id: "u1", tenant_id: "t-123", email: "cto@acme.com" });
   vi.mocked(api.listFeatures).mockResolvedValue([]);
   vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
+  vi.mocked(api.aiApplications).mockResolvedValue({
+    applications: [],
+    from: "2026-08-10",
+    to: "2026-09-09",
+  });
 });
 
 describe("InstallSdkPage — structure", () => {
@@ -305,5 +311,117 @@ describe("InstallSdkPage — verification", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(api.recentHookEvent).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Waiting for your first Meter event/)).toBeInTheDocument();
+  });
+});
+
+describe("InstallSdkPage — the application slug", () => {
+  const slugField = () => screen.findByLabelText("Application");
+
+  it("reuses the application this organization already reports to", async () => {
+    // A second service being instrumented should join the app that exists, not
+    // start a parallel one under a slightly different name.
+    vi.mocked(api.aiApplications).mockResolvedValue({
+      applications: [{ id: "a1", name: "Support agent", slug: "support-agent" }] as never,
+      from: "2026-08-10",
+      to: "2026-09-09",
+    });
+    renderPage();
+    await waitFor(async () => expect(await slugField()).toHaveValue("support-agent"));
+  });
+
+  it("falls back to the organization's name on a first install", async () => {
+    vi.mocked(api.me).mockResolvedValue({
+      id: "u1",
+      tenant_id: "t-123",
+      email: "cto@acme.com",
+      org_name: "Acme Security",
+    });
+    renderPage();
+    await waitFor(async () => expect(await slugField()).toHaveValue("acme-security"));
+  });
+
+  it("shows what a typed name becomes, rather than rewriting under the cursor", async () => {
+    renderPage();
+    const field = await slugField();
+    fireEvent.change(field, { target: { value: "Support Agent" } });
+    // The field keeps what was typed...
+    expect(field).toHaveValue("Support Agent");
+    // ...and the page says what the SDK will actually send.
+    expect(screen.getByText("support-agent")).toBeInTheDocument();
+  });
+
+  it("writes the chosen slug into the env snippet and the agent prompt", async () => {
+    renderPage("/install-sdk?guide=claude-code");
+    fireEvent.change(await slugField(), { target: { value: "doc-review" } });
+
+    await waitFor(() =>
+      expect(screen.getAllByText(/METER_APPLICATION=doc-review/).length).toBeGreaterThan(0),
+    );
+    const prompt = promptFor("claude-code");
+    expect(prompt).toContain("METER_APPLICATION=doc-review");
+    // And the agent is told not to ask about it, because it is already decided.
+    expect(prompt).not.toMatch(/If you do not know the application slug, ASK ME/);
+  });
+
+  it("never sends an empty or malformed slug to the snippets", async () => {
+    renderPage();
+    fireEvent.change(await slugField(), { target: { value: "!!!" } });
+    await waitFor(() =>
+      expect(screen.getAllByText(/METER_APPLICATION=my-app/).length).toBeGreaterThan(0),
+    );
+  });
+});
+
+describe("InstallSdkPage — the manual route teaches the SDK that exists", () => {
+  const manual = async () => {
+    renderPage("/install-sdk?tab=manual");
+    await screen.findByRole("heading", { name: "1. Install the package" });
+    return document.getElementById("install-panel-manual")!.textContent!;
+  };
+
+  it("shows the current entry points, not the ones the rewrite removed", async () => {
+    const text = await manual();
+    expect(text).toContain("meter.wrap(");
+    expect(text).toContain("meter.agent(");
+    expect(text).toContain("meter.resume(");
+    for (const gone of [
+      "record_anthropic",
+      "record_openai",
+      "recordAnthropic",
+      "recordOpenAI",
+      "from costlyinfra_meter import wrap",
+    ]) {
+      expect(text).not.toContain(gone);
+    }
+  });
+
+  it("teaches the multi-step run, which is the reason to instrument at all", async () => {
+    const text = await manual();
+    expect(text).toContain("Record a multi-step run");
+    expect(text).toContain("run.llm(");
+    expect(text).toContain("run.tool(");
+    expect(text).toContain("run.export_context()");
+    expect(text).toContain("meter.flush()");
+  });
+
+  it("offers no field that could carry prompt content", async () => {
+    // `metadata=` was on the old page as a wrap() argument. It is not in the
+    // event contract, and showing it invites someone to put a prompt in it.
+    expect(await manual()).not.toContain("metadata");
+  });
+
+  it("keeps the live token out of every snippet but the masked one", async () => {
+    vi.mocked(api.createHookToken).mockResolvedValue({ token: "hk_live_secret" });
+    renderPage("/install-sdk?tab=manual");
+    fireEvent.click(await screen.findByRole("button", { name: "Generate ingest token" }));
+
+    const shown = await screen.findByText(/METER_INGEST_TOKEN=hk_live_secret/);
+    expect(shown.closest("[data-dd-privacy='mask']")).not.toBeNull();
+    // Exactly one place shows it, and that place is masked. The manual step
+    // shows the placeholder instead.
+    expect(screen.getAllByText(/METER_INGEST_TOKEN=hk_live_secret/)).toHaveLength(1);
+    expect(document.getElementById("install-panel-manual")!.textContent).not.toContain(
+      "hk_live_secret",
+    );
   });
 });

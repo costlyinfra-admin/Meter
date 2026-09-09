@@ -118,6 +118,17 @@ describe("the coding-agent prompt", () => {
     expect(text).toMatch(/do not invent one/i);
   });
 
+  it("names the application the reader chose, instead of telling the agent to ask", () => {
+    const text = agentPrompt("https://x/api/hook/events", FEATURES, null, "support-agent");
+    expect(text).toContain("METER_APPLICATION=support-agent");
+    expect(text).toContain("already decided");
+    expect(text).not.toMatch(/If you do not know the application slug, ASK ME/);
+  });
+
+  it("still tells the agent to ask when no application has been chosen", () => {
+    expect(prompt()).toMatch(/If you do not know the application slug, ASK ME/);
+  });
+
   it("never puts the ingest token in the text it hands over", () => {
     // The prompt goes into a third-party tool; the secret does not travel with it.
     expect(prompt()).toMatch(/METER_INGEST_TOKEN=<ask me/);
