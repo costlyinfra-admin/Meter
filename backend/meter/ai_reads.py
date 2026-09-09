@@ -109,6 +109,16 @@ def _trace_row(row: dict, minutes: int, now) -> dict:
     }
 
 
+def _like(raw: str) -> str:
+    """Escape LIKE's metacharacters so a search means what was typed.
+
+    Without this, `_` quietly matches any character and `%` matches everything
+    — so searching for a workflow called "sync_user" would also return
+    "syncXuser", and a search for "100%" would return the whole table.
+    """
+    return str(raw).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def list_traces(tenant_id: str, filters: dict) -> dict:
     """A page of traces. Deterministic order, bounded size, parameterised filters.
 
@@ -143,6 +153,13 @@ def list_traces(tenant_id: str, filters: dict) -> dict:
         clause("t.started_at < %s", filters["until"])
     if filters.get("min_cost") is not None:
         clause("t.total_cost >= %s", filters["min_cost"])
+    if filters.get("q"):
+        # Free-text over the WORKFLOW NAME only. Application and feature have
+        # their own filters, and the count query above joins nothing, so
+        # reaching into a joined table here would make the total disagree with
+        # the page. The pattern is a bound parameter with LIKE's own
+        # metacharacters escaped, so a search for "50%" means "50%".
+        clause("t.operation_name ILIKE %s ESCAPE '\\'", f"%{_like(filters['q'])}%")
     # Provider, model and prompt live on spans; EXISTS keeps one row per trace
     # rather than multiplying it by its matching spans.
     for key, column in (

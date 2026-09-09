@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, type AiApplication } from "../api";
 import { compact, money, num } from "../format";
+import { TRACE_WINDOWS, daysFromParams } from "./traceWindow";
 
 /** A change against the previous comparable window. `null` means there was
  *  nothing to compare against, which is not the same as "no change". */
@@ -49,19 +50,6 @@ function RunState({ active, stale }: { active: number; stale: number }) {
   return <span className="muted">idle</span>;
 }
 
-/** How long a window the economics cover. Mirrors the feature pages' review
- *  period: a small set of presets, kept in the URL so a link is shareable. */
-const WINDOWS = [
-  { days: 7, label: "Last 7 days" },
-  { days: 30, label: "Last 30 days" },
-  { days: 90, label: "Last 90 days" },
-];
-
-function daysFromParams(sp: URLSearchParams): number {
-  const raw = Number(sp.get("days"));
-  return WINDOWS.some((w) => w.days === raw) ? raw : 30;
-}
-
 function WindowSelector({ days, onChange }: { days: number; onChange: (d: number) => void }) {
   return (
     <div className="period-controls detail-period">
@@ -72,7 +60,7 @@ function WindowSelector({ days, onChange }: { days: number; onChange: (d: number
         value={days}
         onChange={(e) => onChange(Number(e.target.value))}
       >
-        {WINDOWS.map((w) => (
+        {TRACE_WINDOWS.map((w) => (
           <option key={w.days} value={w.days}>
             {w.label}
           </option>
@@ -303,10 +291,10 @@ export function ApplicationDetail() {
                 {(app.error_rate * 100).toFixed(1)}% errors
               </span>
             )}
-            {/* Plain, because Traces does not filter by application yet: the
-                server accepts application_id but the page never sends it, so a
-                ?application= link here would quietly show everything. */}
-            <Link to="/traces">View traces</Link>
+            {/* Traces now sends application_id, so this really does filter —
+                and it carries the window, so the run list covers the same
+                period as the numbers above it. */}
+            <Link to={`/traces?application_id=${app.id}&days=${days}`}>View traces</Link>
           </p>
 
           {/* ---- Cost by feature ---- */}

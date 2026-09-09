@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, ApiError, type AiSpan, type AiTrace } from "../api";
-import { duration, money, num, sinceNow } from "../format";
+import { compact, duration, money, num, sinceNow } from "../format";
 import { TraceStatus } from "./TracesPage";
 
 const KIND_LABEL: Record<AiSpan["span_kind"], string> = {
@@ -193,8 +193,8 @@ export function TraceDetail() {
         <p className="error" role="alert">
           {error ?? "Trace not found."}
         </p>
-        <Link className="link" to="/traces">
-          Back to traces
+        <Link className="link breadcrumb" to="/traces">
+          ← All traces
         </Link>
       </div>
     );
@@ -212,38 +212,23 @@ export function TraceDetail() {
 
   return (
     <div className="content">
-      <div className="dash-head trace-detail-head">
-        <div>
-          <Link className="link trace-back" to="/traces">
-            ← Traces
-          </Link>
-          <h1>{trace.operation_name}</h1>
-          <p className="muted dash-sub">
-            <TraceStatus status={trace.live_status} /> · {trace.application.name}
-            {trace.feature && ` · ${trace.feature.name}`} · {trace.environment}
-            {trace.release_version && ` · ${trace.release_version}`} · {sinceNow(trace.started_at)}
-          </p>
-        </div>
-      </div>
+      <Link to="/traces" className="link breadcrumb">
+        ← All traces
+      </Link>
 
-      <div className="kpi-row trace-kpis">
-        <div className="kpi-card">
-          <span className="kpi-label">Total cost</span>
-          <span className="kpi-value">{money(trace.total_cost)}</span>
-        </div>
-        <div className="kpi-card">
-          <span className="kpi-label">Total tokens</span>
-          <span className="kpi-value">{num(trace.total_tokens)}</span>
-        </div>
-        <div className="kpi-card">
-          <span className="kpi-label">Model calls</span>
-          <span className="kpi-value">{num(trace.llm_calls)}</span>
-        </div>
-        <div className="kpi-card">
-          <span className="kpi-label">{live ? "Runtime" : "Duration"}</span>
-          <span className="kpi-value">{duration(runtime)}</span>
-        </div>
-      </div>
+      <h1>{trace.operation_name}</h1>
+      <p className="detail-meta">
+        <TraceStatus status={trace.live_status} />
+        <Link to={`/applications?days=30`}>{trace.application.name}</Link>
+        {trace.feature ? (
+          <Link to={`/features/${trace.feature.id}`}>{trace.feature.name}</Link>
+        ) : (
+          <span className="muted">Unattributed</span>
+        )}
+        <span className="muted">{trace.environment}</span>
+        {trace.release_version && <code className="slug-tag">{trace.release_version}</code>}
+        <span className="muted">started {sinceNow(trace.started_at)}</span>
+      </p>
 
       {live && (
         <p className="muted trace-live-note">
@@ -258,16 +243,50 @@ export function TraceDetail() {
         </p>
       )}
 
-      <h2 className="trace-steps-heading">Steps</h2>
-      {spans.length === 0 ? (
-        <p className="muted">No steps recorded for this run yet.</p>
-      ) : (
-        <ul className="span-list">
-          {order(spans).map((node) => (
-            <SpanRow key={node.span.external_span_id} node={node} start={start} span={total} />
-          ))}
-        </ul>
-      )}
+      <section className="detail-section">
+        <div className="section-head">
+          <div>
+            <h2>Steps</h2>
+            <span className="section-sub muted">
+              Every step this run took, in the order it took them. The bar is when the step ran
+              within the run.
+            </span>
+          </div>
+          <div className="section-stats">
+            <span>
+              <strong>{money(trace.total_cost)}</strong> {live ? "so far" : "total"}
+            </span>
+            <span>
+              <strong>{duration(runtime)}</strong> {live ? "runtime" : "duration"}
+            </span>
+            <span>
+              <strong>{num(trace.span_count)}</strong> step{trace.span_count === 1 ? "" : "s"}
+            </span>
+            <span>
+              <strong>{num(trace.llm_calls)}</strong> model call
+              {trace.llm_calls === 1 ? "" : "s"}
+            </span>
+            <span>
+              <strong>{compact(trace.total_tokens)}</strong> tokens
+            </span>
+          </div>
+        </div>
+        {spans.length === 0 ? (
+          <p className="muted">No steps recorded for this run yet.</p>
+        ) : (
+          <>
+            <ul className="span-list">
+              {order(spans).map((node) => (
+                <SpanRow key={node.span.external_span_id} node={node} start={start} span={total} />
+              ))}
+            </ul>
+            <p className="muted legend">
+              Meter records what each step cost and how long it took — never the prompt, the
+              response, the tool arguments or the documents retrieved.
+            </p>
+          </>
+        )}
+      </section>
     </div>
   );
 }

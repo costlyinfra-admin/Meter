@@ -19,9 +19,10 @@
  * blanking the table. A poll is a read; it can never create an event.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { api, ApiError, type AiTrace, type AiTracePage } from "../api";
-import { duration, money, num, sinceNow } from "../format";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { api, ApiError, type AiApplication, type AiTrace, type AiTracePage } from "../api";
+import { compact, duration, money, num, sinceNow } from "../format";
+import { DEFAULT_WINDOW_DAYS, TRACE_WINDOWS, daysFromParams } from "./traceWindow";
 
 const TABS = [
   { id: "all", label: "All traces" },
@@ -65,10 +66,22 @@ export function TraceStatus({ status }: { status: AiTrace["live_status"] }) {
   );
 }
 
-function EmptyTraces() {
+function EmptyTraces({ filtered }: { filtered: boolean }) {
+  // A filtered view finding nothing is not the same as having no traces, and
+  // sending someone to Install SDK when they simply typed a narrow search
+  // would be telling them their working setup is broken.
+  if (filtered)
+    return (
+      <div className="empty-state">
+        <p className="empty-title">No runs match these filters</p>
+        <p className="muted">
+          Widen the window, clear the search, or choose a different application.
+        </p>
+      </div>
+    );
   return (
-    <div className="trace-empty">
-      <h2>No traces received</h2>
+    <div className="empty-state">
+      <p className="empty-title">No traces received</p>
       <p className="muted">Run an instrumented AI workflow to see request-level cost here.</p>
       <Link className="button-link" to="/install-sdk">
         Install SDK
@@ -77,43 +90,68 @@ function EmptyTraces() {
   );
 }
 
+/** A row that opens the run it describes, the way a feature row opens a feature. */
+function TraceRow({ trace, children }: { trace: AiTrace; children: React.ReactNode }) {
+  const navigate = useNavigate();
+  return (
+    <tr
+      className="feature-row"
+      onClick={() => navigate(`/traces/${encodeURIComponent(trace.trace_id)}`)}
+    >
+      {children}
+    </tr>
+  );
+}
+
+/** The workflow name as the row's link — the cell someone aims at. */
+function WorkflowCell({ trace }: { trace: AiTrace }) {
+  return (
+    <td>
+      <Link
+        to={`/traces/${encodeURIComponent(trace.trace_id)}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {trace.operation_name}
+      </Link>
+    </td>
+  );
+}
+
 function TraceTable({ traces }: { traces: AiTrace[] }) {
   return (
     <div className="table-scroll">
-      <table className="data-table trace-table">
+      <table className="features-table">
         <caption className="sr-only">AI workflow runs, newest first</caption>
         <thead>
           <tr>
-            <th scope="col">Time</th>
-            <th scope="col">Application</th>
-            <th scope="col">Feature</th>
-            <th scope="col">Workflow</th>
-            <th scope="col">Model calls</th>
-            <th scope="col">Steps</th>
-            <th scope="col">Tokens</th>
-            <th scope="col">Cost</th>
-            <th scope="col">Duration</th>
-            <th scope="col">Status</th>
+            <th>Workflow</th>
+            <th>Application</th>
+            <th>Feature</th>
+            <th>Started</th>
+            <th className="num">Model calls</th>
+            <th className="num">Steps</th>
+            <th className="num">Tokens</th>
+            <th className="num">Cost</th>
+            <th className="num">Duration</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody>
           {traces.map((t) => (
-            <tr key={t.id}>
-              <td>{sinceNow(t.started_at)}</td>
+            <TraceRow key={t.id} trace={t}>
+              <WorkflowCell trace={t} />
               <td>{t.application.name}</td>
-              <td>{t.feature?.name ?? "Unattributed"}</td>
-              <td>
-                <Link to={`/traces/${encodeURIComponent(t.trace_id)}`}>{t.operation_name}</Link>
-              </td>
-              <td className="numeric">{num(t.llm_calls)}</td>
-              <td className="numeric">{num(t.span_count)}</td>
-              <td className="numeric">{num(t.total_tokens)}</td>
-              <td className="numeric">{money(t.total_cost)}</td>
-              <td className="numeric">{duration(t.duration_ms)}</td>
+              <td>{t.feature?.name ?? <span className="muted">Unattributed</span>}</td>
+              <td>{sinceNow(t.started_at)}</td>
+              <td className="num">{num(t.llm_calls)}</td>
+              <td className="num">{num(t.span_count)}</td>
+              <td className="num">{compact(t.total_tokens)}</td>
+              <td className="num">{money(t.total_cost)}</td>
+              <td className="num">{duration(t.duration_ms)}</td>
               <td>
                 <TraceStatus status={t.live_status} />
               </td>
-            </tr>
+            </TraceRow>
           ))}
         </tbody>
       </table>
@@ -124,44 +162,44 @@ function TraceTable({ traces }: { traces: AiTrace[] }) {
 function RunningTable({ traces }: { traces: AiTrace[] }) {
   return (
     <div className="table-scroll">
-      <table className="data-table trace-table">
+      <table className="features-table">
         <caption className="sr-only">Agent runs currently active</caption>
         <thead>
           <tr>
-            <th scope="col">Application</th>
-            <th scope="col">Feature</th>
-            <th scope="col">Agent/workflow</th>
-            <th scope="col">Status</th>
-            <th scope="col">Current operation</th>
-            <th scope="col">Started</th>
-            <th scope="col">Last activity</th>
-            <th scope="col">Runtime</th>
-            <th scope="col">Steps</th>
-            <th scope="col">LLM calls</th>
-            <th scope="col">Tokens</th>
-            <th scope="col">Cost so far</th>
+            <th>Workflow</th>
+            <th>Application</th>
+            <th>Feature</th>
+            <th>Current step</th>
+            {/* No "Started" column: Runtime is derived from it and answers the
+                question this tab exists for — how long has this been going —
+                and the twelfth column pushed Status, the whole point of the
+                view, off the right edge. */}
+            <th>Last activity</th>
+            <th className="num">Runtime</th>
+            <th className="num">Steps</th>
+            <th className="num">Model calls</th>
+            <th className="num">Tokens</th>
+            <th className="num">Cost so far</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody>
           {traces.map((t) => (
-            <tr key={t.id}>
+            <TraceRow key={t.id} trace={t}>
+              <WorkflowCell trace={t} />
               <td>{t.application.name}</td>
-              <td>{t.feature?.name ?? "Unattributed"}</td>
-              <td>
-                <Link to={`/traces/${encodeURIComponent(t.trace_id)}`}>{t.operation_name}</Link>
-              </td>
+              <td>{t.feature?.name ?? <span className="muted">Unattributed</span>}</td>
+              <td>{t.current_span_id ?? <span className="muted">—</span>}</td>
+              <td>{sinceNow(t.last_activity_at)}</td>
+              <td className="num">{duration(Date.now() - new Date(t.started_at).getTime())}</td>
+              <td className="num">{num(t.span_count)}</td>
+              <td className="num">{num(t.llm_calls)}</td>
+              <td className="num">{compact(t.total_tokens)}</td>
+              <td className="num">{money(t.total_cost)}</td>
               <td>
                 <TraceStatus status={t.live_status} />
               </td>
-              <td>{t.current_span_id ?? "—"}</td>
-              <td>{sinceNow(t.started_at)}</td>
-              <td>{sinceNow(t.last_activity_at)}</td>
-              <td className="numeric">{duration(Date.now() - new Date(t.started_at).getTime())}</td>
-              <td className="numeric">{num(t.span_count)}</td>
-              <td className="numeric">{num(t.llm_calls)}</td>
-              <td className="numeric">{num(t.total_tokens)}</td>
-              <td className="numeric">{money(t.total_cost)}</td>
-            </tr>
+            </TraceRow>
           ))}
         </tbody>
       </table>
@@ -184,10 +222,12 @@ function Explore({
   traces,
   dimension,
   onDimension,
+  total,
 }: {
   traces: AiTrace[];
   dimension: string;
   onDimension: (id: string) => void;
+  total: number;
 }) {
   const dim = DIMENSIONS.find((d) => d.id === dimension) ?? DIMENSIONS[0];
   const groups = new Map<
@@ -221,18 +261,18 @@ function Explore({
         </select>
       </label>
       <div className="table-scroll">
-        <table className="data-table">
+        <table className="features-table">
           <caption className="sr-only">Trace cost grouped by {dim.label}</caption>
           <thead>
             <tr>
-              <th scope="col">{dim.label}</th>
-              <th scope="col">Cost</th>
-              <th scope="col">Runs</th>
-              <th scope="col">Cost per run</th>
-              <th scope="col">LLM calls</th>
-              <th scope="col">Tokens</th>
-              <th scope="col">Avg steps</th>
-              <th scope="col">Error rate</th>
+              <th>{dim.label}</th>
+              <th className="num">Cost</th>
+              <th className="num">Runs</th>
+              <th className="num">Cost / run</th>
+              <th className="num">Model calls</th>
+              <th className="num">Tokens</th>
+              <th className="num">Avg steps</th>
+              <th className="num">Error rate</th>
             </tr>
           </thead>
           <tbody>
@@ -246,18 +286,27 @@ function Explore({
                   </span>
                   {key}
                 </td>
-                <td className="numeric">{money(g.spend)}</td>
-                <td className="numeric">{num(g.runs)}</td>
-                <td className="numeric">{money(g.spend / g.runs)}</td>
-                <td className="numeric">{num(g.calls)}</td>
-                <td className="numeric">{num(g.tokens)}</td>
-                <td className="numeric">{(g.steps / g.runs).toFixed(1)}</td>
-                <td className="numeric">{((g.errors / g.runs) * 100).toFixed(1)}%</td>
+                <td className="num">{money(g.spend)}</td>
+                <td className="num">{num(g.runs)}</td>
+                <td className="num">{money(g.spend / g.runs)}</td>
+                <td className="num">{num(g.calls)}</td>
+                <td className="num">{compact(g.tokens)}</td>
+                <td className="num">{(g.steps / g.runs).toFixed(1)}</td>
+                <td className="num">{((g.errors / g.runs) * 100).toFixed(1)}%</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {/* Explore groups the rows it has, not the whole window. Saying so
+          matters: without it these totals read as complete, and someone
+          comparing them against the run counts on Applications would find
+          smaller numbers and no explanation. */}
+      <p className="muted legend">
+        {total > traces.length
+          ? `Grouped from the ${num(traces.length)} most recent runs of ${num(total)} in this window — totals here are a sample, not the period's full spend.`
+          : `Grouped from all ${num(traces.length)} runs in this window.`}
+      </p>
     </div>
   );
 }
@@ -268,18 +317,50 @@ export function TracesPage() {
   const tab: TabId = isTab(tabParam) ? tabParam : "all";
   const sort = params.get("sort") ?? "newest";
   const dimension = params.get("group") ?? "application";
+  const days = daysFromParams(params);
+  const applicationId = params.get("application_id") ?? "";
+  const q = params.get("q") ?? "";
 
   const [page, setPage] = useState<AiTracePage | null>(null);
+  const [applications, setApplications] = useState<AiApplication[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The typed text, kept separate from the URL so every keystroke does not
+  // become a request or a history entry. Committed on a short debounce.
+  const [draft, setDraft] = useState(q);
   // A poll must never race itself: an in-flight request means skip this tick.
   const inFlight = useRef(false);
 
   const set = (next: Record<string, string>) => {
     const merged = new URLSearchParams(params);
-    for (const [k, v] of Object.entries(next)) merged.set(k, v);
+    for (const [k, v] of Object.entries(next)) {
+      if (v) merged.set(k, v);
+      else merged.delete(k); // an empty filter is no filter, not `?q=`
+    }
     setParams(merged, { replace: true });
   };
+
+  // The application filter's options. A failure here costs the dropdown, not
+  // the page — the traces below are what someone came for.
+  useEffect(() => {
+    api
+      .aiApplications({ days })
+      .then((r) => setApplications(r.applications))
+      .catch(() => setApplications([]));
+  }, [days]);
+
+  // Keep the box in step when the URL changes underneath it (back button, or a
+  // link into a filtered view), without fighting what is being typed.
+  useEffect(() => setDraft(q), [q]);
+
+  useEffect(() => {
+    if (draft === q) return;
+    const timer = window.setTimeout(() => set({ q: draft }), 300);
+    return () => window.clearTimeout(timer);
+    // `set` closes over the current params; re-running on every param change
+    // would restart the debounce, so this deliberately watches the text only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, q]);
 
   const load = useCallback(
     async (quiet: boolean) => {
@@ -293,6 +374,11 @@ export function TracesPage() {
           // server will label stale. Filtering on the activity cutoff here
           // would hide exactly the agents someone opened this tab to find.
           trace_status: tab === "running" ? "running" : undefined,
+          // Server-side, so the count under the table is the truth about the
+          // whole result and not just the page that happens to be loaded.
+          q: q || undefined,
+          application_id: applicationId || undefined,
+          days,
           limit: tab === "explore" ? 200 : 50,
         });
         setPage(next);
@@ -305,7 +391,7 @@ export function TracesPage() {
         setLoading(false);
       }
     },
-    [tab, sort],
+    [tab, sort, q, applicationId, days],
   );
 
   useEffect(() => {
@@ -328,6 +414,9 @@ export function TracesPage() {
   }, [tab, load]);
 
   const traces = page?.traces ?? [];
+  // Whether the reader has narrowed anything. Drives what an empty result says:
+  // "nothing matches" is a different message from "nothing has ever arrived".
+  const filtered = Boolean(q || applicationId || days !== DEFAULT_WINDOW_DAYS);
 
   return (
     <div className="content">
@@ -335,6 +424,21 @@ export function TracesPage() {
         <div>
           <h1>Traces</h1>
           <p className="muted dash-sub">Request-level evidence behind your AI spend.</p>
+        </div>
+        <div className="period-controls detail-period">
+          <span className="muted period-label">Showing</span>
+          <select
+            className="period-select"
+            aria-label="Time window"
+            value={days}
+            onChange={(e) => set({ days: e.target.value })}
+          >
+            {TRACE_WINDOWS.map((w) => (
+              <option key={w.days} value={w.days}>
+                {w.label}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -351,6 +455,17 @@ export function TracesPage() {
             {t.label}
           </button>
         ))}
+        {/* Search sits in the tab bar, as it does on the Overview's by-feature
+            table. It filters on the server, so it narrows every run in the
+            window rather than only the fifty already on screen. */}
+        <input
+          type="search"
+          className="tab-search"
+          value={draft}
+          placeholder="Search workflows…"
+          aria-label="Search workflows"
+          onChange={(e) => setDraft(e.target.value)}
+        />
       </div>
 
       {error && (
@@ -362,6 +477,20 @@ export function TracesPage() {
       {tab === "all" && (
         <section className="source-section" role="tabpanel">
           <div className="trace-filters">
+            <label>
+              Application
+              <select
+                value={applicationId}
+                onChange={(e) => set({ application_id: e.target.value })}
+              >
+                <option value="">All applications</option>
+                {applications.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label>
               Sort
               <select value={sort} onChange={(e) => set({ sort: e.target.value })}>
@@ -381,9 +510,18 @@ export function TracesPage() {
           {loading && !page ? (
             <p className="muted">Loading traces…</p>
           ) : traces.length === 0 ? (
-            <EmptyTraces />
+            <EmptyTraces filtered={filtered} />
           ) : (
-            <TraceTable traces={traces} />
+            <>
+              <TraceTable traces={traces} />
+              <p className="muted legend">
+                {page && page.total > traces.length
+                  ? `Showing the first ${num(traces.length)} of ${num(page.total)} runs — narrow the window, application or search to see fewer. `
+                  : ""}
+                A run marked stale has gone quiet longer than your threshold; it has not failed and
+                may still finish.
+              </p>
+            </>
           )}
         </section>
       )}
@@ -409,12 +547,13 @@ export function TracesPage() {
           {loading && !page ? (
             <p className="muted">Loading…</p>
           ) : traces.length === 0 ? (
-            <EmptyTraces />
+            <EmptyTraces filtered={filtered} />
           ) : (
             <Explore
               traces={traces}
               dimension={dimension}
               onDimension={(id) => set({ group: id })}
+              total={page?.total ?? traces.length}
             />
           )}
         </section>

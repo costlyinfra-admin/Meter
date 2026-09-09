@@ -439,3 +439,46 @@ def test_the_stale_threshold_setting_actually_moves_the_line(client):
     # Raised to 60: the same trace is simply still running.
     assert client.get("/api/ai/traces?stale=true").json()["total"] == 0
     assert client.get("/api/ai/traces?running=true").json()["total"] == 1
+
+
+# ---- Trace search ---------------------------------------------------------
+def test_search_narrows_traces_by_workflow_name(client):
+    tenant = tenant_of(client)
+    traces.ingest(tenant, [ev("trace.started", "t-a", operation_name="resolve-ticket")])
+    traces.ingest(tenant, [ev("trace.started", "t-b", operation_name="summarize-report")])
+
+    found = client.get("/api/ai/traces?q=resolve").json()
+    assert [t["operation_name"] for t in found["traces"]] == ["resolve-ticket"]
+    # The total must agree with the page, or paging lies about how much there is.
+    assert found["total"] == 1
+
+    assert client.get("/api/ai/traces?q=TICKET").json()["total"] == 1  # case-insensitive
+    assert client.get("/api/ai/traces?q=nothing").json()["total"] == 0
+    assert client.get("/api/ai/traces?q=").json()["total"] == 2  # empty is not a filter
+
+
+def test_search_treats_like_metacharacters_as_text(client):
+    # A workflow whose name contains LIKE's wildcards. Unescaped, "_" matches
+    # any character and "%" matches everything, so a search would quietly
+    # return rows the customer did not ask for.
+    tenant = tenant_of(client)
+    traces.ingest(tenant, [ev("trace.started", "t-a", operation_name="sync_user")])
+    traces.ingest(tenant, [ev("trace.started", "t-b", operation_name="syncXuser")])
+    traces.ingest(tenant, [ev("trace.started", "t-c", operation_name="100% coverage")])
+
+    names = [t["operation_name"] for t in client.get("/api/ai/traces?q=sync_user").json()["traces"]]
+    assert names == ["sync_user"]
+    assert client.get("/api/ai/traces?q=100%25").json()["total"] == 1
+
+
+def test_search_combines_with_the_other_filters(client):
+    # Search narrows within a filter rather than replacing it — otherwise
+    # typing in the box would silently widen the window someone had chosen.
+    tenant = tenant_of(client)
+    traces.ingest(tenant, [ev("trace.started", "t-a", operation_name="resolve-ticket")])
+    traces.ingest(
+        tenant,
+        [ev("trace.started", "t-b", operation_name="resolve-ticket", environment="staging")],
+    )
+    assert client.get("/api/ai/traces?q=resolve").json()["total"] == 2
+    assert client.get("/api/ai/traces?q=resolve&environment=staging").json()["total"] == 1

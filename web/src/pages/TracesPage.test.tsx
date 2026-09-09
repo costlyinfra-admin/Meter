@@ -7,7 +7,7 @@ import { TracesPage } from "./TracesPage";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
-  return { ...actual, api: { aiTraces: vi.fn(), aiTrace: vi.fn() } };
+  return { ...actual, api: { aiTraces: vi.fn(), aiTrace: vi.fn(), aiApplications: vi.fn() } };
 });
 
 function trace(over: Partial<AiTrace> = {}): AiTrace {
@@ -60,6 +60,14 @@ describe("TracesPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.aiTraces).mockResolvedValue(page([trace()]));
+    vi.mocked(api.aiApplications).mockResolvedValue({
+      applications: [
+        { id: "a1", name: "Support agent", slug: "support-agent" },
+        { id: "a2", name: "Document review", slug: "document-review" },
+      ] as never,
+      from: "2026-08-10",
+      to: "2026-09-09",
+    });
   });
   afterEach(() => vi.useRealTimers());
 
@@ -72,7 +80,9 @@ describe("TracesPage", () => {
     expect(within(row).getByText("Support agent")).toBeInTheDocument();
     expect(within(row).getByText("AI threat triage")).toBeInTheDocument();
     expect(within(row).getByText("$0.04")).toBeInTheDocument();
-    expect(within(row).getByText("10,674")).toBeInTheDocument();
+    // Compacted, like the token columns on Applications and the Overview: an
+    // exact token count is noise in a scan, and the run's own page has it.
+    expect(within(row).getByText("10.7K")).toBeInTheDocument();
   });
 
   it("keeps the selected tab in the URL so a view can be linked", async () => {
@@ -261,6 +271,145 @@ function span(over: Partial<AiTrace["spans"] extends (infer S)[] | undefined ? S
   };
 }
 
+describe("TracesPage — filtering", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.aiTraces).mockResolvedValue(page([trace()]));
+    vi.mocked(api.aiApplications).mockResolvedValue({
+      applications: [
+        { id: "a1", name: "Support agent", slug: "support-agent" },
+        { id: "a2", name: "Document review", slug: "document-review" },
+      ] as never,
+      from: "2026-08-10",
+      to: "2026-09-09",
+    });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("opens a run when its row is clicked, not only its workflow link", async () => {
+    renderTraces();
+    const row = (await screen.findByText("resolve-ticket")).closest("tr")!;
+    expect(row).toHaveClass("feature-row");
+    // The link carries the trace id, and the row navigates to the same place.
+    expect(screen.getByRole("link", { name: "resolve-ticket" })).toHaveAttribute(
+      "href",
+      "/traces/t-1",
+    );
+  });
+
+  it("searches on the server, so the count is about every run and not the page", async () => {
+    // A client-side filter over the fifty loaded rows would report "no runs
+    // match" while matching runs sat on page two.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderTraces();
+    await waitFor(() => expect(api.aiTraces).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText("Search workflows"), { target: { value: "resolve" } });
+    await vi.advanceTimersByTimeAsync(400);
+
+    await waitFor(() => expect(search).toContain("q=resolve"));
+    await waitFor(() =>
+      expect(api.aiTraces).toHaveBeenCalledWith(expect.objectContaining({ q: "resolve" })),
+    );
+  });
+
+  it("does not fire a request for every keystroke", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderTraces();
+    await waitFor(() => expect(api.aiTraces).toHaveBeenCalledTimes(1));
+
+    const box = screen.getByLabelText("Search workflows");
+    for (const value of ["r", "re", "res", "reso"]) {
+      fireEvent.change(box, { target: { value } });
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    // Still only the initial load: nothing has settled yet.
+    expect(api.aiTraces).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(400);
+    await waitFor(() =>
+      expect(api.aiTraces).toHaveBeenCalledWith(expect.objectContaining({ q: "reso" })),
+    );
+  });
+
+  it("drops an emptied filter from the URL rather than leaving ?q=", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderTraces("/traces?q=resolve");
+    await waitFor(() => expect(api.aiTraces).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText("Search workflows"), { target: { value: "" } });
+    await vi.advanceTimersByTimeAsync(400);
+    await waitFor(() => expect(search).not.toContain("q="));
+  });
+
+  it("filters by application, and keeps it in the URL", async () => {
+    renderTraces();
+    fireEvent.change(await screen.findByLabelText("Application"), { target: { value: "a2" } });
+
+    await waitFor(() => expect(search).toContain("application_id=a2"));
+    await waitFor(() =>
+      expect(api.aiTraces).toHaveBeenCalledWith(expect.objectContaining({ application_id: "a2" })),
+    );
+  });
+
+  it("scopes runs to the chosen window", async () => {
+    renderTraces("/traces?days=7");
+    await waitFor(() =>
+      expect(api.aiTraces).toHaveBeenCalledWith(expect.objectContaining({ days: 7 })),
+    );
+
+    fireEvent.change(screen.getByLabelText("Time window"), { target: { value: "90" } });
+    await waitFor(() =>
+      expect(api.aiTraces).toHaveBeenCalledWith(expect.objectContaining({ days: 90 })),
+    );
+  });
+
+  it("distinguishes an empty filter from having no traces at all", async () => {
+    // Sending someone to Install SDK because their search was narrow would
+    // tell them a working install is broken.
+    vi.mocked(api.aiTraces).mockResolvedValue(page([]));
+    renderTraces("/traces?q=nothing");
+
+    expect(await screen.findByText("No runs match these filters")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Install SDK" })).not.toBeInTheDocument();
+  });
+
+  it("still offers the install path when nothing has ever arrived", async () => {
+    vi.mocked(api.aiTraces).mockResolvedValue(page([]));
+    renderTraces();
+    expect(await screen.findByText("No traces received")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Install SDK" })).toBeInTheDocument();
+  });
+
+  it("says when Explore is grouping a sample rather than the whole window", async () => {
+    // Its totals sit beside run counts on Applications; without this they read
+    // as complete and quietly disagree.
+    vi.mocked(api.aiTraces).mockResolvedValue({
+      traces: [trace()],
+      total: 335,
+      limit: 200,
+      offset: 0,
+      stale_after_minutes: 10,
+    });
+    renderTraces("/traces?tab=explore");
+    expect(
+      await screen.findByText(/Grouped from the 1 most recent runs of 335 in this window/),
+    ).toBeInTheDocument();
+  });
+
+  it("says when the table is showing only part of the result", async () => {
+    vi.mocked(api.aiTraces).mockResolvedValue({
+      traces: [trace()],
+      total: 412,
+      limit: 50,
+      offset: 0,
+      stale_after_minutes: 10,
+    });
+    renderTraces();
+    expect(await screen.findByText(/Showing the first 1 of 412 runs/)).toBeInTheDocument();
+  });
+});
+
 describe("TraceDetail", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.useRealTimers());
@@ -270,8 +419,12 @@ describe("TraceDetail", () => {
     renderDetail();
 
     expect(await screen.findByRole("heading", { name: "resolve-ticket" })).toBeInTheDocument();
-    expect(screen.getByText("Total cost")).toBeInTheDocument();
-    expect(screen.getByText("$0.04")).toBeInTheDocument();
+    // The economics live in the Steps section head, the way a feature's
+    // developer cost sits in its section head rather than in a KPI strip.
+    const head = document.querySelector(".section-stats") as HTMLElement;
+    expect(within(head).getByText("$0.04")).toBeInTheDocument();
+    expect(within(head).getByText("18.4s")).toBeInTheDocument();
+    expect(within(head).getByText("7")).toBeInTheDocument();
     expect(screen.getByText(/Support agent/)).toBeInTheDocument();
     expect(screen.getByText(/2026\.9\.1/)).toBeInTheDocument();
   });
@@ -353,7 +506,12 @@ describe("TraceDetail", () => {
     renderDetail();
 
     expect(await screen.findByText(/Currently running/)).toBeInTheDocument();
-    expect(screen.getByText("Runtime")).toBeInTheDocument();
+    // A run in flight reports its cost and time as provisional — "so far" and
+    // "runtime", never "total" and "duration", which would read as finished.
+    const head = document.querySelector(".section-stats") as HTMLElement;
+    expect(within(head).getByText("so far")).toBeInTheDocument();
+    expect(within(head).getByText("runtime")).toBeInTheDocument();
+    expect(within(head).queryByText("total")).not.toBeInTheDocument();
   });
 
   it("stops refreshing a finished trace", async () => {
@@ -373,6 +531,6 @@ describe("TraceDetail", () => {
     renderDetail("missing");
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Not found");
-    expect(screen.getByRole("link", { name: /Back to traces/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /All traces/ })).toBeInTheDocument();
   });
 });
