@@ -43,6 +43,33 @@ import {
   type AgentId,
 } from "./installPrompt";
 
+/** The warning mark on a hint block. Decorative: the block already reads as a
+ *  caution from its colour and its "Before you start:" lead, and announcing
+ *  "alert" before that sentence would only repeat it. */
+function AlertIcon() {
+  return (
+    <svg
+      className="hint-icon"
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      aria-hidden
+      focusable="false"
+      fill="none"
+      stroke="currentColor"
+    >
+      <path
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+      />
+      <path strokeWidth="2" strokeLinecap="round" d="M12 9v4" />
+      <path strokeWidth="2" strokeLinecap="round" d="M12 17h.01" />
+    </svg>
+  );
+}
+
 type PrimaryTab = "ai" | "manual";
 type NodePm = "npm" | "yarn" | "pnpm" | "bun";
 
@@ -156,32 +183,29 @@ export function InstallSdkPage() {
       </div>
 
       <p className="muted">
-        Optional precision upgrade — connectors already give you per-feature cost, so this is never
-        required to go live. Use the SDK when you want exact, per-call inference numbers, when you
-        route calls through <strong>one shared API key</strong> (a provider's cost API can't tell
-        your features apart, but the SDK can), or when a request makes several model calls and you
-        want to see what a whole{" "}
+        The SDK is optional. Use it to track exact costs for each AI call, separate features that
+        share an API key, and see the cost of multi-step{" "}
         <Link to="/traces" className="link">
-          run
-        </Link>{" "}
-        cost, step by step.
+          runs
+        </Link>
+        .
       </p>
       <p className="muted">
-        It reports identity, counts, timing and cost — token counts, the model, latency, a{" "}
-        <code>feature_id</code>, and optionally a prompt id and version.{" "}
-        <strong>Never your prompts, responses, tool arguments or retrieved documents</strong>: there
-        is no field for any of them and the server rejects a payload that carries one. Delivery is
-        on a background thread, and the SDK is a no-op until configured, so it can't break or slow
-        your request path.
+        It sends usage data such as token counts, model, latency, cost, and feature ID. It{" "}
+        <strong>never</strong> sends prompts, responses, tool arguments, or retrieved documents.
+        Reporting happens in the background and won't affect your application.
       </p>
 
-      <div className="hint">
-        <strong>Before you start:</strong> discover your features first (
-        <Link to="/features" className="link">
-          Features
-        </Link>
-        ) — each metered call is tagged with a feature's id, and anything untagged lands in the
-        honest <em>Unattributed</em> bucket.
+      <div className="hint hint-with-icon">
+        <AlertIcon />
+        <span>
+          <strong>Before you start:</strong> discover your features first (
+          <Link to="/features" className="link">
+            Features
+          </Link>
+          ) — each metered call is tagged with a feature's id, and anything untagged lands in the
+          honest <em>Unattributed</em> bucket.
+        </span>
       </div>
 
       <TokenSection
@@ -285,13 +309,12 @@ function TokenSection({
     <section className="source-section">
       <h2>Name this application, then generate a token</h2>
       <p className="muted">
-        Two things every route below needs. The <strong>application</strong> groups every workflow
-        this codebase reports — it is what you will see on{" "}
+        Each setup needs an application name and an ingest token. The application groups your usage
+        under{" "}
         <Link to="/applications" className="link">
           Applications
-        </Link>{" "}
-        — and the <strong>token</strong> authorizes the SDK to send usage to Meter. One token per
-        workspace.
+        </Link>
+        , while the token securely sends usage data to Meter. Use one token per workspace.
       </p>
 
       <div className="settings-field">
@@ -315,8 +338,8 @@ function TokenSection({
             <>Pick a name for the app, not for your company — you can have several.</>
           ) : (
             <>
-              Suggested for you. Change it if this codebase is a different app — it is awkward to
-              change once events carry it, because a new slug is a new application.
+              We suggested this name based on your codebase. Change it now if needed—changing it
+              later will create a new application.
             </>
           )}
         </span>

@@ -79,6 +79,30 @@ describe("InstallSdkPage — structure", () => {
     for (const tab of tabs) expect(tab.querySelector(".connector-mark")).toBeInTheDocument();
   });
 
+  it("leads with what the SDK is for and what it never sends", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Install SDK" });
+
+    expect(screen.getByText(/The SDK is optional/)).toBeInTheDocument();
+    // The privacy sentence is the one claim on this page that must not soften:
+    // it is the guarantee the whole milestone is built on.
+    expect(
+      screen.getByText(/sends prompts, responses, tool arguments, or retrieved documents/),
+    ).toBeInTheDocument();
+    // Multi-step runs are the reason to instrument, so the word links to them.
+    expect(screen.getByRole("link", { name: "runs" })).toHaveAttribute("href", "/traces");
+  });
+
+  it("marks the before-you-start hint with a decorative icon", async () => {
+    renderPage();
+    const hint = (await screen.findByText(/Before you start:/)).closest(".hint")!;
+    const icon = hint.querySelector(".hint-icon")!;
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    // The block already reads as a caution from its colour and its lead;
+    // announcing "alert" as well would only repeat the sentence.
+    expect(icon).toHaveAttribute("aria-hidden");
+  });
+
   it("wires the tabs to their panels both ways", async () => {
     renderPage();
     const tab = tabIn("Installation method", "Setup with AI");

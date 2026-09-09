@@ -2520,6 +2520,21 @@ button.method-head:hover .method-title {
   margin-bottom: 1.1rem;
 }
 
+/* A hint that leads with an icon lays it beside the text rather than letting
+   the sentence wrap underneath it. A modifier rather than :has(), which this
+   stylesheet does not otherwise rely on. */
+.hint-with-icon {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.hint-icon {
+  flex-shrink: 0;
+  /* Nudged to sit on the first line's cap height rather than its box top. */
+  margin-top: 0.05rem;
+}
+
 /* ---------- Feature drill-down ---------- */
 .detail-cols {
   display: flex;
