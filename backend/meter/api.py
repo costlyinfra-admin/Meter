@@ -23,8 +23,10 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import (
     __version__,
     admin,
+    ai_reads,
     alerts,
     alerts_eval,
+    applications,
     assistant,
     auth,
     budgets,
@@ -207,6 +209,12 @@ class SettingsRequest(BaseModel):
     customer_id_storage: Optional[str] = Field(default=None, max_length=16)
     store_prompts: Optional[bool] = None
     data_retention: Optional[str] = Field(default=None, max_length=16)
+    # Request-level settings. `content_capture` is accepted so the API can
+    # REFUSE it with a reason; settings.update_settings rejects anything but
+    # 'disabled' this milestone.
+    trace_retention_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    agent_stale_after_minutes: Optional[int] = Field(default=None, ge=0, le=100000)
+    content_capture: Optional[str] = Field(default=None, max_length=16)
 
 
 class BudgetRequest(BaseModel):
@@ -298,6 +306,17 @@ class InfraIngestRequest(BaseModel):
     # How many months of bill to re-read, ending today. Cloud bills are restated
     # for days after the fact, so a sync always re-reads rather than appending.
     months: int = Field(default=infrastructure.DEFAULT_BACKFILL_MONTHS, ge=1, le=24)
+
+
+class AiApplicationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    slug: Optional[str] = Field(default=None, max_length=64)
+
+
+class AiApplicationPatch(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    owner: Optional[str] = Field(default=None, max_length=200)
 
 
 class InfraImportRequest(BaseModel):
@@ -870,6 +889,122 @@ def create_app() -> FastAPI:
         period: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
     ) -> dict:
         return inference.inference_summary(user["tenant_id"], _parse_period(period))
+
+    # ---- Request-level AI economics (applications, traces, spans) --------
+    # Session-authenticated and tenant-scoped like every other read here. None
+    # of these ever returns a tenant id, a credential, or anything resembling
+    # prompt or response content — there is no column holding such a thing.
+    def _ai_window(period: Optional[str], days: int) -> tuple:
+        until = dt.datetime.now(dt.timezone.utc)
+        if period:
+            start = _parse_period(period)
+            until = min(
+                until,
+                dt.datetime.combine(
+                    (start.replace(day=28) + dt.timedelta(days=4)).replace(day=1),
+                    dt.time.min,
+                    tzinfo=dt.timezone.utc,
+                ),
+            )
+            since = dt.datetime.combine(start, dt.time.min, tzinfo=dt.timezone.utc)
+        else:
+            since = until - dt.timedelta(days=days)
+        return since, until
+
+    @app.get("/api/ai/applications")
+    def list_ai_applications(
+        user: CurrentUser,
+        period: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+        days: int = Query(default=30, ge=1, le=365),
+    ) -> dict:
+        since, until = _ai_window(period, days)
+        return {
+            "applications": ai_reads.list_applications(user["tenant_id"], since, until),
+            "from": since.isoformat(),
+            "to": until.isoformat(),
+        }
+
+    @app.post("/api/ai/applications", status_code=status.HTTP_201_CREATED)
+    def create_ai_application(body: AiApplicationRequest, user: CurrentUser) -> dict:
+        try:
+            return ai_reads.create_application(user["tenant_id"], body.name, body.slug)
+        except applications.ApplicationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get("/api/ai/applications/{application_id}")
+    def get_ai_application(
+        application_id: str,
+        user: CurrentUser,
+        period: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+        days: int = Query(default=30, ge=1, le=365),
+    ) -> dict:
+        since, until = _ai_window(period, days)
+        found = ai_reads.get_application(user["tenant_id"], application_id, since, until)
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return found
+
+    @app.patch("/api/ai/applications/{application_id}")
+    def patch_ai_application(
+        application_id: str, body: AiApplicationPatch, user: CurrentUser
+    ) -> dict:
+        changes = body.model_dump(exclude_unset=True)
+        try:
+            updated = ai_reads.rename_application(user["tenant_id"], application_id, changes)
+        except applications.ApplicationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return updated
+
+    @app.get("/api/ai/traces")
+    def list_ai_traces(
+        user: CurrentUser,
+        application_id: Optional[str] = Query(default=None, max_length=64),
+        feature_id: Optional[str] = Query(default=None, max_length=64),
+        provider: Optional[str] = Query(default=None, max_length=60),
+        model: Optional[str] = Query(default=None, max_length=120),
+        environment: Optional[str] = Query(default=None, max_length=60),
+        release_version: Optional[str] = Query(default=None, max_length=120),
+        prompt_id: Optional[str] = Query(default=None, max_length=200),
+        prompt_version: Optional[str] = Query(default=None, max_length=60),
+        trace_status: Optional[str] = Query(default=None, max_length=20),
+        running: bool = False,
+        stale: bool = False,
+        min_cost: Optional[float] = Query(default=None, ge=0),
+        days: int = Query(default=30, ge=1, le=365),
+        sort: str = Query(default="newest", max_length=20),
+        limit: int = Query(default=ai_reads.DEFAULT_PAGE, ge=1, le=ai_reads.MAX_PAGE),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict:
+        return ai_reads.list_traces(
+            user["tenant_id"],
+            {
+                "application_id": application_id,
+                "feature_id": feature_id,
+                "provider": provider,
+                "model": model,
+                "environment": environment,
+                "release_version": release_version,
+                "prompt_id": prompt_id,
+                "prompt_version": prompt_version,
+                "status": trace_status,
+                "running": running,
+                "stale": stale,
+                "min_cost": min_cost,
+                "since": dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days),
+                "sort": sort,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+
+    @app.get("/api/ai/traces/{trace_id}")
+    def get_ai_trace(trace_id: str, user: CurrentUser) -> dict:
+        found = ai_reads.get_trace(user["tenant_id"], trace_id)
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return found
 
     # ---- Infrastructure cost (cloud bill) -------------------------------
     # Phase 1: the Cost sources tab only. Nothing here feeds Overview, the

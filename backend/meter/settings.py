@@ -25,6 +25,21 @@ CUSTOMER_ID_STORAGE = ("names", "aliases", "hashed")
 #: persisted intent only.
 DATA_RETENTION = ("30d", "90d", "1y", "indefinite")
 
+#: How long request-level trace evidence is kept. Financial aggregates are NOT
+#: governed by this — deleting traces never changes what a month cost.
+TRACE_RETENTION_DAYS = (7, 30, 90)
+
+#: How long a running agent may be quiet before the UI calls it stale. A read
+#: time presentation, never a stored status.
+MIN_STALE_MINUTES, MAX_STALE_MINUTES = 1, 1440
+
+#: Reserved so a future consented capture feature needs no schema change. This
+#: milestone enforces 'disabled': the API refuses to set anything else, and the
+#: UI offers no control. Deliberately independent of `store_prompts`, which
+#: governs an older, different thing — content stays absent regardless of it.
+CONTENT_CAPTURE = ("disabled", "redacted", "full")
+CONTENT_CAPTURE_ENABLED = ("disabled",)
+
 #: Curated set of IANA time zones offered in Settings. A closed list keeps
 #: validation deterministic and dependency-free (no tzdata requirement) while
 #: staying a standard IANA value.
@@ -59,7 +74,9 @@ def get_settings(tenant_id: str) -> dict:
     with connect(admin_dsn()) as conn:
         row = conn.execute(
             """
-            SELECT name, timezone, currency, customer_id_storage, store_prompts, data_retention
+            SELECT name, timezone, currency, customer_id_storage, store_prompts,
+                   data_retention, trace_retention_days, agent_stale_after_minutes,
+                   content_capture
             FROM tenant WHERE id = %s
             """,
             (tenant_id,),
@@ -73,6 +90,11 @@ def get_settings(tenant_id: str) -> dict:
         "customer_id_storage": row[3],
         "store_prompts": row[4],
         "data_retention": row[5],
+        "trace_retention_days": row[6],
+        "agent_stale_after_minutes": row[7],
+        # Always 'disabled' this milestone. Returned so the UI can state the
+        # policy plainly rather than leaving customers to assume.
+        "content_capture": row[8],
     }
 
 
@@ -93,6 +115,47 @@ def update_settings(tenant_id: str, changes: dict) -> dict:
             raise SettingsError(f"Organization name must be at most {MAX_ORG_NAME} characters.")
         columns.append("name = %s")
         params.append(name)
+
+    if "trace_retention_days" in changes:
+        try:
+            days = int(changes["trace_retention_days"])
+        except (TypeError, ValueError) as exc:
+            raise SettingsError("Trace retention must be a number of days.") from exc
+        if days not in TRACE_RETENTION_DAYS:
+            raise SettingsError(
+                "Trace retention must be one of: "
+                + ", ".join(f"{d} days" for d in TRACE_RETENTION_DAYS)
+                + "."
+            )
+        columns.append("trace_retention_days = %s")
+        params.append(days)
+
+    if "agent_stale_after_minutes" in changes:
+        try:
+            minutes = int(changes["agent_stale_after_minutes"])
+        except (TypeError, ValueError) as exc:
+            raise SettingsError("Stale threshold must be a number of minutes.") from exc
+        if not MIN_STALE_MINUTES <= minutes <= MAX_STALE_MINUTES:
+            raise SettingsError(
+                f"Stale threshold must be between {MIN_STALE_MINUTES} and "
+                f"{MAX_STALE_MINUTES} minutes."
+            )
+        columns.append("agent_stale_after_minutes = %s")
+        params.append(minutes)
+
+    if "content_capture" in changes:
+        value = (changes["content_capture"] or "").strip()
+        # The reserved values exist in the schema so a future consented feature
+        # needs no migration. They are refused here so no API caller, SDK or
+        # customer can turn content capture on before that feature exists, with
+        # its own consent, encryption, retention and audit story.
+        if value not in CONTENT_CAPTURE_ENABLED:
+            raise SettingsError(
+                "Content capture cannot be enabled. Meter records prompt identity, "
+                "version, tokens and cost — never prompt or response content."
+            )
+        columns.append("content_capture = %s")
+        params.append(value)
 
     if "timezone" in changes:
         tz = (changes["timezone"] or "").strip()

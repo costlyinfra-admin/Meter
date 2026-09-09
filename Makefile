@@ -10,7 +10,7 @@ PIP := $(VENV)/bin/pip
 
 .PHONY: help install install-backend install-web test test-backend test-web test-sdk \
         lint lint-backend lint-web format db-migrate db-seed db-reset api web clean \
-        ingest ingest-infra
+        ingest ingest-infra expire-traces
 
 help:
 	@echo "Meter make targets:"
@@ -87,6 +87,11 @@ ingest:
 # behind "Sync now" on Cost sources.
 ingest-infra:
 	cd $(BACKEND) && .venv/bin/python -m meter.infrastructure
+
+# Request-level retention sweep: deletes traces past each tenant's window.
+# Financial aggregates are never touched.
+expire-traces:
+	cd $(BACKEND) && .venv/bin/python -m meter.ai_reads
 
 # ---- run -----------------------------------------------------------------
 # Needs DATABASE_URL + APP_SECRET_KEY in the environment (see .env.example).

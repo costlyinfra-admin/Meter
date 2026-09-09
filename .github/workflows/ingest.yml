@@ -54,6 +54,20 @@ jobs:
         # after the fact, so this converges on the right number rather than
         # appending to it; the 12-month backfill stays behind "Sync now".
         run: python -m meter.infrastructure
+      - name: Expire request-level traces
+        working-directory: backend
+        # Independent of everything above: retention is a promise to the
+        # customer about their data, not a step that should be skipped because
+        # a provider was unreachable.
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+        # Deletes ai_trace/ai_span past each tenant's window. Financial
+        # aggregates are untouched: what a month cost is a fact about the
+        # month, not about how long we keep the traces explaining it.
+        run: python -m meter.ai_reads
       - name: Evaluate alert rules
         working-directory: backend
         # Runs even if ingest fails, so alerts still evaluate on the last-good data.
