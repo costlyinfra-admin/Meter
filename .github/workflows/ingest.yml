@@ -1,8 +1,13 @@
 name: Scheduled ingest & alerts
 
 # Free cron: pulls each tenant's provider/coding costs and reconciles the hook
-# (the same job as `make ingest`), then evaluates alert rules against the fresh
-# data and dispatches any notifications.
+# (the same job as `make ingest`), refreshes each connected cloud bill (`make
+# ingest-infra`), then evaluates alert rules against the fresh data and
+# dispatches any notifications.
+#
+# Every step runs even if an earlier one failed. They read different providers
+# with different credentials, and a single bad key should not cost a tenant a
+# night of everything else.
 #
 # Required repo secrets: DATABASE_URL, METER_APP_DB_PASSWORD, APP_SECRET_KEY.
 # Optional (email + deep links in notifications): RESEND_API_KEY, ALERT_EMAIL_FROM,
@@ -35,6 +40,20 @@ jobs:
           METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
         run: python -m meter.inference
+      - name: Refresh cloud bills
+        working-directory: backend
+        # Runs even if the inference ingest failed: the two read different
+        # providers, and one bad model-provider key should not cost a tenant
+        # their cloud spend for the night.
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+        # Re-reads the CURRENT month only. Cloud bills are restated for days
+        # after the fact, so this converges on the right number rather than
+        # appending to it; the 12-month backfill stays behind "Sync now".
+        run: python -m meter.infrastructure
       - name: Evaluate alert rules
         working-directory: backend
         # Runs even if ingest fails, so alerts still evaluate on the last-good data.
