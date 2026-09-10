@@ -28,7 +28,58 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  # A gate, not a formality. The agent-run rewrite replaced the SDK's entire
+  # public API and left both manifests at 1.0.0 — the version already on PyPI
+  # and npm — so the registries served the old API while the repo, the docs and
+  # the Install SDK page all described the new one. Nothing failed, because the
+  # only version assertion anywhere was a ">= MIN_SDK" floor check.
+  #
+  # These three checks would each have caught it on its own.
+  guard:
+    name: Version guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The two SDKs agree, and the tag matches them
+        run: |
+          set -euo pipefail
+          PY_V=$(grep -m1 '^version = ' sdk/python/pyproject.toml | cut -d'"' -f2)
+          NODE_V=$(node -p "require('./sdk/node/package.json').version")
+          PY_DUNDER=$(grep -m1 '^__version__ = ' sdk/python/costlyinfra_meter/__init__.py | cut -d'"' -f2)
+          NODE_CONST=$(grep -m1 '^export const VERSION = ' sdk/node/index.mjs | cut -d'"' -f2)
+          echo "pyproject=$PY_V node=$NODE_V __version__=$PY_DUNDER VERSION=$NODE_CONST"
+
+          # The two SDKs release together, and each one's runtime constant is
+          # what a customer sees in a bug report — all four must be one number.
+          for v in "$NODE_V" "$PY_DUNDER" "$NODE_CONST"; do
+            [ "$v" = "$PY_V" ] || { echo "::error::version mismatch: expected $PY_V, found $v"; exit 1; }
+          done
+
+          # A tag that says one thing while the manifests say another publishes
+          # the manifest's number, silently ignoring the tag.
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG_V="${GITHUB_REF_NAME#sdk-v}"
+            [ "$TAG_V" = "$PY_V" ] || { echo "::error::tag $GITHUB_REF_NAME does not match manifest $PY_V"; exit 1; }
+          fi
+
+      - name: This version is not already published
+        run: |
+          set -euo pipefail
+          V=$(grep -m1 '^version = ' sdk/python/pyproject.toml | cut -d'"' -f2)
+          # Re-publishing a number is what put an old API behind 1.0.0. Both
+          # registries refuse it anyway; failing here says why, before a
+          # half-published release leaves PyPI and npm on different APIs.
+          if curl -sf "https://pypi.org/pypi/costlyinfra-meter/$V/json" >/dev/null; then
+            echo "::error::costlyinfra-meter $V is already on PyPI — bump the version"; exit 1
+          fi
+          if curl -sf "https://registry.npmjs.org/costlyinfra-meter/$V" >/dev/null; then
+            echo "::error::costlyinfra-meter $V is already on npm — bump the version"; exit 1
+          fi
+          echo "$V is unpublished on both registries."
+
   python:
+    needs: guard
     name: Publish Python SDK (PyPI trusted publishing)
     runs-on: ubuntu-latest
     environment: pypi
@@ -66,6 +117,7 @@ jobs:
           skip-existing: true
 
   node:
+    needs: guard
     name: Publish Node SDK
     runs-on: ubuntu-latest
     permissions:

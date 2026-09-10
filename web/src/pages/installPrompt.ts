@@ -14,7 +14,7 @@
 import type { Feature } from "../api";
 
 /** The lowest SDK version with the queue, batching and retries. */
-export const MIN_SDK = "1.0";
+export const MIN_SDK = "2.0";
 
 function featureList(features: Feature[]): string {
   if (features.length === 0) {

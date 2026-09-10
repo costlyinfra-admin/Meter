@@ -129,9 +129,9 @@ meter.flush()          # True if the queue drained, False on timeout
 
 An `atexit` hook flushes on normal shutdown.
 
-## Upgrading from 0.x
+## Upgrading from 1.x
 
-1.0 replaces per-call cost reporting with traces. `meter.record(...)`,
+2.0 replaces per-call cost reporting with traces. `meter.record(...)`,
 `record_anthropic(...)` and the other `record_*` methods are gone; use
 `meter.wrap(...)` for a single call and `meter.agent(...)` for a workflow.
 `METER_TOKEN` is now `METER_INGEST_TOKEN`, and `METER_APPLICATION` is new and

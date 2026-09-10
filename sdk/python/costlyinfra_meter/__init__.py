@@ -45,7 +45,7 @@ from collections import deque
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Optional
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 FLUSH_INTERVAL = 2.0
 BATCH_SIZE = 50

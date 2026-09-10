@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 import threading
 import time
 
+import costlyinfra_meter
 import pytest
 from costlyinfra_meter import Meter
 
@@ -487,3 +490,18 @@ def test_configuration_comes_from_the_documented_environment(monkeypatch):
     m = Meter()
     assert m.enabled
     assert (m.application, m.environment) == ("document-review", "staging")
+
+
+def test_the_version_the_sdk_reports_is_the_version_the_package_ships():
+    """`__version__` and pyproject must be one number.
+
+    Not a hardcoded literal, which has to be edited on every release and says
+    nothing when it is. The invariant that matters is agreement: the constant a
+    customer quotes in a bug report is what PyPI actually served them, and a
+    half-finished bump — one file changed, the other not — fails here.
+    """
+    root = pathlib.Path(__file__).resolve().parents[1]
+    manifest = (root / "pyproject.toml").read_text(encoding="utf-8")
+    declared = re.search(r'^version = "([^"]+)"', manifest, re.MULTILINE)
+    assert declared, "pyproject.toml has no version"
+    assert costlyinfra_meter.__version__ == declared.group(1)

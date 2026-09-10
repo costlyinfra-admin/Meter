@@ -27,7 +27,7 @@
 
 import { randomUUID } from "node:crypto";
 
-export const VERSION = "1.0.0";
+export const VERSION = "2.0.0";
 
 const FLUSH_INTERVAL_MS = 2000;
 const BATCH_SIZE = 50;

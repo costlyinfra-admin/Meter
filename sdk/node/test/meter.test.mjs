@@ -1,6 +1,9 @@
 /** The Node SDK: lifecycle, propagation, privacy, and never breaking the agent. */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { Meter, usageOf, VERSION } from "../index.mjs";
 
 const URL = "https://app.test/api/hook/events";
@@ -442,6 +445,14 @@ test("environment and release ride on every event", async () => {
   assert.ok(t.events().every((e) => e.release_version === "2026.9.1"));
 });
 
-test("the package reports its version", () => {
-  assert.equal(VERSION, "1.0.0");
+test("the version the SDK reports is the version the package ships", () => {
+  // Not a hardcoded number, which has to be edited on every release and says
+  // nothing when it is: the point is that the constant a customer quotes in a
+  // bug report matches what npm actually served them.
+  // Resolved with path helpers rather than `new URL(...)`: this file declares
+  // its own module-scope `URL` for the ingest endpoint, which shadows the
+  // global constructor.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8"));
+  assert.equal(VERSION, pkg.version);
 });
