@@ -596,3 +596,44 @@ describe("InstallSdkPage — OpenTelemetry", () => {
     await waitFor(() => expect(api.recentOtelTrace).toHaveBeenCalled());
   });
 });
+
+describe("InstallSdkPage — Splunk Observability Cloud", () => {
+  const panel = () => document.getElementById("install-panel-splunk")!;
+
+  it("is its own route, reachable from the URL", async () => {
+    renderPage("/install-sdk?tab=splunk");
+    await screen.findByRole("heading", { name: "Install SDK" });
+    expect(tabIn("Installation method", "Splunk")).toHaveAttribute("aria-selected", "true");
+    expect(
+      within(panel()).getByRole("heading", { name: "1. Add Meter to your Splunk Collector" }),
+    ).toBeVisible();
+  });
+
+  it("covers a Linux host and Kubernetes, one at a time", async () => {
+    renderPage("/install-sdk?tab=splunk");
+    await screen.findByRole("heading", { name: "Install SDK" });
+    expect(panel().textContent).toContain("/etc/otel/collector/agent_config.yaml");
+    expect(panel().textContent).not.toContain("secretKeyRef");
+
+    fireEvent.click(within(panel()).getByRole("button", { name: "Kubernetes (Helm)" }));
+    expect(panel().textContent).toContain("secretKeyRef");
+    expect(panel().textContent).not.toContain("/etc/otel/collector/agent_config.yaml");
+  });
+
+  it("points the copy at this install and never repeats the live token", async () => {
+    vi.mocked(api.createHookToken).mockResolvedValue({ token: "tok_live_secret" });
+    renderPage("/install-sdk?tab=splunk");
+    fireEvent.click(await screen.findByRole("button", { name: /Generate ingest token/ }));
+    await screen.findByText(/It is not shown again/);
+    expect(panel().textContent).toContain(`${window.location.origin}/api/otel/v1/traces`);
+    expect(panel().textContent).not.toContain("tok_live_secret");
+  });
+
+  it("waits for an OTLP trace, as the OpenTelemetry route does", async () => {
+    renderPage("/install-sdk?tab=splunk");
+    expect(
+      await screen.findByText(/Waiting for your first OpenTelemetry trace/),
+    ).toBeInTheDocument();
+    expect(api.recentHookEvent).not.toHaveBeenCalled();
+  });
+});

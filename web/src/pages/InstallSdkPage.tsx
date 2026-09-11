@@ -36,6 +36,14 @@ import {
   otelCollectorSnippet,
   otelEnvSnippet,
   RESUME_NODE,
+  SPLUNK_CONFIG_FILE,
+  SPLUNK_ENV_FILE,
+  SPLUNK_ENV_SNIPPET,
+  SPLUNK_HOSTS,
+  SPLUNK_K8S_SECRET,
+  splunkHelmSnippet,
+  splunkLinuxSnippet,
+  type SplunkHost,
   RESUME_PYTHON,
   SPAN_KINDS,
   suggestSlug,
@@ -79,7 +87,7 @@ function AlertIcon() {
   );
 }
 
-type PrimaryTab = "ai" | "manual" | "otel";
+type PrimaryTab = "ai" | "manual" | "otel" | "splunk";
 type NodePm = "npm" | "yarn" | "pnpm" | "bun";
 
 /** Install commands, one per manager. All four resolve the same package. */
@@ -96,7 +104,7 @@ const NODE_PMS: NodePm[] = ["npm", "yarn", "pnpm", "bun"];
 const POLL_MS = 5000;
 
 function isPrimary(value: string | null): value is PrimaryTab {
-  return value === "ai" || value === "manual" || value === "otel";
+  return value === "ai" || value === "manual" || value === "otel" || value === "splunk";
 }
 
 function isGuide(value: string | null): value is AgentId {
@@ -177,7 +185,7 @@ export function InstallSdkPage() {
   }, [authLoading, user?.org_name]);
 
   const slug = normalizeSlug(slugDraft) || suggestSlug(null);
-  const verifyRoute: VerifyRoute = tab === "otel" ? "otel" : "sdk";
+  const verifyRoute: VerifyRoute = tab === "otel" || tab === "splunk" ? "otel" : "sdk";
 
   async function generate() {
     setError(null);
@@ -240,6 +248,7 @@ export function InstallSdkPage() {
           { id: "ai", label: "Setup with AI" },
           { id: "manual", label: "Manual via package manager" },
           { id: "otel", label: "OpenTelemetry" },
+          { id: "splunk", label: "Splunk" },
         ]}
         active={tab}
         onChange={(id) => select({ tab: id })}
@@ -288,6 +297,10 @@ export function InstallSdkPage() {
 
       <TabPanel id="otel" idPrefix="install" active={tab === "otel"}>
         <OtelGuide otlpUrl={otlpUrl} slug={slug} />
+      </TabPanel>
+
+      <TabPanel id="splunk" idPrefix="install" active={tab === "splunk"}>
+        <SplunkGuide otlpUrl={otlpUrl} />
       </TabPanel>
 
       {/* Keyed by route: what counts as "arrived" differs, and a panel that had
@@ -745,6 +758,91 @@ function OtelGuide({ otlpUrl, slug }: { otlpUrl: string; slug: string }) {
         <p className="muted">
           Model calls are priced with the same rates as the SDK and reconciled against your provider
           bill the same way. A run instrumented both ways is still one run.
+        </p>
+      </section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Splunk Observability Cloud
+// ---------------------------------------------------------------------------
+function SplunkGuide({ otlpUrl }: { otlpUrl: string }) {
+  const [host, setHost] = useState<SplunkHost>("linux");
+  return (
+    <>
+      <section className="source-section">
+        <h2>1. Add Meter to your Splunk Collector</h2>
+        <p className="muted">
+          If you send traces to Splunk Observability Cloud, they already pass through the Splunk
+          Distribution of the OpenTelemetry Collector. Add Meter there as a second destination. What
+          goes to Splunk does not change, and nothing changes in your application.
+        </p>
+        <div className="pm-switch" role="group" aria-label="Where your Collector runs">
+          {SPLUNK_HOSTS.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={id === host ? "pm-option active" : "pm-option"}
+              aria-pressed={id === host}
+              onClick={() => setHost(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {/* Placeholders only: the generated token is shown once, above, inside
+            the snippet marked for session-replay masking. */}
+        {host === "linux" ? (
+          <>
+            <p className="muted">
+              Put your ingest token in <code>{SPLUNK_ENV_FILE}</code>, next to your Splunk token:
+            </p>
+            <Snippet>{SPLUNK_ENV_SNIPPET}</Snippet>
+            <p className="muted">
+              Then add these blocks to <code>{SPLUNK_CONFIG_FILE}</code>, alongside what is already
+              there, and restart the Collector.
+            </p>
+            <Snippet>{splunkLinuxSnippet(otlpUrl)}</Snippet>
+          </>
+        ) : (
+          <>
+            <p className="muted">Store your ingest token as a secret where the Collector runs:</p>
+            <Snippet>{SPLUNK_K8S_SECRET}</Snippet>
+            <p className="muted">
+              Then add this to your values for the <code>splunk-otel-collector</code> Helm chart.
+              The chart merges it into its defaults, so your Splunk pipelines stay as they are.
+            </p>
+            <Snippet>{splunkHelmSnippet(otlpUrl)}</Snippet>
+          </>
+        )}
+        <p className="muted">
+          This copies traces your apps send over OTLP. If some send Jaeger or Zipkin to the
+          Collector instead, add those receivers to the <code>traces/meter</code> pipeline too.
+        </p>
+      </section>
+
+      <section className="source-section">
+        <h2>2. Meter's copy leaves without content</h2>
+        <p className="muted">
+          You may keep prompts and responses in Splunk. The <code>traces/meter</code> pipeline is
+          Meter's alone: before anything leaves for Meter, it deletes prompt, response, tool and
+          exception attributes, and drops span events, which is where AI instrumentation puts
+          message content. Meter would discard all of that on arrival anyway. This way it is never
+          sent.
+        </p>
+      </section>
+
+      <section className="source-section">
+        <h2>3. Attribute runs to a feature</h2>
+        <p className="muted">
+          Splunk's AI instrumentation follows OpenTelemetry's GenAI conventions, so Meter reads its
+          spans directly. Set <code>meter.feature_id</code> the same way as on the{" "}
+          <Link to="/install-sdk?tab=otel" className="link">
+            OpenTelemetry
+          </Link>{" "}
+          tab: once for a whole service, or per run with baggage. Runs with no feature still count,
+          in the <em>Unattributed</em> bucket.
         </p>
       </section>
     </>

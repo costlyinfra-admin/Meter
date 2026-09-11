@@ -253,3 +253,89 @@ export const OTEL_READS = [
   ["Span status", "Whether the step and its run succeeded"],
   ["The span with no parent", "The run: its name, start and end"],
 ];
+
+// ---------------------------------------------------------------------------
+// Splunk Observability Cloud — a second destination in the Collector it runs
+// ---------------------------------------------------------------------------
+
+/** Where the Splunk Collector keeps its configuration and environment on Linux. */
+export const SPLUNK_CONFIG_FILE = "/etc/otel/collector/agent_config.yaml";
+export const SPLUNK_ENV_FILE = "/etc/otel/collector/splunk-otel-collector.conf";
+
+export const SPLUNK_HOSTS = [
+  ["linux", "Linux host"],
+  ["k8s", "Kubernetes (Helm)"],
+] as const;
+export type SplunkHost = (typeof SPLUNK_HOSTS)[number][0];
+
+/**
+ * Keys that carry prompt, response, tool or exception content, as one regular
+ * expression for the Collector's attributes processor. Anchored at the start so
+ * it matches by prefix, which is the same rule otel.py uses to spot content; a
+ * test reads otel.py and holds the two lists together.
+ */
+export const SPLUNK_CONTENT_PATTERN =
+  "^(gen_ai\\.(prompt|completion|input\\.messages|output\\.messages|content|system_instructions|tool\\.call\\.(arguments|result))|llm\\.(input_messages|output_messages|prompts|prompt_template)|input\\.value|output\\.value|retrieval\\.documents|tool\\.parameters|traceloop\\.entity\\.(input|output)|exception\\.(message|stacktrace))";
+
+/** Scoped to span events: an unscoped condition would drop whole spans. */
+export const SPLUNK_SPAN_EVENT_CONDITION = `IsMatch(spanevent.name, ".*")`;
+
+/**
+ * The blocks Meter adds. Its own `traces/meter` pipeline, so the processors
+ * that strip content touch only Meter's copy; what goes to Splunk is left
+ * exactly as it was.
+ */
+function splunkBlocks(otlpUrl: string): string {
+  return `exporters:
+  otlp_http/meter:
+    traces_endpoint: ${otlpUrl}
+    headers:
+      Authorization: "Bearer \${env:METER_INGEST_TOKEN}"
+
+processors:
+  # Meter's copy only. What you send to Splunk is untouched.
+  attributes/meter_no_content:
+    actions:
+      - pattern: '${SPLUNK_CONTENT_PATTERN}'
+        action: delete
+  filter/meter_no_span_events:
+    error_mode: ignore
+    trace_conditions:
+      - '${SPLUNK_SPAN_EVENT_CONDITION}'
+
+service:
+  pipelines:
+    traces/meter:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/meter_no_content, filter/meter_no_span_events, batch]
+      exporters: [otlp_http/meter]`;
+}
+
+export const SPLUNK_ENV_SNIPPET = `# ${SPLUNK_ENV_FILE}
+METER_INGEST_TOKEN=<your token>`;
+
+export function splunkLinuxSnippet(otlpUrl: string): string {
+  return `# ${SPLUNK_CONFIG_FILE}: add these alongside what is already there
+${splunkBlocks(otlpUrl)}`;
+}
+
+export const SPLUNK_K8S_SECRET = `kubectl create secret generic meter \\
+  --namespace <collector namespace> \\
+  --from-literal=ingest-token=<your token>`;
+
+export function splunkHelmSnippet(otlpUrl: string): string {
+  const nested = splunkBlocks(otlpUrl)
+    .split("\n")
+    .map((line) => (line ? `    ${line}` : line))
+    .join("\n");
+  return `# values for the splunk-otel-collector chart
+agent:
+  extraEnvs:
+    - name: METER_INGEST_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: meter
+          key: ingest-token
+  config:
+${nested}`;
+}

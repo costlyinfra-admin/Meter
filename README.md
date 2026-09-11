@@ -329,6 +329,11 @@ Spans are translated into the same runs and steps the SDK records
 fixed list of attributes is read. Prompt and response content, span events, and any
 attribute not on that list are never read or stored.
 
+Already sending to **Splunk Observability Cloud**? Add Meter as a second exporter
+in the Splunk Collector. The setup guide's **Splunk** tab gives a pipeline that
+strips prompt and response content from Meter's copy before it leaves, while what
+goes to Splunk stays exactly as it was.
+
 ## Deploy your own instance
 
 Meter ships as a **single Docker image** that serves the API and the web app,

@@ -482,6 +482,22 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
         ],
       },
+      {
+        slug: "splunk",
+        title: "Sending from Splunk Observability Cloud",
+        summary: "Add Meter as a second destination in the Splunk Collector you already run.",
+        blocks: [
+          p(
+            "If your traces go to Splunk Observability Cloud, they already pass through the Splunk Distribution of the OpenTelemetry Collector. Meter takes a copy from there: you add Meter as a second exporter, in a pipeline of its own, and what goes to Splunk does not change. Configuration for a Linux host and for Kubernetes is on [Install SDK](/install-sdk), under **Splunk**.",
+          ),
+          p(
+            "Splunk's AI instrumentation follows OpenTelemetry's GenAI conventions, so Meter reads those spans exactly as described in [Using OpenTelemetry instead](/help/sdk/opentelemetry), including how to set `meter.feature_id`.",
+          ),
+          note(
+            "Meter's pipeline deletes prompt, response, tool and exception attributes, and drops span events, before anything leaves your network. You can keep content in Splunk while Meter's copy never carries it.",
+          ),
+        ],
+      },
     ],
   },
 
