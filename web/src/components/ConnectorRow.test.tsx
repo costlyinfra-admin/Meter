@@ -105,6 +105,21 @@ describe("ConnectorRow — replacing a stored credential", () => {
     return screen.findByRole("heading", { name: /Replace token/ });
   };
 
+  it("puts replace above the provider's detail, not below it", async () => {
+    // The detail is a provider's own list of workspaces, keys or accounts. On a
+    // busy connector it is long enough to push the credential form off the
+    // bottom of the screen, which is the thing someone opened Configure for.
+    render(
+      <Harness overrides={{ connected: true }} detail={<p>Workspace and API key breakdown</p>} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
+    await screen.findByRole("heading", { name: /Replace token/ });
+
+    const panels = [...document.querySelectorAll(".connector-panel")];
+    expect(panels[0]).toHaveClass("connector-rotate");
+    expect(panels[1]).toHaveTextContent("Workspace and API key breakdown");
+  });
+
   it("offers a replace form on a connected row", async () => {
     // The whole point: before this, a connected connector had no way back to
     // its credential, so a rotated or leaked key could not be changed at all.

@@ -4,8 +4,8 @@
  * panel *directly underneath this row* — never at the bottom of the page. Expansion
  * is controlled by the parent so the list behaves as an accordion (one open at a
  * time). Not-connected rows expand to the setup guide + credential form; connected
- * rows expand to the provider's inline detail (`detail`) and the form for
- * replacing the stored credential.
+ * rows expand to the form for replacing the stored credential, then the
+ * provider's inline detail (`detail`).
  *
  * Replacing is deliberately the same field as connecting, never a pre-filled or
  * masked one. There is no route that returns a stored secret — not partially —
@@ -116,10 +116,13 @@ export function ConnectorRow({
 
       {syncNote && <p className="muted connector-sync-note">{syncNote}</p>}
 
-      {/* Connected -> inline detail; not connected -> inline setup. Always directly
-          under this row. */}
-      {expanded && connector.connected && detail && <div className="connector-panel">{detail}</div>}
+      {/* Connected -> replace the credential, then the inline detail; not
+          connected -> inline setup. Always directly under this row.
 
+          Replace comes FIRST. It is the reason someone opened Configure on a
+          connector that is already working — the detail below is a provider's
+          own list of workspaces, keys or accounts, and on a busy connector that
+          list pushed the credential form off the bottom of the screen. */}
       {expanded && connector.connected && (
         <div className="connector-panel connector-rotate">
           <div className="connector-rotate-head">
@@ -145,6 +148,8 @@ export function ConnectorRow({
           />
         </div>
       )}
+
+      {expanded && connector.connected && detail && <div className="connector-panel">{detail}</div>}
 
       {expanded && !connector.connected && (
         <div className="connector-panel">

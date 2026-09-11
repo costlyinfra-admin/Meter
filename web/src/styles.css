@@ -1365,9 +1365,10 @@ select {
   border-top: 1px solid var(--line);
 }
 
-/* The replace-credential panel on a connected row. Sits under the provider's
-   own detail, because rotating a key is a rarer errand than reading the data
-   the key fetched. */
+/* The replace-credential panel on a connected row. Sits above the provider's
+   own detail: it is why someone opens Configure on a connector that already
+   works, and a long list of workspaces or keys below it would push the form
+   off the bottom of the screen. */
 .connector-rotate-head {
   display: flex;
   align-items: baseline;
