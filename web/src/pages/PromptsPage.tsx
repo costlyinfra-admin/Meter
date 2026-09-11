@@ -20,6 +20,10 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   api,
   ApiError,
+  type EvalKey,
+  type Evaluation,
+  type EvaluationCaseContent,
+  type EvaluationEstimate,
   type PromptContent,
   type PromptDetail as PromptDetailData,
   type PromptSummary,
@@ -392,6 +396,8 @@ export function PromptDetail() {
         )}
       </section>
 
+      {candidate && <EvaluationPanel templateId={id} onDecided={() => void load()} />}
+
       <section className="detail-section">
         <div className="section-head">
           <div>
@@ -429,5 +435,297 @@ export function PromptDetail() {
         )}
       </section>
     </div>
+  );
+}
+
+/** How long between checks while a run is in flight. Replaying thirty inputs
+ *  twice takes minutes, so this is a progress bar, not a spinner. */
+const POLL_MS = 3000;
+
+const REASONS: Record<string, string> = {
+  no_candidate: "There is no rewrite to test yet.",
+  already_running: "An evaluation of this rewrite is already running.",
+  no_key: "Testing makes real model calls, so it needs a key for this provider.",
+  unpriced_model: "Meter has no rates for this model, so a saving could not be measured.",
+  over_cap: "This run would take your organization past its monthly evaluation cap.",
+  no_samples: "There are no samples to replay.",
+};
+
+/** A per-call price, which is fractions of a cent. The shared money() stops at
+ *  cents, where every row of this table would read "$0.00" and the comparison
+ *  the table exists for would be invisible. */
+const perCall = (value: number) => `$${value.toFixed(value < 0.01 ? 5 : 2)}`;
+
+/**
+ * Testing a rewrite: what it would cost, then what it actually measured.
+ *
+ * Everything here is the customer's own money and the customer's own model, so
+ * the panel says what a run will cost before it runs, and afterwards shows the
+ * measurement rather than a verdict on its own: the counts, the cost per call
+ * either way, and the volume any projected saving was scaled by.
+ */
+function EvaluationPanel({ templateId, onDecided }: { templateId: string; onDecided: () => void }) {
+  const [run, setRun] = useState<Evaluation | null>(null);
+  const [estimate, setEstimate] = useState<EvaluationEstimate | null>(null);
+  const [keys, setKeys] = useState<EvalKey[]>([]);
+  const [cases, setCases] = useState<EvaluationCaseContent[] | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const [latest, plan, keyList] = await Promise.all([
+      api.latestEvaluation(templateId).catch(() => null),
+      api.evaluationEstimate(templateId).catch(() => null),
+      api
+        .evalKeys()
+        .then((r) => r.keys)
+        .catch(() => []),
+    ]);
+    setRun(latest);
+    setEstimate(plan);
+    setKeys(keyList);
+    return latest;
+  }, [templateId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Only while something is actually running: a finished run never polls.
+  useEffect(() => {
+    if (run?.status !== "running") return;
+    const timer = setInterval(() => {
+      void api
+        .evaluation(run.evaluation_id)
+        .then((next) => {
+          setRun(next);
+          if (next.status !== "running") {
+            clearInterval(timer);
+            onDecided();
+          }
+        })
+        .catch(() => clearInterval(timer));
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [run?.status, run?.evaluation_id, onDecided]);
+
+  async function act<T>(kind: string, fn: () => Promise<T>): Promise<T | null> {
+    setBusy(kind);
+    setError(null);
+    try {
+      return await fn();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong.");
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const provider = estimate?.provider ?? run?.provider ?? "";
+  const needsKey = estimate?.reason === "no_key";
+  const spent = estimate?.spent_this_month ?? 0;
+  const cap = estimate?.monthly_cap ?? 0;
+
+  return (
+    <section className="detail-section">
+      <div className="section-head">
+        <div>
+          <h2>Testing</h2>
+          <span className="section-sub muted">
+            Real inputs, replayed through both prompts on your own model, then compared.
+          </span>
+        </div>
+        {!run || run.status === "failed" ? (
+          <button
+            onClick={() =>
+              void act("start", () => api.startEvaluation(templateId)).then((started) => {
+                if (started) setRun(started);
+              })
+            }
+            disabled={!estimate?.can_run || busy !== null}
+          >
+            {busy === "start" ? "Starting…" : "Test this rewrite"}
+          </button>
+        ) : null}
+      </div>
+
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+
+      {!run && estimate && (
+        <p className="muted">
+          {estimate.can_run ? (
+            <>
+              Replays {estimate.cases} real input{estimate.cases === 1 ? "" : "s"} through both
+              prompts on {estimate.provider} ({estimate.model}). Estimated cost{" "}
+              <strong>{money(estimate.cost_estimate ?? 0)}</strong> on your account. {money(spent)}{" "}
+              of {money(cap)} used this month.
+            </>
+          ) : (
+            (REASONS[estimate.reason ?? ""] ?? "This rewrite cannot be tested yet.")
+          )}
+        </p>
+      )}
+
+      {needsKey && (
+        <div className="settings-field">
+          <label htmlFor="eval-key">{provider} API key</label>
+          <input
+            id="eval-key"
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+          <span className="settings-hint muted">
+            A key that can make model calls, which the read-only cost key cannot. Stored encrypted
+            and never shown again.
+          </span>
+          <div className="settings-actions">
+            <button
+              onClick={() => {
+                const entered = apiKey;
+                setApiKey("");
+                void act("key", () => api.setEvalKey(provider, entered)).then((r) => {
+                  if (r) {
+                    setKeys(r.keys);
+                    void load();
+                  }
+                });
+              }}
+              disabled={!apiKey || busy !== null}
+            >
+              {busy === "key" ? "Saving…" : "Save key"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {run?.status === "running" && (
+        <p className="muted" role="status">
+          Replaying {run.cases_done} of {run.cases_planned} inputs…
+        </p>
+      )}
+
+      {run?.status === "failed" && (
+        <p className="hint" role="status">
+          The run stopped: {run.error || "the provider could not be reached."} The rewrite is
+          unchanged and untested.
+        </p>
+      )}
+
+      {run?.status === "completed" && (
+        <>
+          <p className="detail-meta">
+            <span className={run.decision === "recommended" ? "badge ok" : "badge"}>
+              {run.decision === "recommended" ? "Recommended" : "Not recommended"}
+            </span>
+            <span className="muted">{run.decision_reason}</span>
+          </p>
+
+          <table className="mini-table">
+            <thead>
+              <tr>
+                <th>Per call</th>
+                <th className="num">Now</th>
+                <th className="num">With the rewrite</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Cost</td>
+                <td className="num">{perCall(run.cost_before)}</td>
+                <td className="num">{perCall(run.cost_after)}</td>
+              </tr>
+              <tr>
+                <td>Tokens in</td>
+                <td className="num">{num(run.tokens_in_before)}</td>
+                <td className="num">{num(run.tokens_in_after)}</td>
+              </tr>
+              <tr>
+                <td>Tokens out</td>
+                <td className="num">{num(run.tokens_out_before)}</td>
+                <td className="num">{num(run.tokens_out_after)}</td>
+              </tr>
+              <tr>
+                <td>Latency</td>
+                <td className="num">{num(run.latency_before_ms)}ms</td>
+                <td className="num">{num(run.latency_after_ms)}ms</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p className="muted legend">
+            Better on {run.better}, the same on {run.same}, worse on {run.worse} of {run.cases_done}{" "}
+            replayed inputs
+            {run.check_failures > 0 && `, and ${run.check_failures} came back broken`}. Judged by{" "}
+            {run.judge_model || "no judge"}, each case both ways round. The run cost{" "}
+            {money(run.spend)}.
+          </p>
+
+          {run.decision === "recommended" && (
+            <p className="muted">
+              At {num(run.calls_30d)} call{run.calls_30d === 1 ? "" : "s"} in the last 30 days, that
+              is <strong>{money(run.projected_monthly_saving)}</strong> a month — a ceiling, which
+              holds while your traffic looks like the inputs this was measured on.
+            </p>
+          )}
+
+          <div className="settings-actions">
+            {cases ? null : (
+              <button
+                className="secondary"
+                onClick={() =>
+                  void act("cases", () => api.evaluationCases(run.evaluation_id)).then((r) => {
+                    if (r) setCases(r.cases);
+                  })
+                }
+                disabled={busy !== null}
+              >
+                {busy === "cases" ? "Loading…" : "Show the answers"}
+              </button>
+            )}
+          </div>
+
+          {cases && (
+            <ul className="prompt-changes">
+              {cases.map((c) => (
+                <li key={c.case_id}>
+                  <span className="change-category">{c.verdict}</span>
+                  {c.reason && <p className="change-reason">{c.reason}</p>}
+                  <div className="prompt-pair">
+                    <div>
+                      <span className="chart-title">Now</span>
+                      <pre className="prompt-text">{c.before}</pre>
+                    </div>
+                    <div>
+                      <span className="chart-title">With the rewrite</span>
+                      <pre className="prompt-text proposed">{c.after}</pre>
+                    </div>
+                  </div>
+                  {c.failed_checks.length > 0 && (
+                    <p className="change-effect muted">
+                      Failed checks: {c.failed_checks.join(", ")}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+
+      {keys.length > 0 && (
+        <p className="settings-hint muted">
+          Replay keys:{" "}
+          {keys.map((k) => `${k.provider} ${k.has_key ? "added" : "not added"}`).join(", ")}.
+        </p>
+      )}
+    </section>
   );
 }

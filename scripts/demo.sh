@@ -40,6 +40,11 @@ export APP_SECRET_KEY="demo-secret-change-me"
 # The demo account is an admin here so the internal Admin Portal is explorable in
 # the throwaway demo. In production, set METER_ADMIN_EMAILS to your own admins.
 export METER_ADMIN_EMAILS="demo@costlyinfra.com"
+# Names the model that would see prompts, which prompt optimization's consent
+# screen has to state. No key: discovery and the assistant fall back as usual,
+# and the demo's prompt data is seeded rather than collected.
+export METER_DISCOVERY_BASE_URL="${METER_DISCOVERY_BASE_URL:-https://api.groq.com/openai/v1}"
+export METER_DISCOVERY_MODEL="${METER_DISCOVERY_MODEL:-openai/gpt-oss-120b}"
 
 echo "▶ Migrating + seeding the Acme Security demo tenant…"
 make db-seed

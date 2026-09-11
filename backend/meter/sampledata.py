@@ -605,6 +605,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         _add_budget_demo(conn, tenant_id)
         _add_discovery_demo(conn, tenant_id)
         _add_trace_demo(conn, tenant_id, {"triage": triage, "report": report})
+        _add_prompt_demo(conn, tenant_id, triage)
 
     return {"features": feature_count, "tenant_id": tenant_id}
 
@@ -2196,3 +2197,324 @@ def _add_trace_demo(conn, tenant_id, features: dict) -> None:
             offset_s=i * 30,
         )
         finish(t, 1, cost)
+
+
+def _add_prompt_demo(conn, tenant_id, feature_id) -> None:
+    """Consented prompt capture, a rewrite, and a finished evaluation.
+
+    The demo has no SDK wired up and no provider key, so everything this feature
+    normally collects is seeded here instead: otherwise Optimize -> Prompts is an
+    empty screen and the one thing it exists to show cannot be seen.
+
+    It reuses the prompt id and version the seeded traces already carry, so the
+    calls and cost on the Prompts screen are the same traffic the Traces screen
+    shows, rather than a second prompt nobody else references.
+    """
+    import json as _json
+    import os
+
+    from cryptography.fernet import Fernet
+
+    from .crypto import encrypt
+    from .prompt_capture import CONSENT_VERSION
+
+    # Everything this feature holds is ciphertext under the tenant's data key,
+    # which is itself wrapped by the app key. With no app key there is nothing to
+    # wrap it with, so the demo goes without prompt data rather than failing to
+    # load at all. scripts/demo.sh sets one, so the real demo is unaffected.
+    if not os.environ.get("APP_SECRET_KEY"):
+        print("Skipped the prompt demo: APP_SECRET_KEY is not set.")
+        return
+
+    row = conn.execute(
+        """
+        SELECT prompt_id, prompt_version FROM ai_span
+        WHERE tenant_id = %s AND prompt_id IS NOT NULL AND prompt_version IS NOT NULL
+        GROUP BY prompt_id, prompt_version ORDER BY count(*) DESC LIMIT 1
+        """,
+        (tenant_id,),
+    ).fetchone()
+    prompt_id, prompt_version = row if row else ("classify-ticket", "v4")
+
+    # The demo names Meter's own model, which scripts/demo.sh points at Groq.
+    conn.execute(
+        """
+        INSERT INTO prompt_capture_consent
+            (tenant_id, consent_version, granted_by, disclosed_source, disclosed_provider,
+             disclosed_model)
+        VALUES (%s, %s, %s, 'meter', 'Groq', 'openai/gpt-oss-120b')
+        ON CONFLICT (tenant_id) DO NOTHING
+        """,
+        (tenant_id, CONSENT_VERSION, DEMO_ACTOR),
+    )
+    conn.execute(
+        """
+        INSERT INTO prompt_capture_feature (tenant_id, feature_id, enabled_by)
+        VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
+        """,
+        (tenant_id, feature_id, DEMO_ACTOR),
+    )
+    key = Fernet.generate_key()
+    conn.execute(
+        "INSERT INTO prompt_data_key (tenant_id, wrapped_key) VALUES (%s, %s) "
+        "ON CONFLICT (tenant_id) DO NOTHING",
+        (tenant_id, encrypt(key.decode())),
+    )
+    seal = lambda value: Fernet(key).encrypt(_json.dumps(value).encode())  # noqa: E731
+
+    template_id = conn.execute(
+        """
+        INSERT INTO prompt_template
+            (tenant_id, feature_id, prompt_id, prompt_version, template_digest, ciphertext,
+             size_bytes, first_seen_at, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, now() - interval '9 days', now() - interval '2 hours')
+        RETURNING id
+        """,
+        (
+            tenant_id,
+            feature_id,
+            prompt_id,
+            prompt_version,
+            "d" * 64,
+            seal(_DEMO_PROMPT),
+            len(_DEMO_PROMPT),
+        ),
+    ).fetchone()[0]
+
+    for n, (alert, verdict) in enumerate(_DEMO_CASES):
+        conn.execute(
+            """
+            INSERT INTO prompt_sample
+                (tenant_id, feature_id, template_id, prompt_id, prompt_version, provider, model,
+                 ciphertext, size_bytes, tokens_in, tokens_out, latency_ms, captured_at,
+                 received_at)
+            VALUES (%s, %s, %s, %s, %s, 'anthropic', 'claude-haiku-4-5', %s, %s, %s, %s, %s,
+                    now() - (%s * interval '3 hours'), now() - (%s * interval '3 hours'))
+            """,
+            (
+                tenant_id,
+                feature_id,
+                template_id,
+                prompt_id,
+                prompt_version,
+                seal(
+                    {
+                        "input": [{"role": "user", "text": alert}],
+                        "output": verdict,
+                        "parameters": {"temperature": 0, "max_tokens": 400},
+                    }
+                ),
+                len(alert) + len(_DEMO_PROMPT),
+                1180 + n * 7,
+                86 + (n % 5),
+                910 + n * 9,
+                n,
+                n,
+            ),
+        )
+
+    candidate_id = conn.execute(
+        """
+        INSERT INTO prompt_candidate
+            (tenant_id, template_id, feature_id, prompt_id, prompt_version, ciphertext,
+             changes_cipher, change_count, original_chars, candidate_chars, provider, model,
+             status, created_by, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Groq', 'openai/gpt-oss-120b',
+                'recommended', %s, now() - interval '1 day')
+        RETURNING id
+        """,
+        (
+            tenant_id,
+            template_id,
+            feature_id,
+            prompt_id,
+            prompt_version,
+            seal(_DEMO_REWRITE),
+            seal(_DEMO_CHANGES),
+            len(_DEMO_CHANGES),
+            len(_DEMO_PROMPT),
+            len(_DEMO_REWRITE),
+            DEMO_ACTOR,
+        ),
+    ).fetchone()[0]
+
+    # A finished evaluation: measured per call, judged both ways round, decided
+    # by the rule in prompt_eval.decide().
+    better, same, worse = 6, 18, 0
+    evaluation_id = conn.execute(
+        """
+        INSERT INTO prompt_evaluation
+            (tenant_id, candidate_id, template_id, status, decision, decision_reason,
+             cases_planned, cases_done, better, same, worse, check_failures,
+             cost_before, cost_after, tokens_in_before, tokens_in_after, tokens_out_before,
+             tokens_out_after, latency_before_ms, latency_after_ms, spend, provider, model,
+             judge_model, started_by, started_at, finished_at)
+        VALUES (%s, %s, %s, 'completed', 'recommended', %s, 24, 24, %s, %s, %s, 0,
+                0.000944, 0.000508, 1180, 604, 86, 41, 930, 610, 0.0348, 'anthropic',
+                'claude-haiku-4-5', 'openai/gpt-oss-120b', %s,
+                now() - interval '1 day', now() - interval '1 day' + interval '4 minutes')
+        RETURNING id
+        """,
+        (
+            tenant_id,
+            candidate_id,
+            template_id,
+            f"No broken answers. Better on {better}, same on {same}, worse on {worse} of 24.",
+            better,
+            same,
+            worse,
+            DEMO_ACTOR,
+        ),
+    ).fetchone()[0]
+
+    for n, (_alert, verdict) in enumerate(_DEMO_CASES):
+        judged = "better" if n < better else "same"
+        conn.execute(
+            """
+            INSERT INTO prompt_evaluation_case
+                (tenant_id, evaluation_id, before_cipher, after_cipher, tokens_in_before,
+                 tokens_in_after, tokens_out_before, tokens_out_after, latency_before_ms,
+                 latency_after_ms, cost_before, cost_after, verdict, verdict_cipher,
+                 failed_checks)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '[]'::jsonb)
+            """,
+            (
+                tenant_id,
+                evaluation_id,
+                seal(
+                    f"{verdict}. This alert shows the pattern described in the third example, "
+                    "so the same classification applies."
+                ),
+                seal(verdict),
+                1180 + n * 7,
+                604 + n * 3,
+                86 + (n % 5),
+                41,
+                930 + n * 9,
+                610 + n * 5,
+                0.000944,
+                0.000508,
+                judged,
+                seal(
+                    "Same verdict, without the commentary the caller discards."
+                    if judged == "same"
+                    else "Same verdict, and it answers in the asked format."
+                ),
+            ),
+        )
+
+    for event, actor, detail, ago in (
+        (
+            "consent_granted",
+            DEMO_ACTOR,
+            {
+                "consent_version": CONSENT_VERSION,
+                "source": "meter",
+                "provider": "Groq",
+                "model": "openai/gpt-oss-120b",
+            },
+            "10 days",
+        ),
+        ("feature_enabled", DEMO_ACTOR, {}, "10 days"),
+        (
+            "candidate_generated",
+            DEMO_ACTOR,
+            {"prompt_id": prompt_id, "prompt_version": prompt_version, "changes": 3},
+            "1 day",
+        ),
+        (
+            "evaluation_started",
+            DEMO_ACTOR,
+            {"evaluation_id": str(evaluation_id), "cases": 24, "estimate": 0.0348},
+            "1 day",
+        ),
+        (
+            "evaluation_finished",
+            None,
+            {"evaluation_id": str(evaluation_id), "cases": 24, "decision": "recommended"},
+            "1 day",
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT INTO prompt_audit (tenant_id, event, actor, feature_id, detail, created_at)
+            VALUES (%s, %s, %s, %s, %s, now() - %s::interval)
+            """,
+            (tenant_id, event, actor, feature_id, _json.dumps(detail), ago),
+        )
+
+
+DEMO_ACTOR = "demo@costlyinfra.com"
+
+#: Deliberately the way a real prompt drifts: the same instruction three times,
+#: three examples that make one point, and a format the caller does not read.
+_DEMO_PROMPT = """You are a senior security analyst triaging alerts for a SOC team.
+
+Classify the alert in {alert} as one of: phishing, malware, benign, escalate.
+
+Be concise in your answer. Do not add commentary. Keep it brief.
+
+Example 1: repeated failed logins from one IP -> escalate.
+Example 2: a link to a lookalike domain in an email -> phishing.
+Example 3: a signed vendor update flagged by heuristics -> benign.
+
+Return a short paragraph explaining your reasoning, then the classification."""
+
+_DEMO_REWRITE = """You are a security analyst triaging SOC alerts.
+
+Classify the alert in {alert} as one of: phishing, malware, benign, escalate.
+
+Example: a link to a lookalike domain in an email -> phishing.
+
+Reply with the classification only."""
+
+_DEMO_CHANGES = [
+    {
+        "category": "redundancy",
+        "before": "Be concise in your answer. Do not add commentary. Keep it brief.",
+        "after": "Reply with the classification only.",
+        "reason": "Three sentences asked for the same thing; one says it.",
+        "expected_effect": "Fewer input tokens on every call.",
+    },
+    {
+        "category": "examples",
+        "before": "Example 1 ... Example 2 ... Example 3 ...",
+        "after": "Example: a link to a lookalike domain in an email -> phishing.",
+        "reason": "The three examples show one pattern, so one of them carries it.",
+        "expected_effect": "A shorter prompt with the same behaviour.",
+    },
+    {
+        "category": "output_format",
+        "before": "Return a short paragraph explaining your reasoning, then the classification.",
+        "after": "Reply with the classification only.",
+        "reason": "The caller stores only the label, so the paragraph is paid for and discarded.",
+        "expected_effect": "Around half the output tokens per call.",
+    },
+]
+
+_DEMO_CASES = [
+    ("Outbound traffic to 185.23.4.9 every 60 seconds from a finance laptop", "escalate"),
+    ("Email from acme-billing.co with a password reset link", "phishing"),
+    ("Signed Adobe updater flagged by heuristic rule 4021", "benign"),
+    ("PowerShell spawning from a Word document on HR-042", "malware"),
+    ("Seven failed SSH logins from one address, then success", "escalate"),
+    ("Newsletter with a tracking pixel from a known vendor", "benign"),
+    ("Attachment invoice.pdf.exe opened on SALES-11", "malware"),
+    ("Login from a new country 3 minutes after a local login", "escalate"),
+    ("Lookalike domain acnne.com in a supplier reply", "phishing"),
+    ("Scheduled backup service writing to an external disk", "benign"),
+    ("Registry run key added by an unsigned binary", "malware"),
+    ("Mass mailbox rule creation on a director account", "escalate"),
+    ("Shared calendar invite from a partner domain", "benign"),
+    ("Credential prompt served from a non-corporate page", "phishing"),
+    ("SMB scanning across the finance subnet", "escalate"),
+    ("Certificate renewal by the internal CA", "benign"),
+    ("Base64 payload in a scheduled task argument", "malware"),
+    ("Support reply quoting a real ticket number", "benign"),
+    ("Bulk download of the CRM export at 03:10", "escalate"),
+    ("Display-name spoof of the CFO asking for gift cards", "phishing"),
+    ("Antivirus definition update from the vendor CDN", "benign"),
+    ("Service account used interactively for the first time", "escalate"),
+    ("Macro-enabled spreadsheet from an unknown sender", "phishing"),
+    ("Nightly patch reboot of the build agents", "benign"),
+]

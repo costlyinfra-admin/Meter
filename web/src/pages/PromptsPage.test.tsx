@@ -9,7 +9,14 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api, type PromptDetail as PromptDetailData, type PromptSummary } from "../api";
+import {
+  api,
+  ApiError,
+  type Evaluation,
+  type EvaluationEstimate,
+  type PromptDetail as PromptDetailData,
+  type PromptSummary,
+} from "../api";
 import { PromptDetail, PromptsPage } from "./PromptsPage";
 
 vi.mock("../api", async (importActual) => {
@@ -22,6 +29,14 @@ vi.mock("../api", async (importActual) => {
       promptContent: vi.fn(),
       generatePromptCandidate: vi.fn(),
       discardPromptCandidate: vi.fn(),
+      latestEvaluation: vi.fn(),
+      evaluationEstimate: vi.fn(),
+      evalKeys: vi.fn(),
+      setEvalKey: vi.fn(),
+      removeEvalKey: vi.fn(),
+      startEvaluation: vi.fn(),
+      evaluation: vi.fn(),
+      evaluationCases: vi.fn(),
     },
   };
 });
@@ -89,6 +104,55 @@ const CONTENT = {
   },
 };
 
+const ESTIMATE: EvaluationEstimate = {
+  can_run: true,
+  reason: null,
+  candidate_id: "c1",
+  cases: 24,
+  provider: "anthropic",
+  model: "claude-sonnet-4-6",
+  priced: true,
+  has_key: true,
+  cost_estimate: 0.0288,
+  spent_this_month: 1.2,
+  monthly_cap: 25,
+  min_cases_for_decision: 20,
+};
+
+const RUN: Evaluation = {
+  evaluation_id: "e1",
+  candidate_id: "c1",
+  template_id: "t1",
+  status: "completed",
+  decision: "recommended",
+  decision_reason: "No broken answers. Better on 6, same on 18, worse on 0 of 24.",
+  cases_planned: 24,
+  cases_done: 24,
+  better: 6,
+  same: 18,
+  worse: 0,
+  check_failures: 0,
+  cost_before: 0.000944,
+  cost_after: 0.000508,
+  tokens_in_before: 1180,
+  tokens_in_after: 604,
+  tokens_out_before: 86,
+  tokens_out_after: 41,
+  latency_before_ms: 930,
+  latency_after_ms: 610,
+  spend: 0.0348,
+  provider: "anthropic",
+  model: "claude-sonnet-4-6",
+  judge_model: "openai/gpt-oss-120b",
+  error: "",
+  started_by: "cto@acme.com",
+  started_at: "2026-09-11T10:00:00Z",
+  finished_at: "2026-09-11T10:04:00Z",
+  calls_30d: 4200,
+  projected_monthly_saving: 1.83,
+  cases: [],
+};
+
 const renderList = () =>
   render(
     <MemoryRouter initialEntries={["/optimize/prompts"]}>
@@ -117,6 +181,10 @@ beforeEach(() => {
   });
   vi.mocked(api.prompt).mockResolvedValue(detail());
   vi.mocked(api.promptContent).mockResolvedValue(CONTENT);
+  // The testing panel loads whenever a rewrite exists: nothing tested yet.
+  vi.mocked(api.latestEvaluation).mockRejectedValue(new ApiError(404, "No evaluation yet"));
+  vi.mocked(api.evaluationEstimate).mockResolvedValue(ESTIMATE);
+  vi.mocked(api.evalKeys).mockResolvedValue({ keys: [] });
 });
 
 describe("Prompts list", () => {
@@ -230,5 +298,131 @@ describe("Prompt detail", () => {
     renderDetail();
     fireEvent.click(await screen.findByRole("button", { name: "Suggest a cheaper prompt" }));
     expect(await screen.findByText("The model found nothing to change.")).toBeInTheDocument();
+  });
+});
+
+describe("Testing a rewrite", () => {
+  const withCandidate = () =>
+    vi.mocked(api.prompt).mockResolvedValue(detail({ candidate: CANDIDATE }));
+
+  it("says what a run will cost and what is left under the cap", async () => {
+    withCandidate();
+    renderDetail();
+    expect(await screen.findByRole("heading", { name: "Testing" })).toBeInTheDocument();
+    const panel = screen.getByRole("heading", { name: "Testing" }).closest("section")!;
+    expect(panel.textContent).toContain("Replays 24 real inputs");
+    expect(panel.textContent).toContain("$0.03");
+    expect(panel.textContent).toContain("of $25.00 used this month");
+  });
+
+  it("asks for a key that can make model calls, and never echoes it back", async () => {
+    withCandidate();
+    vi.mocked(api.evaluationEstimate).mockResolvedValue({
+      ...ESTIMATE,
+      can_run: false,
+      reason: "no_key",
+      has_key: false,
+    });
+    vi.mocked(api.setEvalKey).mockResolvedValue({
+      keys: [{ provider: "anthropic", has_key: true, added_by: "cto@acme.com", added_at: "x" }],
+    });
+    renderDetail();
+    expect(await screen.findByText(/needs a key for this provider/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test this rewrite" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("anthropic API key"), {
+      target: { value: "sk-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+    await waitFor(() => expect(api.setEvalKey).toHaveBeenCalledWith("anthropic", "sk-secret"));
+    expect(screen.getByLabelText("anthropic API key")).toHaveValue("");
+  });
+
+  it("reports progress while it replays", async () => {
+    withCandidate();
+    vi.mocked(api.startEvaluation).mockResolvedValue({
+      ...RUN,
+      status: "running",
+      decision: null,
+      cases_done: 3,
+    });
+    renderDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Test this rewrite" }));
+    expect(await screen.findByText(/Replaying 3 of 24 inputs/)).toBeInTheDocument();
+  });
+
+  it("shows the measurement at a precision where the two columns differ", async () => {
+    withCandidate();
+    vi.mocked(api.latestEvaluation).mockResolvedValue(RUN);
+    renderDetail();
+    expect(await screen.findByText("Recommended")).toBeInTheDocument();
+    // A per-call cost is fractions of a cent: rounded to cents both rows would
+    // read $0.00 and the comparison would say nothing.
+    expect(screen.getByText("$0.00094")).toBeInTheDocument();
+    expect(screen.getByText("$0.00051")).toBeInTheDocument();
+    expect(screen.getByText(/Better on 6, the same on 18, worse on 0 of 24/)).toBeInTheDocument();
+    expect(screen.getByText(/each case both ways round/)).toBeInTheDocument();
+  });
+
+  it("scales the saving by the volume it was measured against", async () => {
+    withCandidate();
+    vi.mocked(api.latestEvaluation).mockResolvedValue(RUN);
+    renderDetail();
+    const line = await screen.findByText(/4,200 calls in the last 30 days/);
+    expect(line).toHaveTextContent("$1.83");
+    expect(line).toHaveTextContent(/ceiling/);
+  });
+
+  it("does not claim a saving when the rewrite is not recommended", async () => {
+    withCandidate();
+    vi.mocked(api.latestEvaluation).mockResolvedValue({
+      ...RUN,
+      decision: "not_recommended",
+      decision_reason: "3 case(s) came back broken.",
+      check_failures: 3,
+      better: 1,
+      worse: 4,
+    });
+    renderDetail();
+    expect(await screen.findByText("Not recommended")).toBeInTheDocument();
+    expect(screen.getByText("3 case(s) came back broken.")).toBeInTheDocument();
+    expect(screen.queryByText(/a month/)).not.toBeInTheDocument();
+  });
+
+  it("says a failed run left the rewrite untested", async () => {
+    withCandidate();
+    vi.mocked(api.latestEvaluation).mockResolvedValue({
+      ...RUN,
+      status: "failed",
+      decision: null,
+      error: "The provider refused a replay (401): ***",
+    });
+    renderDetail();
+    expect(await screen.findByText(/The rewrite is unchanged and untested/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test this rewrite" })).toBeInTheDocument();
+  });
+
+  it("fetches the replayed answers only when asked, because that read is audited", async () => {
+    withCandidate();
+    vi.mocked(api.latestEvaluation).mockResolvedValue(RUN);
+    vi.mocked(api.evaluationCases).mockResolvedValue({
+      cases: [
+        {
+          case_id: "k1",
+          before: "phishing, because the domain is a lookalike",
+          after: "phishing",
+          verdict: "better",
+          reason: "Same verdict, fewer words.",
+          failed_checks: [],
+        },
+      ],
+    });
+    renderDetail();
+    await screen.findByText("Recommended");
+    expect(api.evaluationCases).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show the answers" }));
+    await waitFor(() => expect(api.evaluationCases).toHaveBeenCalledWith("e1"));
+    expect(await screen.findByText("phishing, because the domain is a lookalike")).toBeVisible();
   });
 });

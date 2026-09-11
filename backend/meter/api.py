@@ -53,6 +53,7 @@ from . import (
     optimize_measured,
     otel,
     prompt_capture,
+    prompt_eval,
     prompt_optimize,
     resources,
     seats,
@@ -618,6 +619,12 @@ class PromptConsentRequest(BaseModel):
 
 class PromptFeatureRequest(BaseModel):
     enabled: bool
+
+
+class EvalKeyRequest(BaseModel):
+    """A key that can make model calls. Write-only: no read path returns it."""
+
+    api_key: str = Field(min_length=1, max_length=4096)
 
 
 #: Largest prompt sample body read before parsing: a little over the sample cap,
@@ -2067,6 +2074,84 @@ def create_app() -> FastAPI:
         if not gone:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
         return {"discarded": True}
+
+    # ---- Proving a rewrite is not worse (PO-4) --------------------------
+    @app.get("/api/prompt-optimization/eval-keys")
+    def prompt_eval_keys(user: CurrentUser) -> dict:
+        """Which providers can be replayed. Never the keys themselves."""
+        return {"keys": prompt_eval.eval_keys(user["tenant_id"])}
+
+    @app.put("/api/prompt-optimization/eval-keys/{provider}")
+    def prompt_eval_key_set(
+        provider: str, body: EvalKeyRequest, request: Request, user: CurrentUser
+    ) -> dict:
+        _customer_only(request)
+        try:
+            return {
+                "keys": prompt_eval.set_eval_key(
+                    user["tenant_id"], provider, body.api_key, user["email"]
+                )
+            }
+        except prompt_eval.EvalError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.delete("/api/prompt-optimization/eval-keys/{provider}")
+    def prompt_eval_key_remove(provider: str, request: Request, user: CurrentUser) -> dict:
+        _customer_only(request)
+        return {"keys": prompt_eval.remove_eval_key(user["tenant_id"], provider, user["email"])}
+
+    @app.get("/api/prompt-optimization/prompts/{template_id}/evaluation/estimate")
+    def prompt_evaluation_estimate(template_id: str, user: CurrentUser) -> dict:
+        """What testing this rewrite would cost, and whether it may go ahead."""
+        try:
+            return prompt_eval.estimate(user["tenant_id"], template_id)
+        except (prompt_eval.EvalError, prompt_capture.PromptCaptureError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get("/api/prompt-optimization/prompts/{template_id}/evaluation")
+    def prompt_evaluation_latest(template_id: str, user: CurrentUser) -> dict:
+        try:
+            found = prompt_eval.status(user["tenant_id"], template_id=template_id)
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No evaluation yet")
+        return found
+
+    @app.post("/api/prompt-optimization/prompts/{template_id}/evaluation")
+    def prompt_evaluation_start(template_id: str, request: Request, user: CurrentUser) -> dict:
+        """Replay real inputs through both prompts. Spends the customer's tokens.
+
+        Returns the run immediately; it reports progress while it works, because
+        replaying thirty calls twice takes minutes.
+        """
+        _customer_only(request)
+        try:
+            return prompt_eval.start_evaluation(user["tenant_id"], template_id, user["email"])
+        except (prompt_eval.EvalError, prompt_capture.PromptCaptureError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get("/api/prompt-optimization/evaluations/{evaluation_id}")
+    def prompt_evaluation_status(evaluation_id: str, user: CurrentUser) -> dict:
+        try:
+            found = prompt_eval.status(user["tenant_id"], evaluation_id)
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return found
+
+    @app.get("/api/prompt-optimization/evaluations/{evaluation_id}/cases")
+    def prompt_evaluation_cases(evaluation_id: str, request: Request, user: CurrentUser) -> dict:
+        """What each replayed case answered. Audited, like every content read."""
+        _customer_only(request)
+        try:
+            found = prompt_eval.case_content(user["tenant_id"], evaluation_id, user["email"])
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return {"cases": found}
 
     @app.get("/api/prompt-optimization/audit")
     def prompt_audit(user: CurrentUser) -> dict:

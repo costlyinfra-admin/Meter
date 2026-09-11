@@ -191,6 +191,90 @@ export interface PromptContent {
   candidate: { candidate_id: string; template: string; changes: PromptChange[] } | null;
 }
 
+/** A provider key that can make model calls, for replaying a prompt. Write-only:
+ *  `has_key` is the whole truth the API ever returns about one. */
+export interface EvalKey {
+  provider: string;
+  has_key: boolean;
+  added_by: string | null;
+  added_at: string | null;
+}
+
+/** What testing a rewrite would cost, and whether it may go ahead. */
+export interface EvaluationEstimate {
+  can_run: boolean;
+  reason: string | null;
+  candidate_id?: string | null;
+  cases: number;
+  provider?: string;
+  model?: string;
+  priced?: boolean;
+  has_key?: boolean;
+  cost_estimate?: number;
+  spent_this_month?: number;
+  monthly_cap?: number;
+  min_cases_for_decision?: number;
+}
+
+export interface EvaluationCase {
+  case_id: string;
+  verdict: "better" | "same" | "worse" | "unjudged";
+  failed_checks: string[];
+  tokens_in_before: number;
+  tokens_in_after: number;
+  tokens_out_before: number;
+  tokens_out_after: number;
+  cost_before: number;
+  cost_after: number;
+}
+
+/** One run: what it measured, and what it decided. Never prompt text. */
+export interface Evaluation {
+  evaluation_id: string;
+  candidate_id: string;
+  template_id: string;
+  status: "running" | "completed" | "failed";
+  decision: "recommended" | "not_recommended" | null;
+  decision_reason: string;
+  cases_planned: number;
+  cases_done: number;
+  better: number;
+  same: number;
+  worse: number;
+  check_failures: number;
+  /** Measured per call on the replay, priced from the price book. */
+  cost_before: number;
+  cost_after: number;
+  tokens_in_before: number;
+  tokens_in_after: number;
+  tokens_out_before: number;
+  tokens_out_after: number;
+  latency_before_ms: number;
+  latency_after_ms: number;
+  /** What the run itself cost, against the monthly cap. */
+  spend: number;
+  provider: string;
+  model: string;
+  judge_model: string;
+  error: string;
+  started_by: string;
+  started_at: string;
+  finished_at: string | null;
+  calls_30d: number;
+  /** Per-call saving carried to real volume. A ceiling, not a promise. */
+  projected_monthly_saving: number;
+  cases: EvaluationCase[];
+}
+
+export interface EvaluationCaseContent {
+  case_id: string;
+  before: string;
+  after: string;
+  verdict: string;
+  reason: string;
+  failed_checks: string[];
+}
+
 export interface PromptAuditEvent {
   event: string;
   actor: string | null;
@@ -1426,6 +1510,46 @@ export const api = {
     }),
 
   promptAudit: () => request<{ events: PromptAuditEvent[] }>("/prompt-optimization/audit"),
+
+  evalKeys: () => request<{ keys: EvalKey[] }>("/prompt-optimization/eval-keys"),
+
+  /** The key is sent once and never returned. */
+  setEvalKey: (provider: string, apiKey: string) =>
+    request<{ keys: EvalKey[] }>(`/prompt-optimization/eval-keys/${encodeURIComponent(provider)}`, {
+      method: "PUT",
+      body: JSON.stringify({ api_key: apiKey }),
+    }),
+
+  removeEvalKey: (provider: string) =>
+    request<{ keys: EvalKey[] }>(`/prompt-optimization/eval-keys/${encodeURIComponent(provider)}`, {
+      method: "DELETE",
+    }),
+
+  evaluationEstimate: (templateId: string) =>
+    request<EvaluationEstimate>(
+      `/prompt-optimization/prompts/${encodeURIComponent(templateId)}/evaluation/estimate`,
+    ),
+
+  latestEvaluation: (templateId: string) =>
+    request<Evaluation>(
+      `/prompt-optimization/prompts/${encodeURIComponent(templateId)}/evaluation`,
+    ),
+
+  /** Spends the customer's tokens. Returns the run, which reports progress. */
+  startEvaluation: (templateId: string) =>
+    request<Evaluation>(
+      `/prompt-optimization/prompts/${encodeURIComponent(templateId)}/evaluation`,
+      { method: "POST" },
+    ),
+
+  evaluation: (evaluationId: string) =>
+    request<Evaluation>(`/prompt-optimization/evaluations/${encodeURIComponent(evaluationId)}`),
+
+  /** Audited: the server records who read the replayed answers. */
+  evaluationCases: (evaluationId: string) =>
+    request<{ cases: EvaluationCaseContent[] }>(
+      `/prompt-optimization/evaluations/${encodeURIComponent(evaluationId)}/cases`,
+    ),
 
   prompts: () =>
     request<{ usage_days: number; min_samples: number; prompts: PromptSummary[] }>(
