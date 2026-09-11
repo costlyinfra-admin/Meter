@@ -4,16 +4,17 @@
  * per-call inference numbers and is the way to split inference cost per feature
  * when you route calls through one shared API key.
  *
- * Two ways through it: hand the work to a coding agent, or do it by hand. Both
- * end at the same place, so the token step and the verification panel sit
- * outside the tabs — they are what every route needs, whichever you took.
+ * Three ways through it: hand the work to a coding agent, do it by hand, or
+ * point an OpenTelemetry exporter you already run at Meter. All three end at the
+ * same place, so the token step and the verification panel sit outside the
+ * tabs — they are what every route needs, whichever you took.
  *
  * Which tab you are on lives in the URL (`?tab=` / `?guide=`), so a link to a
  * particular guide works and the browser's Back button steps between them.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, ApiError, type Feature, type HookEvent } from "../api";
+import { api, ApiError, type Feature, type HookEvent, type OtelTrace } from "../api";
 import { useAuth } from "../auth/AuthContext";
 import { ConnectorMark } from "../components/ConnectorMark";
 import { Snippet } from "../components/Snippet";
@@ -26,6 +27,14 @@ import {
   FLUSH_NODE,
   FLUSH_PYTHON,
   normalizeSlug,
+  OTEL_CONTENT_OFF,
+  OTEL_ENV_VARS,
+  OTEL_FEATURE_NODE,
+  OTEL_FEATURE_PYTHON,
+  OTEL_METER_ATTRIBUTES,
+  OTEL_READS,
+  otelCollectorSnippet,
+  otelEnvSnippet,
   RESUME_NODE,
   RESUME_PYTHON,
   SPAN_KINDS,
@@ -70,7 +79,7 @@ function AlertIcon() {
   );
 }
 
-type PrimaryTab = "ai" | "manual";
+type PrimaryTab = "ai" | "manual" | "otel";
 type NodePm = "npm" | "yarn" | "pnpm" | "bun";
 
 /** Install commands, one per manager. All four resolve the same package. */
@@ -87,7 +96,7 @@ const NODE_PMS: NodePm[] = ["npm", "yarn", "pnpm", "bun"];
 const POLL_MS = 5000;
 
 function isPrimary(value: string | null): value is PrimaryTab {
-  return value === "ai" || value === "manual";
+  return value === "ai" || value === "manual" || value === "otel";
 }
 
 function isGuide(value: string | null): value is AgentId {
@@ -127,6 +136,8 @@ export function InstallSdkPage() {
 
   // The endpoint the SDK posts to — shown so setup is copy-paste for THIS install.
   const ingestUrl = `${window.location.origin}/api/hook/events`;
+  // Where an OpenTelemetry exporter sends spans, for the same reason.
+  const otlpUrl = `${window.location.origin}/api/otel/v1/traces`;
 
   // The agent prompt names this tenant's real features, so the agent tags call
   // sites with ids that exist instead of inventing placeholders.
@@ -166,6 +177,7 @@ export function InstallSdkPage() {
   }, [authLoading, user?.org_name]);
 
   const slug = normalizeSlug(slugDraft) || suggestSlug(null);
+  const verifyRoute: VerifyRoute = tab === "otel" ? "otel" : "sdk";
 
   async function generate() {
     setError(null);
@@ -227,6 +239,7 @@ export function InstallSdkPage() {
         items={[
           { id: "ai", label: "Setup with AI" },
           { id: "manual", label: "Manual via package manager" },
+          { id: "otel", label: "OpenTelemetry" },
         ]}
         active={tab}
         onChange={(id) => select({ tab: id })}
@@ -273,7 +286,13 @@ export function InstallSdkPage() {
         <ManualGuide nodePm={nodePm} onNodePm={setNodePm} ingestUrl={ingestUrl} slug={slug} />
       </TabPanel>
 
-      <Verification />
+      <TabPanel id="otel" idPrefix="install" active={tab === "otel"}>
+        <OtelGuide otlpUrl={otlpUrl} slug={slug} />
+      </TabPanel>
+
+      {/* Keyed by route: what counts as "arrived" differs, and a panel that had
+          seen SDK events must not carry that green light onto the OTel guide. */}
+      <Verification key={verifyRoute} route={verifyRoute} />
     </div>
   );
 }
@@ -620,8 +639,124 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
 }
 
 // ---------------------------------------------------------------------------
-// Verification — shared by both routes
+// OpenTelemetry
 // ---------------------------------------------------------------------------
+function OtelGuide({ otlpUrl, slug }: { otlpUrl: string; slug: string }) {
+  return (
+    <>
+      <section className="source-section">
+        <h2>1. Point your exporter at Meter</h2>
+        <p className="muted">
+          If your app already emits OpenTelemetry traces, from OpenLLMetry, OpenInference, or
+          OpenTelemetry's own GenAI instrumentation, there is nothing to install. Add Meter as a
+          trace exporter using the application name and token above.
+        </p>
+        {/* The placeholder, never the real token: the generated one is shown
+            once, above, inside the snippet marked for session-replay masking. */}
+        <Snippet>{otelEnvSnippet(otlpUrl, slug)}</Snippet>
+        <dl className="env-table">
+          {OTEL_ENV_VARS.map((v) => (
+            <div key={v.name}>
+              <dt>
+                <code>{v.name}</code>
+                {v.required && <span className="badge-required">Required</span>}
+              </dt>
+              <dd className="muted">{v.note}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="muted">
+          Use the <code>TRACES</code> variables, not the general{" "}
+          <code>OTEL_EXPORTER_OTLP_ENDPOINT</code>. Meter only receives traces, and the general one
+          would send your metrics and logs here too. Write the space after <code>Bearer</code> as{" "}
+          <code>%20</code>.
+        </p>
+
+        <span className="chart-title">Already running a Collector?</span>
+        <Snippet>{otelCollectorSnippet(otlpUrl)}</Snippet>
+        <p className="muted">
+          Add Meter next to the exporters you have. Nothing else in your pipeline changes.
+        </p>
+      </section>
+
+      <section className="source-section">
+        <h2>2. Turn content capture off</h2>
+        <p className="muted">
+          Meter stores token counts, model, timing and cost. It <strong>never</strong> stores
+          prompts, responses, tool arguments or retrieved documents. Anything like that in a span is
+          discarded the moment it arrives, and your exporter is told so. But discarded on arrival
+          still means it crossed the network, so switch it off where it starts:
+        </p>
+        <Snippet>{OTEL_CONTENT_OFF}</Snippet>
+      </section>
+
+      <section className="source-section">
+        <h2>3. Attribute runs to a feature</h2>
+        <p className="muted">
+          If a whole service is one feature, say so once. Copy the feature's ID from its page under{" "}
+          <Link to="/features" className="link">
+            Features
+          </Link>
+          :
+        </p>
+        <Snippet>{`OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production,meter.feature_id=<feature-id>`}</Snippet>
+        <p className="muted">
+          If one service serves several features, set the feature per run with{" "}
+          <strong>baggage</strong>. OpenTelemetry does not copy a span's attributes onto its
+          children, and the spans for your model calls are made by your instrumentation library, not
+          by you. Baggage is copied onto every span started inside it, including those.
+        </p>
+        <span className="chart-title">Python</span>
+        <Snippet>{OTEL_FEATURE_PYTHON}</Snippet>
+        <span className="chart-title">Node</span>
+        <Snippet>{OTEL_FEATURE_NODE}</Snippet>
+        <p className="muted">
+          A run with no feature still counts. Its cost lands in the <em>Unattributed</em> bucket
+          rather than disappearing.
+        </p>
+        <dl className="env-table">
+          {OTEL_METER_ATTRIBUTES.map(([name, what]) => (
+            <div key={name}>
+              <dt>
+                <code>{name}</code>
+              </dt>
+              <dd className="muted">{what}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <section className="source-section">
+        <h2>4. What Meter reads</h2>
+        <p className="muted">
+          A fixed list, and nothing else. An attribute not on it, and every span event, is never
+          read, so a convention that starts carrying content tomorrow is already excluded.
+        </p>
+        <dl className="env-table">
+          {OTEL_READS.map(([source, becomes]) => (
+            <div key={source}>
+              <dt>
+                <code>{source}</code>
+              </dt>
+              <dd className="muted">{becomes}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="muted">
+          Model calls are priced with the same rates as the SDK and reconciled against your provider
+          bill the same way. A run instrumented both ways is still one run.
+        </p>
+      </section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Verification — shared by every route
+// ---------------------------------------------------------------------------
+/** Which kind of arrival the panel waits for. SDK events and OTLP traces are
+ *  counted separately, so neither route is credited with the other's work. */
+type VerifyRoute = "sdk" | "otel";
 /**
  * A running hourglass, for the state where Meter is listening and nothing has
  * arrived yet.
@@ -664,8 +799,9 @@ function Hourglass() {
   );
 }
 
-function Verification() {
+function Verification({ route }: { route: VerifyRoute }) {
   const [event, setEvent] = useState<HookEvent | null>(null);
+  const [run, setRun] = useState<OtelTrace | null>(null);
   const [failed, setFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -676,12 +812,22 @@ function Verification() {
 
     async function check() {
       try {
-        const { event: found } = await api.recentHookEvent();
-        if (!live) return;
-        setFailed(false);
-        if (found) {
-          setEvent(found); // arrived — stop asking
-          return;
+        if (route === "otel") {
+          const { trace: found } = await api.recentOtelTrace();
+          if (!live) return;
+          setFailed(false);
+          if (found) {
+            setRun(found); // arrived — stop asking
+            return;
+          }
+        } else {
+          const { event: found } = await api.recentHookEvent();
+          if (!live) return;
+          setFailed(false);
+          if (found) {
+            setEvent(found); // arrived — stop asking
+            return;
+          }
         }
       } catch (err) {
         if (!live) return;
@@ -698,7 +844,65 @@ function Verification() {
       live = false;
       stop();
     };
-  }, [stop]);
+  }, [stop, route]);
+
+  if (route === "otel") {
+    return (
+      <section className="source-section verify-section">
+        <h2>Test instrumentation</h2>
+        {run ? (
+          <>
+            <p className="verify-state ok" role="status">
+              <span className="verify-dot ok" aria-hidden /> Spans received
+            </p>
+            <dl className="verify-facts">
+              <div>
+                <dt>Application</dt>
+                <dd>{run.application}</dd>
+              </div>
+              <div>
+                <dt>Run</dt>
+                <dd>{run.operation_name}</dd>
+              </div>
+              <div>
+                <dt>Steps</dt>
+                <dd>{run.span_count}</dd>
+              </div>
+              <div>
+                <dt>Last received</dt>
+                <dd>{new Date(run.received_at).toLocaleString()}</dd>
+              </div>
+            </dl>
+            <p className="muted">
+              Open{" "}
+              <Link to="/traces" className="link">
+                Traces
+              </Link>{" "}
+              to see the run, each of its steps, and what they cost.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="verify-state" role="status">
+              <Hourglass /> Waiting for your first OpenTelemetry trace…
+            </p>
+            <p className="muted">
+              Run something your instrumentation traces. Exporters send in batches, so allow a few
+              seconds. If nothing arrives, look at your exporter's own log: a <code>401</code> means
+              the token header is wrong, and a <code>404</code> usually means the general{" "}
+              <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> was set to the full URL, so the path was
+              added twice.
+            </p>
+            {failed && (
+              <p className="muted" role="status">
+                Could not reach Meter just now. Still trying.
+              </p>
+            )}
+          </>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="source-section verify-section">

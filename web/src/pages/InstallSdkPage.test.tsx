@@ -14,6 +14,7 @@ vi.mock("../api", async (importActual) => {
       createHookToken: vi.fn(),
       listFeatures: vi.fn(),
       recentHookEvent: vi.fn(),
+      recentOtelTrace: vi.fn(),
       aiApplications: vi.fn(),
     },
   };
@@ -45,6 +46,7 @@ beforeEach(() => {
   vi.mocked(api.me).mockResolvedValue({ id: "u1", tenant_id: "t-123", email: "cto@acme.com" });
   vi.mocked(api.listFeatures).mockResolvedValue([]);
   vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
+  vi.mocked(api.recentOtelTrace).mockResolvedValue({ trace: null });
   vi.mocked(api.aiApplications).mockResolvedValue({
     applications: [],
     from: "2026-08-10",
@@ -491,5 +493,106 @@ describe("InstallSdkPage — the manual route teaches the SDK that exists", () =
     expect(document.getElementById("install-panel-manual")!.textContent).not.toContain(
       "hk_live_secret",
     );
+  });
+});
+
+describe("InstallSdkPage — OpenTelemetry", () => {
+  const panel = () => document.getElementById("install-panel-otel")!;
+
+  it("is a third route, reachable from the URL", async () => {
+    renderPage("/install-sdk?tab=otel");
+    await screen.findByRole("heading", { name: "Install SDK" });
+    expect(tabIn("Installation method", "OpenTelemetry")).toHaveAttribute("aria-selected", "true");
+    expect(
+      within(panel()).getByRole("heading", { name: "1. Point your exporter at Meter" }),
+    ).toBeVisible();
+  });
+
+  it("gives this install's own OTLP endpoint", async () => {
+    renderPage("/install-sdk?tab=otel");
+    await screen.findByRole("heading", { name: "Install SDK" });
+    expect(panel().textContent).toContain(`${window.location.origin}/api/otel/v1/traces`);
+  });
+
+  it("uses the trace-only exporter variables, so metrics and logs are not sent here", async () => {
+    renderPage("/install-sdk?tab=otel");
+    await screen.findByRole("heading", { name: "Install SDK" });
+    const config = panel().querySelector("pre")!.textContent!;
+    expect(config).toContain("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=");
+    expect(config).not.toMatch(/^OTEL_EXPORTER_OTLP_ENDPOINT=/m);
+    // The spec parses header values as baggage, where a bare space is invalid.
+    expect(config).toContain("Authorization=Bearer%20<your token>");
+  });
+
+  it("never repeats the live token in the exporter config", async () => {
+    vi.mocked(api.createHookToken).mockResolvedValue({ token: "tok_live_secret" });
+    renderPage("/install-sdk?tab=otel");
+    fireEvent.click(await screen.findByRole("button", { name: /Generate ingest token/ }));
+    await screen.findByText(/It is not shown again/);
+    expect(panel().textContent).not.toContain("tok_live_secret");
+  });
+
+  it("tells people to switch content capture off at the source", async () => {
+    renderPage("/install-sdk?tab=otel");
+    await screen.findByRole("heading", { name: "Install SDK" });
+    const text = panel().textContent!;
+    expect(text).toContain("TRACELOOP_TRACE_CONTENT=false");
+    expect(text).toContain("OPENINFERENCE_HIDE_INPUTS=true");
+    expect(text).toContain("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false");
+  });
+
+  it("recommends baggage for per-run features, since attributes do not reach child spans", async () => {
+    renderPage("/install-sdk?tab=otel");
+    await screen.findByRole("heading", { name: "Install SDK" });
+    const text = panel().textContent!;
+    expect(text).toContain("BaggageSpanProcessor");
+    expect(text).toContain("meter.feature_id");
+  });
+
+  it("waits for an OTLP trace, and is not satisfied by SDK events", async () => {
+    // An organization already on the SDK must not see a green light here for
+    // an exporter it has not configured.
+    vi.mocked(api.recentHookEvent).mockResolvedValue({
+      event: {
+        feature_id: null,
+        feature_name: null,
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        requests: 1,
+        received_at: "2026-09-10T10:00:00Z",
+      },
+    });
+    renderPage("/install-sdk?tab=otel");
+    expect(
+      await screen.findByText(/Waiting for your first OpenTelemetry trace/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Events received")).not.toBeInTheDocument();
+    expect(api.recentHookEvent).not.toHaveBeenCalled();
+  });
+
+  it("reports the run once one arrives", async () => {
+    vi.mocked(api.recentOtelTrace).mockResolvedValue({
+      trace: {
+        application: "support-agent",
+        operation_name: "resolve-ticket",
+        span_count: 4,
+        received_at: "2026-09-10T10:00:00Z",
+      },
+    });
+    renderPage("/install-sdk?tab=otel");
+    const verify = (await screen.findByText("Spans received")).closest("section")!;
+    expect(within(verify).getByText("support-agent")).toBeInTheDocument();
+    expect(within(verify).getByText("resolve-ticket")).toBeInTheDocument();
+    expect(within(verify).getByText("4")).toBeInTheDocument();
+  });
+
+  it("switches what it waits for when the route changes", async () => {
+    renderPage("/install-sdk?tab=manual");
+    expect(await screen.findByText(/Waiting for your first Meter event/)).toBeInTheDocument();
+    fireEvent.click(tabIn("Installation method", "OpenTelemetry"));
+    expect(
+      await screen.findByText(/Waiting for your first OpenTelemetry trace/),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(api.recentOtelTrace).toHaveBeenCalled());
   });
 });

@@ -137,3 +137,119 @@ await meter.resume(job.traceContext, async (run) => run.tool("process", process)
 export const FLUSH_PYTHON = `meter.flush()          # Python: blocks briefly, returns whether the queue drained`;
 
 export const FLUSH_NODE = `await meter.flush();   // Node: await it before the process exits`;
+
+// ---------------------------------------------------------------------------
+// OpenTelemetry — an exporter you already run, pointed at Meter
+// ---------------------------------------------------------------------------
+
+/**
+ * Trace-specific variables, on purpose. The generic OTEL_EXPORTER_OTLP_ENDPOINT
+ * would send metrics and logs here too, and Meter only receives traces; it also
+ * has the exporter append `/v1/traces` itself, which turns a pasted full URL
+ * into a 404. The space after "Bearer" is written %20 because the spec parses
+ * these values as W3C baggage, where a bare space is not allowed.
+ */
+export function otelEnvSnippet(otlpUrl: string, slug: string): string {
+  return `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${otlpUrl}
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer%20<your token>
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=${slug}
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production`;
+}
+
+export const OTEL_ENV_VARS = [
+  {
+    name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    required: true,
+    note: "Where spans go. The full URL, exactly as shown.",
+  },
+  {
+    name: "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    required: true,
+    note: "Your ingest token. Secret. Never commit it.",
+  },
+  {
+    name: "OTEL_SERVICE_NAME",
+    required: false,
+    note: "Becomes the application in Meter. Defaults to “default”.",
+  },
+  {
+    name: "OTEL_RESOURCE_ATTRIBUTES",
+    required: false,
+    note: "deployment.environment.name sets the environment; service.version the release.",
+  },
+];
+
+export function otelCollectorSnippet(otlpUrl: string): string {
+  return `exporters:
+  otlphttp/meter:
+    traces_endpoint: ${otlpUrl}
+    headers:
+      Authorization: "Bearer \${env:METER_INGEST_TOKEN}"
+    compression: gzip
+
+service:
+  pipelines:
+    traces:
+      exporters: [otlphttp/meter]   # alongside the exporters you already have`;
+}
+
+export const OTEL_CONTENT_OFF = `# OpenLLMetry / Traceloop
+TRACELOOP_TRACE_CONTENT=false
+
+# OpenInference (Arize Phoenix, and its LangChain and LlamaIndex instrumentors)
+OPENINFERENCE_HIDE_INPUTS=true
+OPENINFERENCE_HIDE_OUTPUTS=true
+
+# OpenTelemetry's own GenAI instrumentations: off by default, keep it off
+OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`;
+
+export const OTEL_FEATURE_PYTHON = `# pip install opentelemetry-processor-baggage
+from opentelemetry import baggage, context
+from opentelemetry.processor.baggage import BaggageSpanProcessor
+
+# once, where you set up tracing: copy meter.* baggage onto every span
+provider.add_span_processor(BaggageSpanProcessor(lambda key: key.startswith("meter.")))
+
+# per run: every span started inside, including the model calls your
+# instrumentation creates, carries the feature
+token = context.attach(baggage.set_baggage("meter.feature_id", "<feature-id>"))
+try:
+    resolve_ticket(ticket)
+finally:
+    context.detach(token)`;
+
+export const OTEL_FEATURE_NODE = `// npm install @opentelemetry/baggage-span-processor
+import { context, propagation } from "@opentelemetry/api";
+import { BaggageSpanProcessor } from "@opentelemetry/baggage-span-processor";
+
+// once: add to spanProcessors where you construct your tracer provider
+const meterBaggage = new BaggageSpanProcessor((key) => key.startsWith("meter."));
+
+// per run
+const bag = propagation.createBaggage({ "meter.feature_id": { value: "<feature-id>" } });
+await context.with(propagation.setBaggage(context.active(), bag), () => resolveTicket(ticket));`;
+
+/** Meter's own span attributes: the only place these are read from. */
+export const OTEL_METER_ATTRIBUTES = [
+  ["meter.feature_id", "The feature a run's cost belongs to. Without it, cost is Unattributed."],
+  [
+    "meter.customer_id",
+    "Your own reference for the customer the run served, for cost per customer.",
+  ],
+  ["meter.application", "Overrides the service name, when one service hosts several applications."],
+  [
+    "meter.prompt_id",
+    "A prompt's name, to compare what its versions cost. Never the prompt itself.",
+  ],
+];
+
+/** What Meter reads from a span. Everything else, span events included, is not read. */
+export const OTEL_READS = [
+  ["service.name", "Application"],
+  ["gen_ai.system", "Provider"],
+  ["gen_ai.response.model, else gen_ai.request.model", "Model"],
+  ["gen_ai.usage.input_tokens and output_tokens", "Tokens, and from them cost"],
+  ["Span status", "Whether the step and its run succeeded"],
+  ["The span with no parent", "The run: its name, start and end"],
+];

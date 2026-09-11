@@ -74,6 +74,11 @@ SPAN_EVENTS = ("span.started", "span.completed", "span.failed", "span.cancelled"
 EVENT_TYPES = TRACE_EVENTS + SPAN_EVENTS
 
 SPAN_KINDS = ("workflow", "llm", "embedding", "retrieval", "tool", "guardrail", "evaluation")
+
+#: How a trace reached Meter: Meter's SDK, or an OpenTelemetry exporter whose
+#: spans otel.py translated. Recorded, never inferred, so Install SDK can say
+#: whether THIS route is reporting rather than whether anything is.
+SOURCES = ("sdk", "otel")
 TERMINAL = {
     "trace.completed": "success",
     "trace.failed": "error",
@@ -301,7 +306,7 @@ def _period_of(when: dt.datetime) -> dt.date:
     return when.date().replace(day=1)
 
 
-def _upsert_trace(conn, tenant_id, app_id, feature_id, ev, now) -> tuple[str, str]:
+def _upsert_trace(conn, tenant_id, app_id, feature_id, ev, now, source) -> tuple[str, str]:
     """Create or touch the trace this event belongs to. Returns (id, status).
 
     Every event touches the trace, which is what keeps a busy agent alive
@@ -319,8 +324,9 @@ def _upsert_trace(conn, tenant_id, app_id, feature_id, ev, now) -> tuple[str, st
         """
         INSERT INTO ai_trace
             (tenant_id, application_id, feature_id, external_trace_id, operation_name,
-             customer_ref, environment, release_version, started_at, last_activity_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             customer_ref, environment, release_version, started_at, last_activity_at,
+             source)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (tenant_id, external_trace_id) DO UPDATE SET
             -- Never regress to a placeholder: a span arriving before its
             -- trace.started names the trace after its own operation, and the
@@ -348,6 +354,9 @@ def _upsert_trace(conn, tenant_id, app_id, feature_id, ev, now) -> tuple[str, st
             ev.get("release_version"),
             ev["occurred_at"],
             now,
+            # First writer wins and is never overwritten: a run instrumented
+            # both ways is still one run, and the ON CONFLICT above leaves it.
+            source,
         ),
     ).fetchone()
     return str(row[0]), row[1]
@@ -494,7 +503,9 @@ def _bump_span_count(conn, trace_id: str, current_span: Optional[str]) -> None:
     )
 
 
-def ingest(tenant_id: str, events: list, batch_id: Optional[str] = None) -> dict:
+def ingest(
+    tenant_id: str, events: list, batch_id: Optional[str] = None, source: str = "sdk"
+) -> dict:
     """Apply a batch of lifecycle events. Idempotent, transactional, bounded.
 
     One transaction for the whole batch, so a batch either lands or does not —
@@ -507,6 +518,8 @@ def ingest(tenant_id: str, events: list, batch_id: Optional[str] = None) -> dict
     """
     from . import hook  # imported here: hook imports pricing, this avoids a cycle
 
+    if source not in SOURCES:
+        raise TraceError(f"source must be one of: {', '.join(SOURCES)}.")
     if not isinstance(events, list):
         raise TraceError("events must be a list.")
     if len(events) > MAX_EVENTS_PER_BATCH:
@@ -545,7 +558,7 @@ def ingest(tenant_id: str, events: list, batch_id: Optional[str] = None) -> dict
             if feature_id is not None and feature_id not in valid_features:
                 feature_id = None
             app_id = applications.resolve(conn, tenant_id, ev.get("application") or "default")
-            trace_id, _status = _upsert_trace(conn, tenant_id, app_id, feature_id, ev, now)
+            trace_id, _status = _upsert_trace(conn, tenant_id, app_id, feature_id, ev, now, source)
             traces_touched.add(trace_id)
             kind = ev["event_type"]
 
@@ -666,3 +679,35 @@ def ingest(tenant_id: str, events: list, batch_id: Optional[str] = None) -> dict
             hook.record_batch(conn, tenant_id, batch_id, accepted, costed)
 
     return {"accepted": accepted, "cost": float(costed), "traces": len(traces_touched)}
+
+
+def recent_trace(tenant_id: str, source: str) -> Optional[dict]:
+    """The newest trace that arrived by `source`, or None.
+
+    Answers "is my OpenTelemetry exporter reporting" and nothing more: which
+    application, which run, how many steps, when. No tokens, no cost, no customer
+    reference — the verification panel does not need them, so it does not get
+    them. Runs under RLS; the tenant is never a parameter the caller chooses.
+    """
+    if source not in SOURCES:
+        raise TraceError(f"source must be one of: {', '.join(SOURCES)}.")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            """
+            SELECT a.slug, t.operation_name, t.span_count, t.updated_at
+            FROM ai_trace t
+            JOIN ai_application a ON a.id = t.application_id
+            WHERE t.source = %s
+            ORDER BY t.updated_at DESC
+            LIMIT 1
+            """,
+            (source,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "application": row[0],
+        "operation_name": row[1],
+        "span_count": int(row[2]),
+        "received_at": row[3].isoformat(),
+    }

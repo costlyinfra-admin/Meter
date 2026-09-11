@@ -411,6 +411,14 @@ export interface RepoList {
 /** The newest thing the SDK has reported, for the Install SDK verification
  *  panel. Null until one arrives. Deliberately thin — enough to confirm an
  *  install and nothing from the call itself. */
+/** What the OpenTelemetry setup guide shows once an exporter has reported. */
+export interface OtelTrace {
+  application: string;
+  operation_name: string;
+  span_count: number;
+  received_at: string;
+}
+
 export interface HookEvent {
   /** Null when the event carried no feature: the Unattributed bucket. */
   feature_id: string | null;
@@ -1389,6 +1397,9 @@ export const api = {
     }),
 
   recentHookEvent: () => request<{ event: HookEvent | null }>("/hook/recent"),
+
+  /** The newest trace that arrived over OTLP. SDK traces never count here. */
+  recentOtelTrace: () => request<{ trace: OtelTrace | null }>("/otel/recent"),
 
   discoveryRuns: () =>
     request<{ runs: DiscoveryRun[]; coverage: DiscoveryCoverage }>("/discovery/runs"),

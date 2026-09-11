@@ -313,6 +313,22 @@ Hook totals are **reconciled against the provider's authoritative bill** each
 period; any gap surfaces in Unattributed rather than corrupting a feature's number.
 See [`sdk/`](sdk) for the Python and Node packages.
 
+### Already using OpenTelemetry?
+
+Meter also accepts OTLP/HTTP traces, so an application instrumented with
+OpenLLMetry, OpenInference or OpenTelemetry's GenAI conventions can report without
+the SDK. Point a trace exporter at it:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://<your-meter>/api/otel/v1/traces
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer%20<ingest token>
+```
+
+Spans are translated into the same runs and steps the SDK records
+([`backend/meter/otel.py`](backend/meter/otel.py)) and priced the same way. Only a
+fixed list of attributes is read. Prompt and response content, span events, and any
+attribute not on that list are never read or stored.
+
 ## Deploy your own instance
 
 Meter ships as a **single Docker image** that serves the API and the web app,

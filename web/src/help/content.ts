@@ -454,6 +454,34 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
         ],
       },
+      {
+        slug: "opentelemetry",
+        title: "Using OpenTelemetry instead",
+        summary:
+          "Already tracing with OpenTelemetry? Point an exporter at Meter; nothing to install.",
+        blocks: [
+          p(
+            "If your application already emits OpenTelemetry traces — from OpenLLMetry, OpenInference, or OpenTelemetry's own GenAI instrumentation — Meter reads them directly. You add Meter as a trace exporter: no SDK, and no change at the call site. Copy-paste configuration with your own endpoint is on [Install SDK](/install-sdk), under **OpenTelemetry**.",
+          ),
+          p(
+            "Spans become the same runs and steps the SDK records, priced with the same rates and reconciled against your provider bill the same way. Meter reads a fixed list of attributes:",
+          ),
+          list(
+            "`service.name` — the application",
+            "`gen_ai.system` — the provider",
+            "`gen_ai.response.model`, or else `gen_ai.request.model` — the model",
+            "`gen_ai.usage.input_tokens` and `output_tokens` — tokens, and from them cost",
+            "the span with no parent — the run, with its name, start and end",
+            "`meter.feature_id` and `meter.customer_id` — the feature and customer, when you set them",
+          ),
+          p(
+            "Nothing else is read: no other attribute, and no span event. Prompt and response content that instrumentation attaches is discarded on arrival and never stored, and the export response says so. Turn content capture off in your instrumentation anyway — discarded on arrival still means it was sent.",
+          ),
+          note(
+            "OpenTelemetry does not copy a span's attributes onto its children, and the spans for model calls are made by your instrumentation library, not by you. So set `meter.feature_id` for a whole service with `OTEL_RESOURCE_ATTRIBUTES`, or per run with baggage and a `BaggageSpanProcessor`. A feature set only on the run's own span reaches the steps exported alongside it, but not steps exported earlier — and in a long run they usually are.",
+          ),
+        ],
+      },
     ],
   },
 
@@ -1000,6 +1028,23 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
           p(
             "A wrong token produces no error in your application — that is intentional, since metering must never break your request path — so the token is worth checking explicitly.",
+          ),
+        ],
+      },
+      {
+        slug: "otel-not-reporting",
+        title: "OpenTelemetry is configured but nothing appears",
+        summary: "The wrong variable, an unencoded header, batching delay, or no token counts.",
+        blocks: [
+          steps(
+            "**Read your exporter's log.** Unlike the SDK, an OpenTelemetry exporter reports failures. A `401` means the token header is wrong; a `404` means the URL is.",
+            "**Use the traces-specific variable.** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes the full URL as it is. The general `OTEL_EXPORTER_OTLP_ENDPOINT` appends `/v1/traces` itself, so given the full URL it asks for the path twice.",
+            "**Encode the header.** Write `Authorization=Bearer%20<token>`. The value is parsed as W3C baggage, where a bare space is not allowed.",
+            "**Wait a few seconds.** Exporters batch spans and send them on a timer.",
+            "**Check the spans carry token counts.** A span with no `gen_ai.usage` attributes is recorded as a step but costs nothing, because there is nothing to price.",
+          ),
+          p(
+            "If runs appear but all of their cost is Unattributed, the feature is not reaching the model-call spans. See [Using OpenTelemetry instead](/help/sdk/opentelemetry).",
           ),
         ],
       },

@@ -10,15 +10,18 @@ Run locally:  uvicorn --factory meter.api:create_app --reload
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import time
+import zlib
 from decimal import Decimal
 from typing import Annotated, Literal, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import (
@@ -48,6 +51,7 @@ from . import (
     infrastructure,
     okta,
     optimize_measured,
+    otel,
     resources,
     seats,
     settings,
@@ -62,6 +66,113 @@ logger = logging.getLogger("meter.api")
 #: Where "Contact support" in the assistant writes to. Overridable so a fork, or
 #: a customer running their own deployment, can point it at their own desk.
 SUPPORT_EMAIL = os.environ.get("METER_SUPPORT_EMAIL", "support@costlyinfra.com")
+
+#: Largest OTLP body accepted, before and after decompression. Exporters batch a
+#: few hundred spans — well under a megabyte — so both bounds are far above any
+#: real export while stopping a small gzip body from inflating without limit.
+OTLP_MAX_BODY_BYTES = 8 * 1024 * 1024
+OTLP_MAX_INFLATED_BYTES = 32 * 1024 * 1024
+
+
+class _OtlpBodyError(Exception):
+    """A body that could not be read, carrying the status that says why.
+
+    The status matters to whoever reads the exporter's log: a corrupt gzip body
+    reported as "too large" sends them to lower a batch size that was never the
+    problem.
+    """
+
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def _otlp_body(request: Request) -> bytes:
+    """The request body, bounded, and inflated if the exporter gzipped it.
+
+    The OpenTelemetry Collector's otlphttp exporter compresses by default, so
+    gzip is the normal case, not an edge. Inflation is capped by output size —
+    a compressed-size limit alone would let a tiny body expand into gigabytes.
+    """
+    chunks: list = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > OTLP_MAX_BODY_BYTES:
+            raise _OtlpBodyError(413, "Export is too large. Lower the exporter's batch size.")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+
+    encoding = request.headers.get("content-encoding", "").strip().lower()
+    if encoding in ("", "identity"):
+        return raw
+    if encoding != "gzip":
+        raise _OtlpBodyError(415, "Only gzip compression is supported.")
+    inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        inflated = inflater.decompress(raw, OTLP_MAX_INFLATED_BYTES)
+    except zlib.error as exc:
+        raise _OtlpBodyError(400, "Body is not valid gzip.") from exc
+    if inflater.unconsumed_tail:
+        raise _OtlpBodyError(413, "Export is too large once decompressed.")
+    return inflated
+
+
+def _otlp_message(result: dict) -> str:
+    """The warning OTLP carries back to the sender, or '' when there is none.
+
+    `partialSuccess.errorMessage` is the protocol's own channel for "accepted,
+    but you should know": collectors log it as a warning, which is the one place
+    the person who configured the exporter will actually look.
+    """
+    notes = []
+    if result.get("content_dropped"):
+        notes.append(
+            "Prompt or response content arrived and was discarded; Meter stores "
+            "only usage. Turn content capture off in your instrumentation so it "
+            "is not sent at all."
+        )
+    if result.get("skipped"):
+        notes.append(f"{result['skipped']} span(s) had no trace id, span id or timestamp.")
+    return " ".join(notes)
+
+
+def _otlp_success(result: dict, protobuf: bool) -> Response:
+    message = _otlp_message(result)
+    rejected = int(result.get("skipped") or 0)
+    if protobuf:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceResponse,
+        )
+
+        reply = ExportTraceServiceResponse()
+        if message or rejected:
+            reply.partial_success.rejected_spans = rejected
+            reply.partial_success.error_message = message
+        return Response(reply.SerializeToString(), media_type="application/x-protobuf")
+    body: dict = {}
+    if message or rejected:
+        body["partialSuccess"] = {"rejectedSpans": str(rejected), "errorMessage": message}
+    return Response(json.dumps(body), media_type="application/json")
+
+
+def _otlp_error(code: int, message: str, protobuf: bool) -> Response:
+    """An OTLP error body: a google.rpc.Status, in the request's encoding."""
+    if protobuf:
+        try:
+            from google.rpc import status_pb2  # type: ignore[import-not-found]
+
+            return Response(
+                status_pb2.Status(message=message).SerializeToString(),
+                status_code=code,
+                media_type="application/x-protobuf",
+            )
+        except Exception:
+            pass  # googleapis-common-protos absent: a JSON body still says why
+    return Response(
+        json.dumps({"message": message}), status_code=code, media_type="application/json"
+    )
+
 
 #: The named review periods every window-scoped endpoint accepts.
 _RANGE_RE = "^(this_month|last_month|last_3_months|last_6_months|last_12_months)$"
@@ -1360,6 +1471,61 @@ def create_app() -> FastAPI:
             # Every one of these is something about the payload the caller can
             # fix, including a refusal to accept prompt or response content.
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # ---- OpenTelemetry as a source ---------------------------------------
+    # An OTLP/HTTP trace receiver. The setup guide points exporters here with
+    #   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=<origin>/api/otel/v1/traces
+    # — the traces-only variable, used as-is. The general OTEL_EXPORTER_OTLP_ENDPOINT
+    # set to <origin>/api/otel would also resolve here, but it sends metrics and
+    # logs too, and Meter has no receiver for either. Same ingest token as the
+    # SDK, sent as a header: the tenant comes from that token, never the body.
+    @app.post("/api/otel/v1/traces")
+    async def ingest_otlp_traces(request: Request) -> Response:
+        """OTLP spans in, Meter traces out. See otel.py for what is read.
+
+        Async only to read the raw body, which may be protobuf and may be
+        gzipped; every database touch is pushed to the threadpool so a large
+        export cannot stall the event loop for everyone else.
+        """
+        tenant_id = await run_in_threadpool(_ingest_tenant, request)
+        media = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        protobuf = media in ("application/x-protobuf", "application/protobuf")
+        if not protobuf and media not in ("application/json", ""):
+            return _otlp_error(
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                "Send application/x-protobuf or application/json.",
+                protobuf=False,
+            )
+
+        try:
+            body = await _otlp_body(request)
+        except _OtlpBodyError as exc:
+            return _otlp_error(exc.status_code, str(exc), protobuf)
+
+        try:
+            if protobuf:
+                payload = otel.from_protobuf(body)
+            else:
+                try:
+                    payload = json.loads(body or b"{}")
+                except ValueError as exc:
+                    raise otel.OtelError("Body is not valid JSON.") from exc
+            result = await run_in_threadpool(otel.ingest, tenant_id, payload)
+        except (otel.OtelError, traces.TraceError, applications.ApplicationError) as exc:
+            # 400 is deliberate: OTLP exporters do not retry it, and nothing
+            # about resending the same malformed payload would help.
+            return _otlp_error(status.HTTP_400_BAD_REQUEST, str(exc), protobuf)
+
+        return _otlp_success(result, protobuf)
+
+    @app.get("/api/otel/recent")
+    def otel_recent(user: CurrentUser) -> dict:
+        """Has an OpenTelemetry exporter reported yet? Drives the setup guide.
+
+        Only traces that arrived over OTLP count. An organization already using
+        the SDK must not see a green light here for work it has not done.
+        """
+        return {"trace": traces.recent_trace(user["tenant_id"], "otel")}
 
     @app.get("/api/hook/recent")
     def hook_recent(user: CurrentUser) -> dict:
