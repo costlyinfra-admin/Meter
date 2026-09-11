@@ -341,6 +341,9 @@ export interface ConnectorStatus {
   name: string;
   category: string;
   connected: boolean;
+  /** When the stored credential was last written. The credential itself is
+   *  never returned by any route — this is all the server says about it. */
+  credential_set_at?: string | null;
 }
 
 export interface FeatureSignal {

@@ -79,22 +79,42 @@ class ConnectorStatus(TypedDict):
     name: str
     category: str
     connected: bool
+    #: When the stored secret was last written, or None when there is none. The
+    #: secret itself is never exposed — this is the only fact about it that
+    #: leaves the server.
+    credential_set_at: Optional[str]
 
 
 def save_credential(
     tenant_id: str, connector_type: str, secret: str, label: Optional[str] = None
 ) -> None:
-    """Encrypt and store a connector secret for a tenant."""
+    """Encrypt and store a connector secret, replacing any the tenant already had.
+
+    Saving the same connector twice is how a token is rotated, and rotation is
+    usually a response to a token being leaked or over-scoped. Keeping the old
+    ciphertext would defeat that: the compromised secret would stay in the
+    database, decryptable with the same key, for as long as the tenant existed.
+    So the previous rows go, in the same transaction that writes the new one —
+    a connector has exactly one credential, which is what every reader here has
+    always assumed by taking the newest row.
+    """
     if connector_type not in _KNOWN_TYPES:
         raise ValueError(f"Unknown connector type: {connector_type}")
+    if not secret or not secret.strip():
+        raise ValueError("A credential cannot be empty.")
     ciphertext = encrypt(secret)
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
-        conn.execute(
+        new_id = conn.execute(
             """
             INSERT INTO connector_credential (tenant_id, connector_type, label, ciphertext)
             VALUES (%s, %s, %s, %s)
+            RETURNING id
             """,
             (tenant_id, connector_type, label, ciphertext),
+        ).fetchone()[0]
+        conn.execute(
+            "DELETE FROM connector_credential WHERE connector_type = %s AND id <> %s",
+            (connector_type, new_id),
         )
 
 
@@ -116,16 +136,27 @@ def get_secret(tenant_id: str, connector_type: str) -> Optional[str]:
 
 
 def connector_statuses(tenant_id: str) -> list[ConnectorStatus]:
-    """Return every known connector with whether the tenant has connected it."""
+    """Every known connector, with whether the tenant has connected it and when.
+
+    `credential_set_at` is the only thing this says about a stored secret. It is
+    what makes rotation checkable — "this key was set fourteen months ago" is
+    actionable, and it reveals nothing. The secret itself is never returned by
+    any route, not masked and not partially: the plaintext exists only inside a
+    sync, and there is no read path back to the browser.
+    """
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
-        rows = conn.execute("SELECT DISTINCT connector_type FROM connector_credential").fetchall()
-    connected = {r[0] for r in rows}
+        rows = conn.execute(
+            "SELECT connector_type, MAX(created_at) FROM connector_credential "
+            "GROUP BY connector_type"
+        ).fetchall()
+    set_at = {r[0]: r[1] for r in rows}
     return [
         {
             "type": c["type"],
             "name": c["name"],
             "category": c["category"],
-            "connected": c["type"] in connected,
+            "connected": c["type"] in set_at,
+            "credential_set_at": (set_at[c["type"]].isoformat() if set_at.get(c["type"]) else None),
         }
         for c in KNOWN_CONNECTORS
     ]

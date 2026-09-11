@@ -1365,6 +1365,32 @@ select {
   border-top: 1px solid var(--line);
 }
 
+/* The replace-credential panel on a connected row. Sits under the provider's
+   own detail, because rotating a key is a rarer errand than reading the data
+   the key fetched. */
+.connector-rotate-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.connector-rotate-head h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.connector-rotate-head span {
+  font-size: 0.8rem;
+}
+
+.connector-rotate-note {
+  margin: 0;
+  font-size: 0.82rem;
+  max-width: 60ch;
+}
+
 .connector-guide-blurb {
   margin: 0;
   font-size: 0.84rem;

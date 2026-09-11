@@ -98,3 +98,75 @@ describe("ConnectorRow", () => {
     expect(screen.queryByText("INLINE DETAIL")).not.toBeInTheDocument();
   });
 });
+
+describe("ConnectorRow — replacing a stored credential", () => {
+  const open = async () => {
+    fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
+    return screen.findByRole("heading", { name: /Replace token/ });
+  };
+
+  it("offers a replace form on a connected row", async () => {
+    // The whole point: before this, a connected connector had no way back to
+    // its credential, so a rotated or leaked key could not be changed at all.
+    render(<Harness overrides={{ connected: true }} />);
+    await open();
+    expect(screen.getByLabelText("Anthropic token")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace" })).toBeInTheDocument();
+  });
+
+  it("never renders the stored credential, masked or otherwise", async () => {
+    render(<Harness overrides={{ connected: true, credential_set_at: "2026-08-01T00:00:00Z" }} />);
+    const panel = (await open()).closest(".connector-panel") as HTMLElement;
+
+    const field = screen.getByLabelText("Anthropic token") as HTMLInputElement;
+    // Empty, not pre-filled with a placeholder row of dots that cannot be
+    // edited — there is no route that returns a secret to fill it with.
+    expect(field.value).toBe("");
+    expect(field.type).toBe("password");
+    expect(panel.textContent).not.toMatch(/•{3,}|\*{3,}/);
+  });
+
+  it("says when the current credential was set, so rotation is checkable", async () => {
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 86_400_000).toISOString();
+    render(<Harness overrides={{ connected: true, credential_set_at: sixtyDaysAgo }} />);
+    await open();
+    expect(screen.getByText(/Current token set 2 months ago/)).toBeInTheDocument();
+  });
+
+  it("sends only the new secret, and keeps nothing after saving", async () => {
+    vi.mocked(api.saveCredential).mockResolvedValue(undefined as never);
+    render(<Harness overrides={{ connected: true }} />);
+    await open();
+
+    fireEvent.change(screen.getByLabelText("Anthropic token"), {
+      target: { value: "  sk-ant-new  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+
+    await waitFor(() => expect(api.saveCredential).toHaveBeenCalledWith("anthropic", "sk-ant-new"));
+    // The panel closes and the field is cleared, so a secret is not left sitting
+    // in a form for the next person at the keyboard.
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: /Replace token/ })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("will not submit an empty replacement", async () => {
+    // An accidental Save must never blank out a working connector.
+    render(<Harness overrides={{ connected: true }} />);
+    await open();
+    expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Anthropic token"), { target: { value: "   " } });
+    expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
+  });
+
+  it("calls a multi-line credential what it is, rather than a token", async () => {
+    // Bedrock takes a service-account style blob, not a token. The word is
+    // derived from the guide so twenty of them do not have to spell it out.
+    render(<Harness overrides={{ type: "bedrock", name: "Amazon Bedrock", connected: true }} />);
+    fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
+    expect(await screen.findByRole("heading", { name: /Replace credentials/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Amazon Bedrock credentials")).toBeInTheDocument();
+  });
+});

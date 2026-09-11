@@ -4,7 +4,14 @@
  * panel *directly underneath this row* — never at the bottom of the page. Expansion
  * is controlled by the parent so the list behaves as an accordion (one open at a
  * time). Not-connected rows expand to the setup guide + credential form; connected
- * rows expand to the provider's inline detail (`detail`).
+ * rows expand to the provider's inline detail (`detail`) and the form for
+ * replacing the stored credential.
+ *
+ * Replacing is deliberately the same field as connecting, never a pre-filled or
+ * masked one. There is no route that returns a stored secret — not partially —
+ * so there is nothing to pre-fill with, and a row of dots that cannot be edited
+ * only invites someone to try. The one thing shown about the existing
+ * credential is when it was set, which is what makes rotation checkable.
  */
 import { type ReactNode, useState } from "react";
 import { api, type ConnectorStatus } from "../api";
@@ -37,6 +44,10 @@ export function ConnectorRow({
   const [syncNote, setSyncNote] = useState<string | null>(null);
 
   const guide = CONNECTOR_GUIDES[connector.type];
+  // Most connectors take a token; the multiline ones take a service-account
+  // blob. Derived rather than spelled out on twenty guides, and only ever used
+  // as a word in a sentence.
+  const noun = guide?.multiline ? "credentials" : "token";
 
   async function save() {
     if (!secret.trim()) return;
@@ -109,6 +120,32 @@ export function ConnectorRow({
           under this row. */}
       {expanded && connector.connected && detail && <div className="connector-panel">{detail}</div>}
 
+      {expanded && connector.connected && (
+        <div className="connector-panel connector-rotate">
+          <div className="connector-rotate-head">
+            <h4>Replace {noun}</h4>
+            <span className="muted">
+              {connector.credential_set_at
+                ? `Current ${noun} set ${setAtLabel(connector.credential_set_at)}`
+                : `A ${noun} is stored`}
+            </span>
+          </div>
+          <p className="muted connector-rotate-note">
+            Paste a new {noun} to replace the stored one. The old {noun} is deleted, and syncs use
+            the new one from then on. Meter never shows a stored credential back to you.
+          </p>
+          <CredentialForm
+            connector={connector}
+            guide={guide}
+            secret={secret}
+            onSecret={setSecret}
+            onSave={save}
+            saving={saving}
+            saveLabel="Replace"
+          />
+        </div>
+      )}
+
       {expanded && !connector.connected && (
         <div className="connector-panel">
           {guide && (
@@ -131,30 +168,81 @@ export function ConnectorRow({
               )}
             </div>
           )}
-          <div className="connector-form">
-            {guide?.multiline ? (
-              <textarea
-                placeholder={guide.placeholder}
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                aria-label={`${connector.name} credentials`}
-                rows={3}
-              />
-            ) : (
-              <input
-                type="password"
-                placeholder={guide?.placeholder ?? "Paste access token"}
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                aria-label={`${connector.name} token`}
-              />
-            )}
-            <button onClick={save} disabled={saving || !secret.trim()}>
-              {saving ? "…" : "Save"}
-            </button>
-          </div>
+          <CredentialForm
+            connector={connector}
+            guide={guide}
+            secret={secret}
+            onSecret={setSecret}
+            onSave={save}
+            saving={saving}
+            saveLabel="Save"
+          />
         </div>
       )}
     </li>
+  );
+}
+
+/** How long ago the stored credential was set, in words. */
+function setAtLabel(iso: string): string {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  if (!Number.isFinite(days)) return "previously";
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 60) return `${days} days ago`;
+  const months = Math.round(days / 30);
+  return months < 24 ? `${months} months ago` : `${Math.round(days / 365)} years ago`;
+}
+
+/**
+ * The one credential field, shared by connecting and replacing.
+ *
+ * Shared on purpose: two fields would be two chances for one of them to stop
+ * masking its input, or to keep a secret in state after a save. This one is
+ * `type="password"`, cleared by its caller on success, and never rendered with
+ * a value it did not just receive from the person typing.
+ */
+function CredentialForm({
+  connector,
+  guide,
+  secret,
+  onSecret,
+  onSave,
+  saving,
+  saveLabel,
+}: {
+  connector: ConnectorStatus;
+  guide?: (typeof CONNECTOR_GUIDES)[string];
+  secret: string;
+  onSecret: (value: string) => void;
+  onSave: () => void;
+  saving: boolean;
+  saveLabel: string;
+}) {
+  return (
+    <div className="connector-form">
+      {guide?.multiline ? (
+        <textarea
+          placeholder={guide.placeholder}
+          value={secret}
+          onChange={(e) => onSecret(e.target.value)}
+          aria-label={`${connector.name} credentials`}
+          rows={3}
+        />
+      ) : (
+        <input
+          type="password"
+          placeholder={guide?.placeholder ?? "Paste access token"}
+          value={secret}
+          onChange={(e) => onSecret(e.target.value)}
+          aria-label={`${connector.name} token`}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      )}
+      <button onClick={onSave} disabled={saving || !secret.trim()}>
+        {saving ? "…" : saveLabel}
+      </button>
+    </div>
   );
 }
