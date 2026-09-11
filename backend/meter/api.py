@@ -53,6 +53,7 @@ from . import (
     optimize_measured,
     otel,
     prompt_capture,
+    prompt_optimize,
     resources,
     seats,
     settings,
@@ -2015,6 +2016,57 @@ def create_app() -> FastAPI:
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sample not found")
         return found
+
+    @app.get("/api/prompt-optimization/prompts")
+    def prompt_list(user: CurrentUser) -> dict:
+        """Every captured prompt version, with what it really costs to run."""
+        return prompt_optimize.list_prompts(user["tenant_id"])
+
+    @app.get("/api/prompt-optimization/prompts/{template_id}")
+    def prompt_one(template_id: str, user: CurrentUser) -> dict:
+        try:
+            found = prompt_optimize.prompt_detail(user["tenant_id"], template_id)
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if not found:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt not found")
+        return found
+
+    @app.get("/api/prompt-optimization/prompts/{template_id}/content")
+    def prompt_text(template_id: str, request: Request, user: CurrentUser) -> dict:
+        """The prompt and its proposed rewrite. Audited, like every content read."""
+        _customer_only(request)
+        try:
+            found = prompt_optimize.prompt_content(user["tenant_id"], template_id, user["email"])
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt not found")
+        return found
+
+    @app.post("/api/prompt-optimization/prompts/{template_id}/candidate")
+    def prompt_candidate(template_id: str, request: Request, user: CurrentUser) -> dict:
+        """Ask the consented model for a cheaper version of this prompt.
+
+        Spends tokens on the organization's own model when it has one, so it is
+        a deliberate request rather than something that happens on a schedule.
+        """
+        _customer_only(request)
+        try:
+            return prompt_optimize.generate_candidate(user["tenant_id"], template_id, user["email"])
+        except (prompt_optimize.OptimizeError, prompt_capture.PromptCaptureError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.delete("/api/prompt-optimization/candidates/{candidate_id}")
+    def prompt_candidate_discard(candidate_id: str, request: Request, user: CurrentUser) -> dict:
+        _customer_only(request)
+        try:
+            gone = prompt_optimize.discard_candidate(user["tenant_id"], candidate_id, user["email"])
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if not gone:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return {"discarded": True}
 
     @app.get("/api/prompt-optimization/audit")
     def prompt_audit(user: CurrentUser) -> dict:

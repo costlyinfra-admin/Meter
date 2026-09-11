@@ -50,6 +50,12 @@ export function CopilotPage() {
       <p className="muted">
         Where AI money is being wasted, and what to fix first — measured across every feature.
       </p>
+      <p className="muted">
+        <Link to="/optimize/prompts" className="link">
+          Prompts →
+        </Link>{" "}
+        the prompts your product runs, and cheaper versions of them.
+      </p>
 
       {error && (
         <p className="error" role="alert">

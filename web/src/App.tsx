@@ -11,6 +11,7 @@ import { AlertDetailPage } from "./pages/AlertDetailPage";
 import { AlertFormPage } from "./pages/AlertFormPage";
 import { AlertsPage } from "./pages/AlertsPage";
 import { CopilotPage } from "./pages/CopilotPage";
+import { PromptDetail, PromptsPage } from "./pages/PromptsPage";
 import { CostSourcesPage } from "./pages/CostSourcesPage";
 import { ReconciliationPage } from "./pages/ReconciliationPage";
 import { Dashboard } from "./pages/Dashboard";
@@ -81,6 +82,8 @@ export function App() {
       >
         <Route path="/" element={<Dashboard />} />
         <Route path="/optimize" element={<CopilotPage />} />
+        <Route path="/optimize/prompts" element={<PromptsPage />} />
+        <Route path="/optimize/prompts/:id" element={<PromptDetail />} />
         <Route path="/cost-sources" element={<CostSourcesPage />} />
         {/* Provider invoice reconciliation — an opt-in module. The routes exist
             always; every request they make is refused unless the organization

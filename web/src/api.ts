@@ -130,6 +130,67 @@ export interface PromptConsentStatus {
   }[];
 }
 
+/** One captured prompt version on the Prompts screen. Identities and numbers
+ *  only: the prompt itself comes from promptContent, which is audited. */
+export interface PromptSummary {
+  template_id: string;
+  feature_id: string;
+  feature_name: string;
+  prompt_id: string;
+  prompt_version: string;
+  template_bytes: number;
+  last_seen_at: string;
+  /** Samples held for testing. A fraction of traffic, on purpose. */
+  samples: number;
+  /** Real calls and cost from metering, over the usage window. */
+  calls: number;
+  cost: number;
+  candidate_id: string | null;
+  candidate_status: "not_evaluated" | null;
+}
+
+export interface PromptCandidateMeta {
+  candidate_id: string;
+  change_count: number;
+  original_chars: number;
+  candidate_chars: number;
+  provider: string;
+  model: string;
+  /** Never "recommended" until a replay evaluation says so (that arrives later). */
+  status: "not_evaluated";
+  created_by: string;
+  created_at: string;
+}
+
+export interface PromptDetail extends PromptSummary {
+  samples_detail: {
+    sample_id: string;
+    provider: string;
+    model: string;
+    tokens_in: number | null;
+    tokens_out: number | null;
+    latency_ms: number | null;
+    captured_at: string;
+  }[];
+  candidate: PromptCandidateMeta | null;
+}
+
+/** A proposed change, with the reason the model gave for it. */
+export interface PromptChange {
+  category: string;
+  before: string;
+  after: string;
+  reason: string;
+  expected_effect: string;
+}
+
+/** The prompt text itself. Fetching this writes an audit row. */
+export interface PromptContent {
+  template_id: string;
+  template: string;
+  candidate: { candidate_id: string; template: string; changes: PromptChange[] } | null;
+}
+
 export interface PromptAuditEvent {
   event: string;
   actor: string | null;
@@ -1365,6 +1426,32 @@ export const api = {
     }),
 
   promptAudit: () => request<{ events: PromptAuditEvent[] }>("/prompt-optimization/audit"),
+
+  prompts: () =>
+    request<{ usage_days: number; min_samples: number; prompts: PromptSummary[] }>(
+      "/prompt-optimization/prompts",
+    ),
+
+  prompt: (templateId: string) =>
+    request<PromptDetail>(`/prompt-optimization/prompts/${encodeURIComponent(templateId)}`),
+
+  /** Audited: the server records who looked at a prompt. */
+  promptContent: (templateId: string) =>
+    request<PromptContent>(
+      `/prompt-optimization/prompts/${encodeURIComponent(templateId)}/content`,
+    ),
+
+  generatePromptCandidate: (templateId: string) =>
+    request<PromptCandidateMeta>(
+      `/prompt-optimization/prompts/${encodeURIComponent(templateId)}/candidate`,
+      { method: "POST" },
+    ),
+
+  discardPromptCandidate: (candidateId: string) =>
+    request<{ discarded: boolean }>(
+      `/prompt-optimization/candidates/${encodeURIComponent(candidateId)}`,
+      { method: "DELETE" },
+    ),
 
   getBudget: () => request<{ budget: Budget | null }>("/budget"),
 

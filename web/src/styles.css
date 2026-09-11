@@ -6829,3 +6829,88 @@ button.span-head:focus-visible {
 .consent-withdraw p {
   margin: 0 0 0.5rem;
 }
+
+/* Optimize → Prompts. A prompt and its proposed rewrite sit side by side, so the
+   reader compares them rather than remembering the first while reading the
+   second; they stack on a narrow screen, where side by side would mean two
+   unreadable columns. */
+.prompt-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.prompt-text {
+  max-height: 26rem;
+  margin: 0.35rem 0 0;
+  padding: 0.75rem 0.9rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.prompt-text.proposed {
+  border-color: var(--accent);
+}
+
+.prompt-changes {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+
+.prompt-changes li {
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.change-category {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.change-reason {
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+}
+
+/* The excerpt is evidence, not prose: it keeps the prompt's own spacing. */
+.change-excerpt {
+  margin: 0.35rem 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+}
+
+.change-excerpt del {
+  opacity: 0.7;
+}
+
+.change-excerpt ins {
+  margin-left: 0.4rem;
+  text-decoration: none;
+}
+
+.change-effect {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 900px) {
+  .prompt-pair {
+    grid-template-columns: 1fr;
+  }
+}
