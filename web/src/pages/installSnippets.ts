@@ -339,3 +339,43 @@ agent:
   config:
 ${nested}`;
 }
+
+// ---------------------------------------------------------------------------
+// Prompt optimization — consented prompt capture (SDK 2.1+)
+// ---------------------------------------------------------------------------
+
+/** The first SDK release that can send prompt samples. */
+export const MIN_SDK_CAPTURE = "2.1";
+
+export const CAPTURE_PYTHON = `meter = Meter(capture_prompts=True)   # or METER_CAPTURE_PROMPTS=true
+
+client = meter.wrap(
+    Anthropic(),
+    feature_id="<feature-id>",
+    prompt_id="classify-alert",       # the prompt's name
+    prompt_version="v7",              # change it whenever the prompt changes
+)`;
+
+export const CAPTURE_NODE = `const meter = new Meter({ capturePrompts: true }); // or METER_CAPTURE_PROMPTS=true
+
+const client = meter.wrap(new Anthropic(), {
+  featureId: "<feature-id>",
+  promptId: "classify-alert",
+  promptVersion: "v7",
+});`;
+
+/** The environment variables that govern capture. Documented in the capture
+ *  section rather than the main table: they matter only once an organization
+ *  has agreed to Prompt optimization. */
+export const CAPTURE_ENV_VARS = [
+  {
+    name: "METER_CAPTURE_PROMPTS",
+    required: false,
+    note: "Set to true to let wrapped clients offer prompt samples. Off by default.",
+  },
+  {
+    name: "METER_CAPTURE_URL",
+    required: false,
+    note: "Only if your ingest URL is non-standard. Normally worked out from METER_INGEST_URL.",
+  },
+];

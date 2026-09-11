@@ -12,10 +12,14 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_NODE,
   AGENT_PYTHON,
+  CAPTURE_ENV_VARS,
+  CAPTURE_NODE,
+  CAPTURE_PYTHON,
   ENV_VARS,
   envSnippet,
   FLUSH_NODE,
   FLUSH_PYTHON,
+  MIN_SDK_CAPTURE,
   normalizeSlug,
   RESUME_NODE,
   RESUME_PYTHON,
@@ -27,6 +31,7 @@ import {
 
 import PYTHON_SDK from "../../../sdk/python/costlyinfra_meter/__init__.py?raw";
 import NODE_SDK from "../../../sdk/node/index.mjs?raw";
+import PY_PROJECT from "../../../sdk/python/pyproject.toml?raw";
 // The server's own normalizer. The page's copy has to agree with it, or a slug
 // the page accepts is silently rewritten to a different application on ingest.
 import APPLICATIONS_PY from "../../../backend/meter/applications.py?raw";
@@ -140,9 +145,18 @@ describe("the Install SDK page's code samples", () => {
     }
     // And the reverse: an env var the SDK reads but the page never mentions is
     // a setting a customer cannot discover.
-    const read = [...PYTHON_SDK.matchAll(/METER_[A-Z_]+/g)].map((m) => m[0]);
-    for (const name of new Set(read)) {
-      expect(ENV_VARS.map((v) => v.name)).toContain(name);
+    // Capture's own variables are documented in the capture section, which the
+    // page shows once an organization has agreed to Prompt optimization.
+    const documented = [...ENV_VARS, ...CAPTURE_ENV_VARS].map((v) => v.name);
+    for (const sdk of [PYTHON_SDK, NODE_SDK]) {
+      const read = [...sdk.matchAll(/METER_[A-Z_]+/g)].map((m) => m[0]);
+      for (const name of new Set(read)) {
+        expect(documented).toContain(name);
+      }
+    }
+    for (const { name } of CAPTURE_ENV_VARS) {
+      expect(PYTHON_SDK).toContain(name);
+      expect(NODE_SDK).toContain(name);
     }
   });
 
@@ -191,5 +205,29 @@ describe("the application slug", () => {
     expect(suggestSlug(null)).toBe("my-app");
     // A name with nothing slug-able left in it must not yield an empty slug.
     expect(suggestSlug("!!!")).toBe("my-app");
+  });
+});
+
+describe("the Install SDK page's prompt capture samples", () => {
+  it("use only parameters the Python SDK really takes", () => {
+    expect(PYTHON_SDK).toContain("capture_prompts: Optional[bool] = None");
+    expect(PYTHON_SDK).toContain("prompt_version: Optional[str] = None) -> Any:");
+    expect(CAPTURE_PYTHON).toContain("Meter(capture_prompts=True)");
+    expect(CAPTURE_PYTHON).toContain("prompt_id=");
+    expect(CAPTURE_PYTHON).toContain("prompt_version=");
+  });
+
+  it("use only options the Node SDK really reads", () => {
+    expect(NODE_SDK).toContain("options.capturePrompts");
+    expect(NODE_SDK).toContain("promptVersion: options.promptVersion");
+    expect(CAPTURE_NODE).toContain("capturePrompts: true");
+    expect(CAPTURE_NODE).toContain("promptVersion:");
+  });
+
+  it("name a minimum version the SDK has reached", () => {
+    const declared = PY_PROJECT.match(/^version = "(\d+)\.(\d+)/m)!;
+    const [major, minor] = MIN_SDK_CAPTURE.split(".").map(Number);
+    const [haveMajor, haveMinor] = [Number(declared[1]), Number(declared[2])];
+    expect(haveMajor > major || (haveMajor === major && haveMinor >= minor)).toBe(true);
   });
 });

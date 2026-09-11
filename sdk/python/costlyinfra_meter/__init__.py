@@ -16,12 +16,19 @@ Two ways in, and the simple one needs no concepts:
         docs = run.tool("retrieve-documents", retrieve_documents)
         run.llm("generate-answer", lambda: anthropic_client.messages.create(...))
 
-**What is never sent.** Prompts, responses, messages, tool arguments, tool
-results, retrieved documents, exception messages and stack traces. Not
-truncated, not hashed unless you pass a `prompt_hash` yourself, not behind a
-setting — the events this SDK can construct have no field for them, and the
-server refuses a payload that carries one. What travels is identity, counts,
-timing and money: which prompt version, how many tokens, how long, how much.
+**What metering never sends.** Prompts, responses, messages, tool arguments,
+tool results, retrieved documents, exception messages and stack traces. The
+metering events this SDK constructs have no field for them, and the server
+refuses a payload that carries one. What travels is identity, counts, timing and
+money: which prompt version, how many tokens, how long, how much.
+
+**The one exception, off by default: consented prompt capture.** For Prompt
+Optimization, `Meter(capture_prompts=True)` lets a wrapped client send a small
+sample of prompt text — the system prompt, the text of the messages and the text
+of the reply — for calls named with a `prompt_id` and `prompt_version`. It sends
+nothing unless your organization has also agreed in Meter and switched capture on
+for that feature. It never sends tool calls, tool results, images or files, and
+it travels on its own channel, so it can never slow or break metering.
 
 **It must never break your agent.** Every path here is wrapped: a Meter failure
 degrades to sending nothing. Delivery happens on a background worker off your
@@ -39,6 +46,7 @@ import random
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
@@ -46,7 +54,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 FLUSH_INTERVAL = 2.0
 BATCH_SIZE = 50
@@ -58,6 +66,20 @@ SHUTDOWN_TIMEOUT = 3.0
 #: stale threshold (the server's default is 10 minutes), so an agent that is
 #: genuinely working is never mistaken for one that has hung.
 HEARTBEAT_INTERVAL = 30.0
+
+#: Consented prompt capture. 1 call in 100, at most 50 samples a day per prompt:
+#: optimization needs a representative handful, not a copy of the traffic. The
+#: server enforces its own caps whatever these are set to.
+CAPTURE_SAMPLE_RATE = 0.01
+CAPTURE_MAX_PER_DAY = 50
+#: Larger samples are dropped, not truncated: a truncated prompt would later be
+#: evaluated as a different prompt. Matches the server's limit.
+CAPTURE_MAX_BYTES = 64 * 1024
+CAPTURE_QUEUE_MAX = 100
+#: How long the server's answer to "is capture open for this feature" is trusted.
+#: A withdrawal takes effect within this window at the latest, and on the very
+#: next sample, because the server re-checks consent every time.
+CAPTURE_OPEN_TTL = 300.0
 
 _METERS: set = set()
 
@@ -113,6 +135,10 @@ class Meter:
         retry_backoff: tuple = RETRY_BACKOFF,
         heartbeat_interval: float = HEARTBEAT_INTERVAL,
         transport: Optional[Any] = None,
+        capture_prompts: Optional[bool] = None,
+        capture_url: Optional[str] = None,
+        capture_sample_rate: float = CAPTURE_SAMPLE_RATE,
+        redact: Optional[Callable[[dict], Optional[dict]]] = None,
     ):
         self.application = application or os.environ.get("METER_APPLICATION") or "default"
         self.environment = environment or os.environ.get("METER_ENVIRONMENT") or "production"
@@ -138,15 +164,51 @@ class Meter:
         #: Events discarded because the queue was full or delivery failed for
         #: good. Metering degrades visibly rather than silently.
         self.dropped = 0
+
+        # Consented prompt capture: the developer's half of a double key. The
+        # organization's half lives in Meter, and nothing is sent without both.
+        env_capture = (os.environ.get("METER_CAPTURE_PROMPTS") or "").strip().lower()
+        self.capture_prompts = (
+            bool(capture_prompts) if capture_prompts is not None
+            else env_capture in ("1", "true", "yes", "on")
+        )
+        self.capture_url = (
+            capture_url or os.environ.get("METER_CAPTURE_URL")
+            or _capture_url_from(self.ingest_url)
+        )
+        self.capture_sample_rate = min(1.0, max(0.0, float(capture_sample_rate)))
+        self._redact = redact
+        self._capture_queue: deque = deque()
+        self._capture_checks: set = set()
+        self._capture_checking: set = set()
+        #: feature_id -> (open, trusted_until_monotonic)
+        self._capture_open: dict = {}
+        #: (feature_id, prompt_id) -> (utc_date, samples_offered)
+        self._capture_daily: dict = {}
+        #: (feature_id, prompt_id) -> utc_date the server said "enough for today"
+        self._capture_capped: dict = {}
+        #: Samples chosen but not delivered: refused, too large, redacted away or
+        #: failed. Calls simply not sampled are not counted.
+        self.capture_dropped = 0
         _METERS.add(self)
 
     @property
     def enabled(self) -> bool:
         return bool(self.ingest_url and self.token)
 
+    @property
+    def capture_enabled(self) -> bool:
+        """True when this process may offer prompt samples at all.
+
+        Only the developer's half. Whether a sample is actually sent also needs
+        the organization's consent for the feature, which the server decides.
+        """
+        return bool(self.enabled and self.capture_prompts and self.capture_url)
+
     # -- the two entry points ---------------------------------------------
     def wrap(self, client: Any, *, feature_id: Optional[str] = None,
-             application: Optional[str] = None, provider: Optional[str] = None) -> Any:
+             application: Optional[str] = None, provider: Optional[str] = None,
+             prompt_id: Optional[str] = None, prompt_version: Optional[str] = None) -> Any:
         """Instrument a provider client so each call becomes its own trace.
 
         For the common case — one model call, no workflow around it — explicit
@@ -160,7 +222,8 @@ class Meter:
         """
         return _Wrapped(client, self, provider or _detect_provider(client),
                         feature_id=feature_id or self.feature_id,
-                        application=application or self.application)
+                        application=application or self.application,
+                        prompt_id=prompt_id, prompt_version=prompt_version)
 
     @contextmanager
     def agent(self, operation_name: str, *, feature_id: Optional[str] = None,
@@ -267,6 +330,9 @@ class Meter:
             self._worker_pid = None
             self._sending = False
             self._flush_now = False
+            self._capture_queue.clear()
+            self._capture_checks.clear()
+            self._capture_checking.clear()
 
     def _ensure_worker_locked(self) -> None:
         if self._worker is not None:
@@ -279,20 +345,35 @@ class Meter:
     def _run(self) -> None:
         while True:
             with self._cv:
-                while not self._queue:
+                while not (self._queue or self._capture_queue or self._capture_checks):
                     self._cv.wait()
-                deadline = time.monotonic() + self._flush_interval
-                while len(self._queue) < self._batch_size and not self._flush_now:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    self._cv.wait(remaining)
-                batch = [
-                    self._queue.popleft() for _ in range(min(len(self._queue), self._batch_size))
-                ]
+                batch: list = []
+                if self._queue:
+                    deadline = time.monotonic() + self._flush_interval
+                    while len(self._queue) < self._batch_size and not self._flush_now:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self._cv.wait(remaining)
+                    batch = [
+                        self._queue.popleft()
+                        for _ in range(min(len(self._queue), self._batch_size))
+                    ]
+                checks = list(self._capture_checks)
+                self._capture_checks.clear()
+                self._capture_checking.update(checks)
+                samples = list(self._capture_queue)
+                self._capture_queue.clear()
                 self._sending = True
             try:
-                self._deliver(batch)
+                # Metering first, always: capture is optional and must never be
+                # the reason a batch of events waits.
+                if batch:
+                    self._deliver(batch)
+                for feature_id in checks:
+                    self._check_capture(feature_id)
+                for item in samples:
+                    self._deliver_sample(item)
             finally:
                 with self._cv:
                     self._sending = False
@@ -307,7 +388,7 @@ class Meter:
         try:
             deadline = time.monotonic() + max(0.0, timeout)
             with self._cv:
-                if not self._queue and not self._sending:
+                if not self._pending_locked():
                     return True
                 self._reset_after_fork_locked()
                 self._ensure_worker_locked()
@@ -315,7 +396,7 @@ class Meter:
                     return False
                 self._flush_now = True
                 self._cv.notify_all()
-                while self._queue or self._sending:
+                while self._pending_locked():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         return False
@@ -369,6 +450,189 @@ class Meter:
             return "retry"
         except Exception:
             return "retry"  # timeout, DNS, refused, TLS: it may yet return
+
+    def _pending_locked(self) -> bool:
+        return bool(
+            self._queue or self._sending or self._capture_queue
+            or self._capture_checks or self._capture_checking
+        )
+
+    # -- consented prompt capture -------------------------------------------
+    def _offer_sample(self, provider: str, path: tuple, kwargs: dict, resp: Any, *,
+                      feature_id: Optional[str], prompt_id: Optional[str],
+                      prompt_version: Optional[str], usage: dict, latency_ms: int) -> None:
+        """Consider one completed call for a prompt sample. Cheap; never raises.
+
+        Every reason to say no is checked before anything is kept: the
+        developer's switch, a named prompt, a call shape this SDK can read, the
+        server's word that capture is open for this feature, the sample rate and
+        the daily cap. Reading the request happens later, on the worker, off the
+        caller's path.
+        """
+        if not self.capture_enabled or not (feature_id and prompt_id and prompt_version):
+            return
+        if (provider, path) not in _CAPTURE_PATHS:
+            return
+        if not usage.get("tokens_in") and not usage.get("tokens_out"):
+            return  # a stream or an unfamiliar response: nothing complete to sample
+        now = time.monotonic()
+        with self._cv:
+            self._reset_after_fork_locked()
+            known = self._capture_open.get(feature_id)
+            if known is None or known[1] <= now:
+                # Ask first. This call is not sampled: until the server says yes,
+                # not a single prompt is kept, even briefly, in memory.
+                if feature_id not in self._capture_checking:
+                    self._capture_checks.add(feature_id)
+                    self._ensure_worker_locked()
+                    self._cv.notify()
+                return
+            if not known[0]:
+                return
+            day = dt.datetime.now(dt.timezone.utc).date()
+            key = (feature_id, prompt_id)
+            if self._capture_capped.get(key) == day:
+                return
+            if random.random() >= self.capture_sample_rate:
+                return
+            counted_day, count = self._capture_daily.get(key, (day, 0))
+            if counted_day != day:
+                count = 0
+            if count >= CAPTURE_MAX_PER_DAY:
+                return
+            self._capture_daily[key] = (day, count + 1)
+            if len(self._capture_queue) >= CAPTURE_QUEUE_MAX:
+                self.capture_dropped += 1
+                return
+            # A copy of the message list, not of the messages: an application
+            # that appends to its conversation after the call must not change
+            # what this call is recorded as having sent.
+            messages = kwargs.get("messages")
+            snapshot = dict(kwargs)
+            if isinstance(messages, (list, tuple)):
+                snapshot["messages"] = list(messages)
+            self._capture_queue.append({
+                "provider": provider,
+                "kwargs": snapshot,
+                "resp": resp,
+                "feature_id": feature_id,
+                "prompt_id": prompt_id,
+                "prompt_version": prompt_version,
+                "usage": dict(usage),
+                "latency_ms": latency_ms,
+                "captured_at": _now_iso(),
+            })
+            self._ensure_worker_locked()
+            self._cv.notify()
+
+    def _check_capture(self, feature_id: str) -> None:
+        """Ask the server whether capture is open for a feature. Never raises."""
+        is_open = False
+        try:
+            base = self.capture_url.rsplit("/", 1)[0]
+            url = f"{base}/open?feature_id={urllib.parse.quote(feature_id)}"
+            status, body = self._request("GET", url, None)
+            if status == 200:
+                is_open = bool(json.loads(body.decode() or "{}").get("open"))
+        except Exception:
+            is_open = False
+        with self._cv:
+            self._capture_open[feature_id] = (is_open, time.monotonic() + CAPTURE_OPEN_TTL)
+            self._capture_checking.discard(feature_id)
+            self._cv.notify_all()
+
+    def _deliver_sample(self, item: dict) -> None:
+        """Read, redact, size-check and post one sample. One attempt. Never raises."""
+        try:
+            sample = _read_sample(item["provider"], item["kwargs"], item["resp"])
+        except Exception:
+            sample = None
+        if sample is None:
+            return  # not text this SDK can read: nothing to send, nothing lost
+        usage = item["usage"]
+        model = usage.get("model") or item["kwargs"].get("model")
+        if not isinstance(model, str) or not model:
+            return
+        sample.update({
+            "feature_id": item["feature_id"],
+            "prompt_id": item["prompt_id"],
+            "prompt_version": item["prompt_version"],
+            "provider": usage.get("provider") or item["provider"],
+            "model": model,
+            "tokens_in": usage.get("tokens_in"),
+            "tokens_out": usage.get("tokens_out"),
+            "latency_ms": item["latency_ms"],
+            "captured_at": item["captured_at"],
+        })
+        sample = {k: v for k, v in sample.items() if v is not None}
+        if self._redact is not None:
+            try:
+                sample = self._redact(sample)
+            except Exception:
+                sample = None  # a failing redactor fails closed: send nothing
+            if not isinstance(sample, dict):
+                self.capture_dropped += 1
+                return
+        try:
+            body = json.dumps(sample).encode("utf-8")
+        except (TypeError, ValueError):
+            self.capture_dropped += 1
+            return
+        if len(body) > CAPTURE_MAX_BYTES:
+            self.capture_dropped += 1
+            return
+        status, payload = self._request("POST", self.capture_url, body)
+        if status == 200:
+            return
+        reason = None
+        try:
+            reason = json.loads(payload.decode() or "{}").get("reason")
+        except Exception:
+            pass
+        with self._cv:
+            if status == 403:
+                # Consent is not there for this feature, whatever the cache said.
+                self._capture_open[item["feature_id"]] = (
+                    False, time.monotonic() + CAPTURE_OPEN_TTL
+                )
+            elif status == 429 or reason == "daily_cap":
+                self._capture_capped[(item["feature_id"], item["prompt_id"])] = (
+                    dt.datetime.now(dt.timezone.utc).date()
+                )
+            self.capture_dropped += 1
+
+    def _request(self, method: str, url: str, body: Optional[bytes]) -> tuple:
+        """One exchange on the capture channel -> (status, body). Never raises.
+
+        Unlike metering this does not retry: a sample is one of many, and a
+        missed one costs nothing a later one will not provide.
+        """
+        headers = {"Authorization": f"Bearer {self.token}"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        try:
+            if self._transport is not None:
+                result = self._transport(url, headers, body)
+                if isinstance(result, tuple):
+                    status, data = result
+                    if not isinstance(data, (bytes, bytearray)):
+                        data = json.dumps(data).encode()
+                    return int(status), bytes(data)
+                if result is None:
+                    return 200, b""
+                if isinstance(result, (bytes, bytearray)):
+                    return 200, bytes(result)
+                return 200, json.dumps(result).encode()
+            req = urllib.request.Request(url, data=body, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, exc.read() or b""
+            except Exception:
+                return exc.code, b""
+        except Exception:
+            return 0, b""
 
 
 class AgentRun:
@@ -642,19 +906,117 @@ def _has_usage(resp: Any) -> bool:
     return _attr(resp, "usage", None) is not None or _attr(resp, "usage_metadata", None) is not None
 
 
+# ---------------------------------------------------------------------------
+# Consented prompt capture: reading a call's text, and nothing else
+# ---------------------------------------------------------------------------
+#: The call shapes whose text can be told apart from tool calls reliably.
+_CAPTURE_PATHS = {
+    ("anthropic", ("messages", "create")),
+    ("openai", ("chat", "completions", "create")),
+}
+
+
+def _capture_url_from(ingest_url: Optional[str]) -> Optional[str]:
+    """The capture endpoint beside a standard ingest URL, or None."""
+    if not ingest_url:
+        return None
+    base = ingest_url.rstrip("/")
+    if base.endswith("/hook/events"):
+        return base[: -len("/hook/events")] + "/prompt-capture/samples"
+    return None
+
+
+def _text_of(content: Any) -> str:
+    """The text in a message's content. Only blocks whose type is text are read.
+
+    That is the whole privacy boundary for tool data: a tool_use, tool_result,
+    image or document block is never looked into, because nothing here asks
+    for anything but a text block's `text`.
+    """
+    if isinstance(content, str):
+        return content
+    parts: list = []
+    if isinstance(content, (list, tuple)):
+        for block in content:
+            if _attr(block, "type", None) in ("text", "input_text", "output_text"):
+                text = _attr(block, "text", None)
+                if isinstance(text, str) and text:
+                    parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _read_sample(provider: str, kwargs: dict, resp: Any) -> Optional[dict]:
+    """{template, input, output, parameters} for one call, or None.
+
+    The template is the instruction text: Anthropic's `system`, or OpenAI's
+    system and developer messages. Tool-role messages are skipped outright. A
+    call with no instruction text, or no message text, is not a prompt this can
+    optimize and yields None.
+    """
+    params: dict = {}
+    for name in ("temperature", "top_p", "max_tokens"):
+        value = kwargs.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            params[name] = value
+
+    messages: list = []
+    if provider == "anthropic":
+        template = _text_of(kwargs.get("system"))
+        for message in kwargs.get("messages") or []:
+            role = _attr(message, "role", None)
+            if role in ("user", "assistant"):
+                text = _text_of(_attr(message, "content", None))
+                if text:
+                    messages.append({"role": role, "text": text})
+        output = _text_of(_attr(resp, "content", None))
+    elif provider == "openai":
+        limit = kwargs.get("max_completion_tokens")
+        if "max_tokens" not in params and isinstance(limit, int) and not isinstance(limit, bool):
+            params["max_tokens"] = limit
+        fmt = kwargs.get("response_format")
+        fmt_type = _attr(fmt, "type", None) if fmt is not None else None
+        if isinstance(fmt_type, str):
+            params["response_format"] = fmt_type
+        instructions: list = []
+        for message in kwargs.get("messages") or []:
+            role = _attr(message, "role", None)
+            if role not in ("system", "developer", "user", "assistant"):
+                continue  # tool results, function results: never read
+            text = _text_of(_attr(message, "content", None))
+            if not text:
+                continue
+            if role in ("system", "developer"):
+                instructions.append(text)
+            else:
+                messages.append({"role": role, "text": text})
+        template = "\n\n".join(instructions)
+        choices = _attr(resp, "choices", None) or []
+        reply = _attr(choices[0], "message", None) if choices else None
+        output = _text_of(_attr(reply, "content", None)) if reply is not None else ""
+    else:
+        return None
+
+    if not template or not messages:
+        return None
+    return {"template": template, "input": messages, "output": output, "parameters": params}
+
+
 class _Wrapped:
     """A transparent proxy that records the completion call and returns the real
     response unchanged. Anything off the instrumented path is handed straight
     back, so a wrapped client behaves exactly like the original."""
 
     def __init__(self, target: Any, meter: Meter, provider: str, *, path: tuple = (),
-                 feature_id: Optional[str] = None, application: Optional[str] = None):
+                 feature_id: Optional[str] = None, application: Optional[str] = None,
+                 prompt_id: Optional[str] = None, prompt_version: Optional[str] = None):
         object.__setattr__(self, "_t", target)
         object.__setattr__(self, "_m", meter)
         object.__setattr__(self, "_p", provider)
         object.__setattr__(self, "_path", path)
         object.__setattr__(self, "_feature", feature_id)
         object.__setattr__(self, "_app", application)
+        object.__setattr__(self, "_prompt", prompt_id)
+        object.__setattr__(self, "_version", prompt_version)
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._t, name)
@@ -662,7 +1024,8 @@ class _Wrapped:
         paths = _COMPLETION_PATHS.get(self._p, set())
         if any(p[: len(new_path)] == new_path for p in paths):
             return _Wrapped(attr, self._m, self._p, path=new_path,
-                            feature_id=self._feature, application=self._app)
+                            feature_id=self._feature, application=self._app,
+                            prompt_id=self._prompt, prompt_version=self._version)
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -693,7 +1056,8 @@ class _Wrapped:
                 meter._send([
                     meter._event("span.failed", trace_id, span_id=span_id, span_kind="llm",
                                  operation_name=operation, latency_ms=latency,
-                                 feature_id=self._feature, application=self._app),
+                                 feature_id=self._feature, application=self._app,
+                                 prompt_id=self._prompt, prompt_version=self._version),
                     meter._event("trace.failed", trace_id, operation_name=operation,
                                  application=self._app),
                 ])
@@ -709,12 +1073,21 @@ class _Wrapped:
             meter._send([
                 meter._event("span.completed", trace_id, span_id=span_id, span_kind="llm",
                              operation_name=operation, latency_ms=latency,
-                             feature_id=self._feature, application=self._app, **usage),
+                             feature_id=self._feature, application=self._app,
+                             prompt_id=self._prompt, prompt_version=self._version, **usage),
                 meter._event("trace.completed", trace_id, operation_name=operation,
                              application=self._app),
             ])
         except Exception:
             pass  # metering must never raise into the caller
+        try:
+            # After metering, and separately: a capture problem can cost a
+            # sample, never an event, and never the caller's response.
+            meter._offer_sample(self._p, self._path, kwargs, resp,
+                                feature_id=self._feature, prompt_id=self._prompt,
+                                prompt_version=self._version, usage=usage, latency_ms=latency)
+        except Exception:
+            pass
         return resp
 
 

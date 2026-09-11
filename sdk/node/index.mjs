@@ -15,10 +15,19 @@
  *     return run.llm("generate-answer", () => anthropic.messages.create(...));
  *   });
  *
- * **What is never sent.** Prompts, responses, messages, tool arguments, tool
- * results, retrieved documents, exception messages and stack traces. The events
- * this SDK can construct have no field for them, and the server rejects a
- * payload that carries one. What travels is identity, counts, timing and money.
+ * **What metering never sends.** Prompts, responses, messages, tool arguments,
+ * tool results, retrieved documents, exception messages and stack traces. The
+ * metering events this SDK constructs have no field for them, and the server
+ * rejects a payload that carries one. What travels is identity, counts, timing
+ * and money.
+ *
+ * **The one exception, off by default: consented prompt capture.** For Prompt
+ * Optimization, `new Meter({ capturePrompts: true })` lets a wrapped client send
+ * a small sample of prompt text (the system prompt, the text of the messages and
+ * the text of the reply) for calls named with `promptId` and `promptVersion`. It
+ * sends nothing unless your organization has also agreed in Meter and switched
+ * capture on for that feature. It never sends tool calls, tool results, images or
+ * files, and it travels on its own channel, so it can never slow or break metering.
  *
  * **It must never break your agent.** Every path is guarded: a Meter failure
  * degrades to sending nothing. Delivery is batched off your call path over a
@@ -27,7 +36,7 @@
 
 import { randomUUID } from "node:crypto";
 
-export const VERSION = "2.0.0";
+export const VERSION = "2.1.0";
 
 const FLUSH_INTERVAL_MS = 2000;
 const BATCH_SIZE = 50;
@@ -39,6 +48,25 @@ const RETRY_BACKOFF_MS = [500, 2000];
  *  against the customer's own endpoint. */
 const HEARTBEAT_MS = 30_000;
 const HEARTBEAT_FLOOR_MS = 1000;
+
+/** Consented prompt capture. 1 call in 100, at most 50 samples a day per prompt:
+ *  optimization needs a representative handful, not a copy of the traffic. The
+ *  server enforces its own caps whatever these are set to. */
+const CAPTURE_SAMPLE_RATE = 0.01;
+const CAPTURE_MAX_PER_DAY = 50;
+/** Dropped, not truncated, above this: a truncated prompt would later be
+ *  evaluated as a different prompt. Matches the server's limit. */
+const CAPTURE_MAX_BYTES = 64 * 1024;
+const CAPTURE_INFLIGHT_MAX = 100;
+/** How long the server's "capture is open for this feature" is trusted. A
+ *  withdrawal also takes effect on the very next sample, which the server
+ *  re-checks every time. */
+const CAPTURE_OPEN_TTL_MS = 5 * 60 * 1000;
+/** The call shapes whose text can be told apart from tool calls reliably. */
+const CAPTURE_PATHS = [
+  ["anthropic", "messages.create"],
+  ["openai", "chat.completions.create"],
+];
 
 const SPAN_KINDS = new Set([
   "workflow",
@@ -336,10 +364,39 @@ export class Meter {
     /** Events discarded because the queue was full or delivery failed for good.
      *  Metering degrades visibly rather than silently. */
     this.dropped = 0;
+
+    // Consented prompt capture: the developer's half of a double key. The
+    // organization's half lives in Meter, and nothing is sent without both.
+    const envCapture = String(env.METER_CAPTURE_PROMPTS ?? "").trim().toLowerCase();
+    this.capturePrompts =
+      options.capturePrompts ?? ["1", "true", "yes", "on"].includes(envCapture);
+    this.captureUrl =
+      options.captureUrl ?? env.METER_CAPTURE_URL ?? captureUrlFrom(this.ingestUrl);
+    this.captureSampleRate = Math.min(
+      1,
+      Math.max(0, options.captureSampleRate ?? CAPTURE_SAMPLE_RATE),
+    );
+    this._redact = options.redact ?? null;
+    /** featureId -> { open, until } */
+    this._captureOpen = new Map();
+    this._captureChecking = new Set();
+    /** "featureId|promptId" -> { day, count } */
+    this._captureDaily = new Map();
+    this._captureCapped = new Map();
+    this._captureInflight = new Set();
+    /** Samples chosen but not delivered: refused, too large, redacted away or
+     *  failed. Calls simply not sampled are not counted. */
+    this.captureDropped = 0;
   }
 
   get enabled() {
     return Boolean(this.ingestUrl && this.token && this._fetch);
+  }
+
+  /** Only the developer's half: whether a sample is actually sent also needs the
+   *  organization's consent for the feature, which the server decides. */
+  get captureEnabled() {
+    return Boolean(this.enabled && this.capturePrompts && this.captureUrl);
   }
 
   /**
@@ -354,6 +411,8 @@ export class Meter {
     return this._proxy(client, provider, [], {
       featureId: options.featureId ?? this.featureId,
       application: options.application ?? this.application,
+      promptId: options.promptId ?? null,
+      promptVersion: options.promptVersion ?? null,
     });
   }
 
@@ -412,6 +471,8 @@ export class Meter {
             latency_ms: Date.now() - began,
             feature_id: ctx.featureId,
             application: ctx.application,
+            prompt_id: ctx.promptId,
+            prompt_version: ctx.promptVersion,
           }),
           this._event("trace.failed", traceId, {
             operation_name: operation,
@@ -423,17 +484,21 @@ export class Meter {
       }
       throw err;
     }
+    let usage = {};
+    const latencyMs = Date.now() - began;
     try {
-      const usage = usageOf(resp);
+      usage = usageOf(resp);
       if (!usage.provider) usage.provider = provider;
       this._send([
         this._event("span.completed", traceId, {
           span_id: spanId,
           span_kind: "llm",
           operation_name: operation,
-          latency_ms: Date.now() - began,
+          latency_ms: latencyMs,
           feature_id: ctx.featureId,
           application: ctx.application,
+          prompt_id: ctx.promptId,
+          prompt_version: ctx.promptVersion,
           ...usage,
         }),
         this._event("trace.completed", traceId, {
@@ -444,7 +509,176 @@ export class Meter {
     } catch {
       /* ignore */
     }
+    try {
+      // After metering, and separately: a capture problem can cost a sample,
+      // never an event, and never the caller's response.
+      this._offerSample(provider, path, args, resp, ctx, usage, latencyMs);
+    } catch {
+      /* ignore */
+    }
     return resp;
+  }
+
+  // -- consented prompt capture --------------------------------------------
+  /**
+   * Consider one completed call for a prompt sample. Cheap; never throws.
+   *
+   * Every reason to say no is checked before anything is kept: the developer's
+   * switch, a named prompt, a call shape this SDK can read, the server's word
+   * that capture is open for this feature, the sample rate and the daily cap.
+   * Reading the request happens on a later tick, off the caller's path.
+   */
+  _offerSample(provider, path, args, resp, ctx, usage, latencyMs) {
+    if (!this.captureEnabled || !(ctx.featureId && ctx.promptId && ctx.promptVersion)) return;
+    const route = path.join(".");
+    if (!CAPTURE_PATHS.some(([p, r]) => p === provider && r === route)) return;
+    if (!usage.tokens_in && !usage.tokens_out) return; // a stream: nothing complete
+    const featureId = ctx.featureId;
+    const known = this._captureOpen.get(featureId);
+    if (!known || known.until <= Date.now()) {
+      // Ask first. This call is not sampled: until the server says yes, not a
+      // single prompt is kept, even briefly.
+      if (!this._captureChecking.has(featureId)) this._track(this._checkCapture(featureId));
+      return;
+    }
+    if (!known.open) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const key = `${featureId}|${ctx.promptId}`;
+    if (this._captureCapped.get(key) === day) return;
+    if (Math.random() >= this.captureSampleRate) return;
+    const counted = this._captureDaily.get(key);
+    const count = counted && counted.day === day ? counted.count : 0;
+    if (count >= CAPTURE_MAX_PER_DAY) return;
+    this._captureDaily.set(key, { day, count: count + 1 });
+    if (this._captureInflight.size >= CAPTURE_INFLIGHT_MAX) {
+      this.captureDropped += 1;
+      return;
+    }
+    // A copy of the message list, not of the messages: an application that
+    // appends to its conversation after the call must not change what this
+    // call is recorded as having sent.
+    const request = args[0] && typeof args[0] === "object" ? { ...args[0] } : {};
+    if (Array.isArray(request.messages)) request.messages = [...request.messages];
+    const item = {
+      provider,
+      request,
+      resp,
+      featureId,
+      promptId: ctx.promptId,
+      promptVersion: ctx.promptVersion,
+      usage: { ...usage },
+      latencyMs,
+      capturedAt: nowIso(),
+    };
+    this._track(
+      new Promise((resolve) => setImmediate(resolve)).then(() => this._deliverSample(item)),
+    );
+  }
+
+  _track(promise) {
+    const tracked = Promise.resolve(promise)
+      .catch(() => {})
+      .finally(() => this._captureInflight.delete(tracked));
+    this._captureInflight.add(tracked);
+    return tracked;
+  }
+
+  async _checkCapture(featureId) {
+    this._captureChecking.add(featureId);
+    let open = false;
+    try {
+      const base = this.captureUrl.replace(/\/[^/]*$/, "");
+      const resp = await this._fetch(
+        `${base}/open?feature_id=${encodeURIComponent(featureId)}`,
+        { method: "GET", headers: { Authorization: `Bearer ${this.token}` } },
+      );
+      if (resp?.ok) open = Boolean((await resp.json())?.open);
+    } catch {
+      open = false;
+    } finally {
+      this._captureOpen.set(featureId, { open, until: Date.now() + CAPTURE_OPEN_TTL_MS });
+      this._captureChecking.delete(featureId);
+    }
+  }
+
+  /** Read, redact, size-check and post one sample. One attempt. Never throws. */
+  async _deliverSample(item) {
+    let sample;
+    try {
+      sample = readSample(item.provider, item.request, item.resp);
+    } catch {
+      sample = null;
+    }
+    if (!sample) return; // not text this SDK can read: nothing to send, nothing lost
+    const model = item.usage.model ?? item.request.model;
+    if (typeof model !== "string" || !model) return;
+    Object.assign(sample, {
+      feature_id: item.featureId,
+      prompt_id: item.promptId,
+      prompt_version: item.promptVersion,
+      provider: item.usage.provider ?? item.provider,
+      model,
+      tokens_in: item.usage.tokens_in,
+      tokens_out: item.usage.tokens_out,
+      latency_ms: item.latencyMs,
+      captured_at: item.capturedAt,
+    });
+    for (const [key, value] of Object.entries(sample)) {
+      if (value === undefined || value === null) delete sample[key];
+    }
+    if (this._redact) {
+      try {
+        sample = await this._redact(sample);
+      } catch {
+        sample = null; // a failing redactor fails closed: send nothing
+      }
+      if (!sample || typeof sample !== "object" || Array.isArray(sample)) {
+        this.captureDropped += 1;
+        return;
+      }
+    }
+    let body;
+    try {
+      body = JSON.stringify(sample);
+    } catch {
+      this.captureDropped += 1;
+      return;
+    }
+    if (Buffer.byteLength(body, "utf8") > CAPTURE_MAX_BYTES) {
+      this.captureDropped += 1;
+      return;
+    }
+    let status = 0;
+    let reason = null;
+    try {
+      const resp = await this._fetch(this.captureUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+        body,
+      });
+      if (resp?.ok) return;
+      status = resp?.status ?? 0;
+      try {
+        reason = (await resp.json())?.reason ?? null;
+      } catch {
+        reason = null;
+      }
+    } catch {
+      status = 0;
+    }
+    if (status === 403) {
+      // Consent is not there for this feature, whatever the cache said.
+      this._captureOpen.set(item.featureId, {
+        open: false,
+        until: Date.now() + CAPTURE_OPEN_TTL_MS,
+      });
+    } else if (status === 429 || reason === "daily_cap") {
+      this._captureCapped.set(
+        `${item.featureId}|${item.promptId}`,
+        new Date().toISOString().slice(0, 10),
+      );
+    }
+    this.captureDropped += 1;
   }
 
   /**
@@ -605,11 +839,93 @@ export class Meter {
     try {
       while (this._queue.length) await this._drain();
       await (this._inflight ?? Promise.resolve());
+      // Capture last: a pending check can start a sample, so settle until quiet.
+      while (this._captureInflight.size) await Promise.all([...this._captureInflight]);
       return true;
     } catch {
       return false;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Consented prompt capture: reading a call's text, and nothing else
+// ---------------------------------------------------------------------------
+/** The capture endpoint beside a standard ingest URL, or null. */
+function captureUrlFrom(ingestUrl) {
+  if (!ingestUrl) return null;
+  const base = String(ingestUrl).replace(/\/+$/, "");
+  return base.endsWith("/hook/events")
+    ? `${base.slice(0, -"/hook/events".length)}/prompt-capture/samples`
+    : null;
+}
+
+/**
+ * The text in a message's content. Only blocks whose type is text are read.
+ *
+ * That is the whole privacy boundary for tool data: a tool_use, tool_result,
+ * image or document block is never looked into, because nothing here asks for
+ * anything but a text block's `text`.
+ */
+function textOf(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block) => block && ["text", "input_text", "output_text"].includes(block.type))
+    .map((block) => block.text)
+    .filter((text) => typeof text === "string" && text)
+    .join("\n\n");
+}
+
+const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
+
+/**
+ * {template, input, output, parameters} for one call, or null.
+ *
+ * The template is the instruction text: Anthropic's `system`, or OpenAI's system
+ * and developer messages. Tool-role messages are skipped outright. A call with no
+ * instruction text, or no message text, is not a prompt this can optimize.
+ */
+function readSample(provider, request, resp) {
+  const parameters = {};
+  for (const name of ["temperature", "top_p", "max_tokens"]) {
+    if (isNumber(request[name])) parameters[name] = request[name];
+  }
+  const input = [];
+  let template = "";
+  let output = "";
+  if (provider === "anthropic") {
+    template = textOf(request.system);
+    for (const message of request.messages ?? []) {
+      if (message?.role !== "user" && message?.role !== "assistant") continue;
+      const text = textOf(message.content);
+      if (text) input.push({ role: message.role, text });
+    }
+    output = textOf(resp?.content);
+  } else if (provider === "openai") {
+    if (!("max_tokens" in parameters) && isNumber(request.max_completion_tokens)) {
+      parameters.max_tokens = request.max_completion_tokens;
+    }
+    if (typeof request.response_format?.type === "string") {
+      parameters.response_format = request.response_format.type;
+    }
+    const instructions = [];
+    for (const message of request.messages ?? []) {
+      const role = message?.role;
+      // Tool results and function results are never read.
+      if (!["system", "developer", "user", "assistant"].includes(role)) continue;
+      const text = textOf(message.content);
+      if (!text) continue;
+      if (role === "system" || role === "developer") instructions.push(text);
+      else input.push({ role, text });
+    }
+    template = instructions.join("\n\n");
+    output = textOf(resp?.choices?.[0]?.message?.content);
+  } else {
+    return null;
+  }
+  if (!template || !input.length) return null;
+  return { template, input, output, parameters };
 }
 
 export default Meter;

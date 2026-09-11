@@ -125,6 +125,13 @@ client = meter.wrap(anthropic, feature_id="...", prompt_id="triage", prompt_vers
   and metering never waits on capture.
 - The SDK asks the server whether capture is open for a feature (cached briefly);
   the server re-checks consent on every sample and refuses otherwise.
+- **v1 scope (SDK 2.1, PO-2).** Capture works through `meter.wrap(...)` for
+  Anthropic `messages.create` and OpenAI `chat.completions.create`, the two shapes
+  whose text blocks can be told apart from tool calls reliably. The template is the
+  system prompt (Anthropic `system`; OpenAI system and developer messages); a call
+  with no instruction text is not sampled. `run.llm(...)` steps cannot be sampled,
+  because the request is hidden inside the function passed in. The first call for
+  a feature only asks whether capture is open, and is itself never sampled.
 
 ## 5. Storage and security
 
@@ -265,12 +272,19 @@ Each ends with a review.
 - **PO-5 — Copilot and Prove loop.** The `prompt_optimization` lever, projected
   savings, prompt-version-based verification, handbook topics, demo data.
 
-## 12. Open questions
+## 12. Decisions and open questions
 
-1. **Replay without a provider key.** Proposed: generate and explain, but never
-   recommend, until an inference-capable key for the feature's provider exists.
-2. **Who may consent.** No tenant roles exist; password re-entry is the proposed
-   safeguard. An "organization admin" role would be a separate change.
+**Decided (founder, 2026-09-11, after PO-1 review):**
+
+1. **Replay without a provider key.** A candidate can be generated and explained
+   without one, but is **never shown as recommended** until an inference-capable
+   key for the feature's provider exists and an evaluation has passed.
+2. **Who may consent.** Anyone in the organization, with **password re-entry** as
+   the safeguard. An organization admin role remains a possible later change,
+   not a prerequisite.
+
+**Still open:**
+
 3. **Other sources.** OpenTelemetry (and Splunk, whose guide strips content) could
    feed samples later, behind the same consent, via a separate content pipeline.
 4. **Tokenizers.** Exact template token counts need per-provider tokenizers;

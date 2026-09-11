@@ -8,14 +8,44 @@ week's prompt change make every run more expensive.
 
 No dependencies. Node 18+.
 
-## What it never sends
+## What metering never sends
 
 Prompts, responses, messages, tool arguments, tool results, retrieved
 documents, error messages and stack traces.
 
-Not truncated, not redacted, not behind a setting — the events this SDK can
-construct have no field for them, and the server rejects a payload that carries
-one. What travels is identity, counts, timing and money.
+The metering events this SDK constructs have no field for them, and the server
+rejects a payload that carries one. What travels is identity, counts, timing and
+money.
+
+## Consented prompt capture (optional, 2.1+)
+
+For [Prompt Optimization](https://github.com/costlyinfra-admin/Meter/blob/main/docs/prompt-optimization-spec.md),
+a wrapped client can send a small sample of prompt text: the system prompt, the
+text of the messages and the text of the reply. It is off unless **both** of
+these are true:
+
+1. you turn it on here, and name the prompt:
+
+   ```js
+   const meter = new Meter({ capturePrompts: true }); // or METER_CAPTURE_PROMPTS=true
+   const client = meter.wrap(anthropic, {
+     featureId: "ticket-triage",
+     promptId: "classify-alert",
+     promptVersion: "v7",
+   });
+   ```
+
+2. your organization has agreed in Meter (Settings → Privacy & data) and switched
+   capture on for that feature. The SDK asks the server first, and the server
+   checks consent again for every sample.
+
+It samples about 1 call in 100, at most 50 a day per prompt. It reads only text
+blocks, so tool calls, tool results, images and files are never sent; samples
+over 64 KB are dropped, not truncated. Pass `redact` to scrub a sample before it
+leaves (returning nothing drops it). Capture has its own channel and its own
+counter, `meter.captureDropped`: it can never slow or break metering. It works
+for Anthropic `messages.create` and OpenAI `chat.completions.create` through
+`meter.wrap(...)`.
 
 ## Install
 

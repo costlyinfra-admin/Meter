@@ -22,10 +22,14 @@ import { TabPanel, Tabs } from "../components/Tabs";
 import {
   AGENT_NODE,
   AGENT_PYTHON,
+  CAPTURE_ENV_VARS,
+  CAPTURE_NODE,
+  CAPTURE_PYTHON,
   ENV_VARS,
   envSnippet,
   FLUSH_NODE,
   FLUSH_PYTHON,
+  MIN_SDK_CAPTURE,
   normalizeSlug,
   OTEL_CONTENT_OFF,
   OTEL_ENV_VARS,
@@ -212,7 +216,8 @@ export function InstallSdkPage() {
       </p>
       <p className="muted">
         It sends usage data such as token counts, model, latency, cost, and feature ID. It{" "}
-        <strong>never</strong> sends prompts, responses, tool arguments, or retrieved documents.
+        <strong>never</strong> sends prompts, responses, tool arguments, or retrieved documents,
+        unless your organization turns on Prompt optimization and a developer switches capture on.
         Reporting happens in the background and won't affect your application.
       </p>
 
@@ -647,7 +652,71 @@ costlyinfra-meter>=${MIN_SDK}`}</Snippet>
         </p>
         <Snippet>{`${FLUSH_PYTHON}\n${FLUSH_NODE}`}</Snippet>
       </section>
+
+      <PromptCaptureGuide />
     </>
+  );
+}
+
+/**
+ * How a developer turns on prompt capture. Shown only once the organization has
+ * agreed to Prompt optimization: before that, teaching a switch that would send
+ * nothing is noise, and it reads like an invitation to collect prompts that
+ * nobody has consented to.
+ */
+function PromptCaptureGuide() {
+  const [consented, setConsented] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    Promise.resolve()
+      .then(() => api.promptConsent())
+      .then((status) => {
+        if (live) setConsented(Boolean(status?.consent));
+      })
+      .catch(() => {
+        // Not knowing is the same as not consented: the section stays hidden.
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (!consented) return null;
+  return (
+    <section className="source-section">
+      <h2>6. Prompt optimization (optional)</h2>
+      <p className="muted">
+        Your organization has turned on Prompt optimization. To let a wrapped client send prompt
+        samples, switch capture on and name the prompt. Samples are sent only for features switched
+        on in{" "}
+        <Link to="/settings#privacy" className="link">
+          Settings
+        </Link>
+        , and only text: never tool calls, tool results, images or files. Requires version{" "}
+        {MIN_SDK_CAPTURE} or later.
+      </p>
+      <span className="chart-title">Python</span>
+      <Snippet>{CAPTURE_PYTHON}</Snippet>
+      <span className="chart-title">Node</span>
+      <Snippet>{CAPTURE_NODE}</Snippet>
+      <dl className="env-table">
+        {CAPTURE_ENV_VARS.map((v) => (
+          <div key={v.name}>
+            <dt>
+              <code>{v.name}</code>
+            </dt>
+            <dd className="muted">{v.note}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="muted">
+        Change the prompt version whenever the prompt changes, so a saving can be checked against
+        the version that earned it. Pass <code>redact</code> to scrub known identifiers before a
+        sample leaves. Capture works for Anthropic <code>messages.create</code> and OpenAI{" "}
+        <code>chat.completions.create</code> through <code>wrap</code>.
+      </p>
+    </section>
   );
 }
 

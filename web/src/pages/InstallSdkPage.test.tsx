@@ -15,6 +15,7 @@ vi.mock("../api", async (importActual) => {
       listFeatures: vi.fn(),
       recentHookEvent: vi.fn(),
       recentOtelTrace: vi.fn(),
+      promptConsent: vi.fn(),
       aiApplications: vi.fn(),
     },
   };
@@ -47,6 +48,7 @@ beforeEach(() => {
   vi.mocked(api.listFeatures).mockResolvedValue([]);
   vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
   vi.mocked(api.recentOtelTrace).mockResolvedValue({ trace: null });
+  vi.mocked(api.promptConsent).mockResolvedValue({ consent: null } as never);
   vi.mocked(api.aiApplications).mockResolvedValue({
     applications: [],
     from: "2026-08-10",
@@ -635,5 +637,30 @@ describe("InstallSdkPage — Splunk Observability Cloud", () => {
       await screen.findByText(/Waiting for your first OpenTelemetry trace/),
     ).toBeInTheDocument();
     expect(api.recentHookEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("InstallSdkPage — prompt capture", () => {
+  it("does not teach capture before the organization has agreed", async () => {
+    renderPage("/install-sdk?tab=manual");
+    await screen.findByRole("heading", { name: "1. Install the package" });
+    await waitFor(() => expect(api.promptConsent).toHaveBeenCalled());
+    expect(screen.queryByRole("heading", { name: /Prompt optimization/ })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("capture_prompts");
+  });
+
+  it("teaches the switch and the prompt name once the organization has agreed", async () => {
+    vi.mocked(api.promptConsent).mockResolvedValue({
+      consent: { granted_by: "cto@acme.com" },
+    } as never);
+    renderPage("/install-sdk?tab=manual");
+    const heading = await screen.findByRole("heading", { name: /6. Prompt optimization/ });
+    const section = heading.closest("section")!;
+    expect(section.textContent).toContain("capture_prompts=True");
+    expect(section.textContent).toContain("prompt_version=");
+    expect(section.textContent).toContain("capturePrompts: true");
+    expect(section.textContent).toMatch(/never tool calls, tool results, images or files/);
+    expect(section.textContent).toContain("METER_CAPTURE_PROMPTS");
+    expect(section.textContent).toContain("METER_CAPTURE_URL");
   });
 });

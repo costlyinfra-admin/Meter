@@ -428,7 +428,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "optionally, a customer identifier you supply in metadata",
           ),
           p(
-            "It never sends prompt text, response text, or source code. Cost is computed **server-side** from Meter's pricing tables, so the SDK never sees prices either.",
+            "Metering never sends prompt text, response text, or source code. Cost is computed **server-side** from Meter's pricing tables, so the SDK never sees prices either. The one exception is optional: with capture switched on in the SDK (2.1 or later) **and** your organization's consent for the feature, it sends a small sample of prompt text for [Prompt optimization](/help/trust/prompt-optimization), on its own channel, and never tool calls, tool results, images or files.",
           ),
           p(
             "Optimize mode, which is off by default, adds salted hashes and counts describing the *shape* of your traffic — enough to spot a repeated prompt prefix or a duplicated call, never enough to reconstruct one.",
@@ -979,6 +979,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "**Who sees prompts** is named on the consent screen: your organization's own model if you set one under Bring your own key, otherwise Meter's. If that changes, capture pauses until someone agrees again.",
             "**Every view is logged.** The activity list in Settings shows who did what, never the prompts themselves.",
             "**Meter staff** viewing your account for support cannot turn capture on, withdraw it, or read captured prompts.",
+            "**A developer has to switch it on too**: `capture_prompts` in the SDK (2.1 or later), with each prompt named by `prompt_id` and `prompt_version`. Consent alone sends nothing, and so does the switch alone.",
           ),
           note(
             "Withdrawing consent deletes everything collected immediately and destroys the encryption key, so no copy that survives anywhere, including a backup, can be read.",

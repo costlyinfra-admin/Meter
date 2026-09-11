@@ -1,6 +1,6 @@
 [project]
 name = "costlyinfra-meter"
-version = "2.0.0"
+version = "2.1.0"
 description = "Meter — emit per-call LLM usage events for per-feature cost attribution."
 readme = "README.md"
 requires-python = ">=3.9"
