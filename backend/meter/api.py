@@ -29,6 +29,7 @@ from . import (
     alerts_eval,
     applications,
     assistant,
+    assistant_facts,
     auth,
     budgets,
     build,
@@ -1775,11 +1776,20 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
             ) from exc
+        # The tenant's own data, assembled per question and scoped by RLS. A
+        # failure here must not cost the customer their answer: the handbook
+        # half still works, so a broken snapshot degrades rather than errors.
+        try:
+            facts = assistant_facts.snapshot(user["tenant_id"], body.question)
+        except Exception:  # noqa: BLE001 — logged, then answered without it
+            logger.warning("assistant facts unavailable", exc_info=True)
+            facts = None
         return assistant.answer(
             body.question,
             passages=[p.model_dump() for p in body.passages],
             history=[t.model_dump() for t in body.history],
             page=body.page,
+            facts=facts,
         )
 
     @app.get("/api/dashboard/providers")

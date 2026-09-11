@@ -4875,28 +4875,29 @@ button.method-head:hover .method-title {
   padding-top: 4px;
 }
 
-.assist-btn {
-  flex: 1;
-  height: 36px;
-  display: flex;
+/* Secondary exits from the conversation. Two full-width buttons competed with
+   the thing someone opened this panel to do, so they are icons — the label
+   survives as the accessible name and the tooltip. */
+.assist-actions {
+  justify-content: flex-end;
+}
+
+.assist-icon-btn {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 0;
-  border-radius: 10px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-size: 13px;
-  font-weight: 500;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--muted);
   text-decoration: none;
 }
 
-.assist-btn.ghost {
-  border: 1px solid var(--line);
-  background: var(--bg);
+.assist-icon-btn:hover {
   color: var(--ink);
-}
-
-.assist-btn:hover {
+  border-color: var(--ink);
   text-decoration: none;
 }
 

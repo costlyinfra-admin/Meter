@@ -1,10 +1,22 @@
-"""The in-app support assistant: answers grounded in the Meter handbook.
+"""The in-app assistant: answers grounded in the handbook AND the tenant's data.
 
-The assistant is deliberately **not** a general chatbot. It answers a customer's
-support and technical questions from the knowledge base (`web/src/help`) and
-nothing else, because an invented answer about how cost attribution works is
-worse than no answer at all — this product's entire premise is that every number
-is explainable.
+The assistant is deliberately **not** a general chatbot. It answers from two
+sources and nothing else, because an invented answer about how cost attribution
+works is worse than no answer at all — this product's entire premise is that
+every number is explainable.
+
+**The handbook** (`web/src/help`) explains how Meter works: what build cost is,
+how discovery attributes a PR, what confidence means.
+
+**A data snapshot** (`assistant_facts`) answers what the handbook cannot: is an
+agent stuck, when did the data last refresh, what moved this month. It is a
+bounded, read-only summary assembled per question under the same RLS as every
+other read, and it carries nothing that is not already on a screen — no prompt
+or response text, no customer identifiers, no credentials.
+
+Numbers in an answer must come from that snapshot. The model is told so
+explicitly, because a plausible invented figure is the single worst thing this
+assistant could produce.
 
 **Where the handbook comes from.** Retrieval runs in the browser, over the
 knowledge base already shipped in the app bundle, and the matching excerpts are
@@ -49,6 +61,9 @@ MAX_PASSAGE_CHARS = 2400
 MAX_HISTORY = 6
 MAX_HISTORY_CHARS = 1200
 MAX_ANSWER_TOKENS = 500
+#: The data snapshot is summaries, not rows, so this is a backstop rather than a
+#: budget — a tenant with thousands of traces produces the same size snapshot.
+MAX_FACTS_CHARS = 6000
 
 #: A support answer should feel like a reply, not a batch job.
 TIMEOUT = 30.0
@@ -80,15 +95,28 @@ product that takes a company's blended AI bill and splits it into per-feature \
 cost — what each feature cost to BUILD (AI coding tools) and to RUN (inference). \
 The people asking are CTOs, CFOs and their engineers.
 
-You will be given HANDBOOK excerpts from Meter's own documentation. Those \
-excerpts are your only source of truth.
+You will be given two sources, and they are your only sources of truth:
+
+1. HANDBOOK excerpts — Meter's own documentation. Use these for how the product \
+works: definitions, mechanisms, setup.
+2. DATA — a live, read-only snapshot of THIS customer's own numbers. Use this for \
+anything about their actual usage: what is running, what it cost, when it last \
+refreshed, what changed.
 
 Rules:
-- Answer ONLY from the excerpts. If they do not cover the question, say so \
-plainly in one sentence and suggest contacting support. Never guess, and never \
-fall back on what you know about other products.
-- Never invent a number, a price, a limit, a plan, a screen, a setting name or a \
-provider. If the excerpts do not state it, you do not know it.
+- Answer ONLY from the handbook excerpts and the DATA. If neither covers the \
+question, say so plainly in one sentence and suggest contacting support. Never \
+guess, and never fall back on what you know about other products.
+- EVERY number, name, date or trace id you state must appear in the DATA. Never \
+estimate, never round into a different figure, never infer a total that is not \
+there. If the DATA does not contain it, say what you would need instead.
+- When the DATA shows the numbers are stale, say so before answering with them. \
+An answer from three-day-old data that does not mention its age is misleading.
+- Be careful with cause. The DATA shows what changed, not why. Say "spend on X \
+rose from A to B" and offer the likely place to look — never assert a cause the \
+data cannot show.
+- Never invent a price, a limit, a plan, a screen, a setting name or a provider. \
+If neither source states it, you do not know it.
 - Be brief and concrete: two to four sentences, or a short list of up to four \
 items. Plain business language, no filler, no "great question".
 - Say "build cost" and "inference cost" as separate things. They are never added \
@@ -116,7 +144,25 @@ def _passage_block(passages: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def _messages(question: str, history: list[dict], passages: list[dict], page: str) -> list[dict]:
+def _facts_block(facts: Optional[dict]) -> str:
+    """The data snapshot, as compact JSON.
+
+    JSON rather than prose: the model has to quote these figures exactly, and a
+    sentence invites it to paraphrase a number into a different one.
+    """
+    if not facts:
+        return ""
+    text = json.dumps(facts, separators=(",", ":"), default=str)
+    return f"\n\nDATA (this customer's own, live):\n{text[:MAX_FACTS_CHARS]}"
+
+
+def _messages(
+    question: str,
+    history: list[dict],
+    passages: list[dict],
+    page: str,
+    facts: Optional[dict] = None,
+) -> list[dict]:
     messages = [{"role": "system", "content": SYSTEM}]
     for turn in history[-MAX_HISTORY:]:
         role = "assistant" if turn.get("role") == "assistant" else "user"
@@ -128,7 +174,8 @@ def _messages(question: str, history: list[dict], passages: list[dict], page: st
         {
             "role": "user",
             "content": (
-                f"HANDBOOK EXCERPTS:\n{_passage_block(passages)}\n\n"
+                f"HANDBOOK EXCERPTS:\n{_passage_block(passages)}"
+                f"{_facts_block(facts)}\n\n"
                 f"QUESTION: {question[:MAX_QUESTION]}{where}"
             ),
         }
@@ -200,9 +247,10 @@ def answer(
     passages: list[dict],
     history: Optional[list[dict]] = None,
     page: str = "",
+    facts: Optional[dict] = None,
     client: Optional[httpx.Client] = None,
 ) -> dict:
-    """Answer one support question from the supplied handbook excerpts.
+    """Answer one question from the handbook excerpts and the data snapshot.
 
     Never raises for a provider problem: a wedged or misconfigured endpoint
     degrades to the handbook excerpt rather than to an error dialog.
@@ -212,14 +260,17 @@ def answer(
         raise ValueError("A question is required.")
 
     config = env_llm_config()
-    if config is None or not passages:
+    # Facts alone are enough to be worth asking: "is an agent stuck" has no
+    # handbook topic behind it, and refusing for want of an excerpt would be
+    # withholding an answer we can give.
+    if config is None or (not passages and not facts):
         return _excerpt_answer(passages)
 
     body = {
         "model": config.model or DEFAULT_DISCOVERY_MODEL,
         "temperature": 0.2,
         "max_tokens": MAX_ANSWER_TOKENS,
-        "messages": _messages(question, history or [], passages, page),
+        "messages": _messages(question, history or [], passages, page, facts),
     }
     headers = {"Content-Type": "application/json"}
     if config.api_key:

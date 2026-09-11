@@ -34,7 +34,27 @@ function ask(question: string) {
   fireEvent.click(screen.getByRole("button", { name: /send question/i }));
 }
 
+/** Reveal a reply instantly. These tests are about what an answer says, not how
+ *  it arrives; the reveal itself has its own test below. */
+function instantReplies(reduce = true) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    configurable: true,
+    value: (query: string) => ({
+      matches: reduce && query.includes("reduce"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }),
+  });
+}
+
 beforeEach(() => {
+  instantReplies();
   sessionStorage.clear();
   askAssistant.mockReset();
   assistantMeta.mockReset().mockResolvedValue({
@@ -59,8 +79,16 @@ describe("support assistant", () => {
   it("opens on a greeting and a set of common questions", async () => {
     await open();
     expect(screen.getByRole("dialog", { name: /support assistant/i })).toBeInTheDocument();
-    expect(screen.getByText(/I'm the Meter assistant/)).toBeInTheDocument();
+    expect(screen.getByText(/Ask me anything about your AI usage/)).toBeInTheDocument();
     expect(screen.getByText("Common questions")).toBeInTheDocument();
+    // The starters show both halves it can answer from: live data, and how a
+    // number is built.
+    expect(
+      screen.getByRole("button", { name: /Is an agent stuck in a loop/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /When was my data last refreshed/i }),
+    ).toBeInTheDocument();
   });
 
   it("answers a question, grounded in handbook excerpts it sends with it", async () => {
@@ -120,7 +148,7 @@ describe("support assistant", () => {
       composed: true,
     });
     await open();
-    fireEvent.click(screen.getByRole("button", { name: /How do I connect a provider/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Which traces used the most tokens/i }));
 
     await waitFor(() => expect(askAssistant).toHaveBeenCalled());
     // Suggestions give way to the conversation once it has started.
@@ -170,5 +198,43 @@ describe("support assistant", () => {
     await open();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("support assistant — how a reply arrives", () => {
+  it("reveals the answer rather than pasting it whole", async () => {
+    // A whole answer appearing at once reads as a lookup. Revealing it reads as
+    // a reply — and gives someone a beat to start at the top.
+    instantReplies(false);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    askAssistant.mockResolvedValue({
+      answer: "Build cost and inference cost are tracked separately, and never added together.",
+      sources: [],
+      answered: true,
+    });
+    await open();
+    fireEvent.change(screen.getByLabelText(/ask the assistant/i), { target: { value: "how?" } });
+    fireEvent.submit(screen.getByRole("button", { name: /send question/i }).closest("form")!);
+
+    // Part-way through, some of it is on screen and the rest is not.
+    await vi.advanceTimersByTimeAsync(300);
+    const bubble = () => document.querySelectorAll(".assist-msg.bot");
+    const partial = bubble()[bubble().length - 1].textContent ?? "";
+    expect(partial.length).toBeGreaterThan(2);
+    expect(partial).not.toContain("never added together");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(screen.getByText(/never added together/)).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("shows it whole for someone who asked for less motion", async () => {
+    instantReplies(true);
+    askAssistant.mockResolvedValue({ answer: "All of it at once.", sources: [], answered: true });
+    await open();
+    fireEvent.change(screen.getByLabelText(/ask the assistant/i), { target: { value: "how?" } });
+    fireEvent.submit(screen.getByRole("button", { name: /send question/i }).closest("form")!);
+
+    expect(await screen.findByText("All of it at once.")).toBeInTheDocument();
   });
 });
