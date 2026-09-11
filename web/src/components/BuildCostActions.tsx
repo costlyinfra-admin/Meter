@@ -9,8 +9,8 @@
  *  4. CSV import — universal fallback.
  *  5. Fine-tune / training cost — one-time, added manually.
  */
-import { useEffect, useState, type ReactNode } from "react";
-import { api, ApiError, type SeatSource } from "../api";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { api, ApiError, type ManualBuildEntry, type SeatSource } from "../api";
 import { money } from "../format";
 
 export interface FeatureOption {
@@ -65,6 +65,14 @@ export function BuildCostActions({
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [csv, setCsv] = useState("");
+  // The manual-entry form. Kept as strings so a half-typed amount does not
+  // become NaN under the cursor.
+  const [mDev, setMDev] = useState("");
+  const [mHandle, setMHandle] = useState("");
+  const [mTool, setMTool] = useState("cursor");
+  const [mAmount, setMAmount] = useState("");
+  const [mMonths, setMMonths] = useState("1");
+  const [manual, setManual] = useState<ManualBuildEntry[] | null>(null);
   const [tool, setTool] = useState("cursor");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -236,6 +244,59 @@ export function BuildCostActions({
       await onChanged();
     } catch (err) {
       setNote(err instanceof ApiError ? err.message : "Import failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const loadManual = useCallback(async () => {
+    try {
+      setManual((await api.manualBuildCost(monthParam)).entries);
+    } catch {
+      setManual([]); // the list is an aid; losing it must not block adding
+    }
+  }, [monthParam]);
+
+  useEffect(() => {
+    if (openId === "manual") void loadManual();
+  }, [openId, loadManual]);
+
+  async function addManual() {
+    const amount = parseFloat(mAmount);
+    if (!mDev.trim() || !Number.isFinite(amount) || amount <= 0) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api.addManualBuildCost({
+        developer: mDev.trim(),
+        github_handle: mHandle.trim() || undefined,
+        tool: mTool,
+        amount,
+        period: monthParam,
+        months: Math.max(1, parseInt(mMonths, 10) || 1),
+      });
+      setMDev("");
+      setMHandle("");
+      setMAmount("");
+      setMMonths("1");
+      setNote(
+        `Added ${money(amount)} of ${mTool.replace("_", " ")} cost (total ${money(r.total)}).`,
+      );
+      await loadManual();
+      await onChanged();
+    } catch (err) {
+      setNote(err instanceof ApiError ? err.message : "Could not add that cost.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeManual(id: string) {
+    setBusy(true);
+    try {
+      await api.deleteManualBuildCost(id);
+      await loadManual();
+      await onChanged();
     } finally {
       setBusy(false);
     }
@@ -469,7 +530,102 @@ export function BuildCostActions({
           </span>
         </MethodCard>
 
-        {/* 4 — CSV import (universal fallback). */}
+        {/* 4 — Add one figure by hand. */}
+        <MethodCard
+          id="manual"
+          title="Add a cost manually"
+          tagline="One developer, one tool, one amount. For spend no connector can see."
+          openId={openId}
+          setOpenId={setOpenId}
+        >
+          <p className="method-help">
+            For spend Meter cannot reach — a tool without an API, an invoice you were sent, a seat
+            billed outside your org. Unlike a sync or a CSV import, this is <strong>added</strong>{" "}
+            to the month rather than replacing it, and a later sync will not remove it. The GitHub
+            handle is what attributes the cost to features through PR authorship; without one it
+            lands in Unattributed.
+          </p>
+          <div className="manual-cost-form">
+            <label>
+              Developer
+              <input
+                value={mDev}
+                onChange={(e) => setMDev(e.target.value)}
+                placeholder="Dana Patel"
+                aria-label="Developer name"
+              />
+            </label>
+            <label>
+              GitHub handle
+              <input
+                value={mHandle}
+                onChange={(e) => setMHandle(e.target.value)}
+                placeholder="dpatel"
+                aria-label="GitHub handle"
+              />
+            </label>
+            <label>
+              Tool
+              <select value={mTool} onChange={(e) => setMTool(e.target.value)} aria-label="Tool">
+                <option value="cursor">Cursor</option>
+                <option value="claude_code">Claude Code</option>
+                <option value="copilot">Copilot</option>
+                <option value="codex">Codex</option>
+              </select>
+            </label>
+            <label>
+              Amount ($)
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={mAmount}
+                onChange={(e) => setMAmount(e.target.value)}
+                placeholder="120.00"
+                aria-label="Amount"
+              />
+            </label>
+            <label>
+              Months
+              <input
+                type="number"
+                min="1"
+                max="24"
+                value={mMonths}
+                onChange={(e) => setMMonths(e.target.value)}
+                aria-label="Months"
+              />
+            </label>
+            <button onClick={addManual} disabled={busy || !mDev.trim() || !mAmount.trim()}>
+              Add cost
+            </button>
+          </div>
+          {manual && manual.length > 0 && (
+            <>
+              <span className="chart-title">Added by hand this month</span>
+              <ul className="manual-cost-list">
+                {manual.map((e) => (
+                  <li key={e.id}>
+                    <span className="manual-cost-dev">{e.developer}</span>
+                    <span className="muted">{e.tool.replace("_", " ")}</span>
+                    <span className="manual-cost-amount">{money(e.amount)}</span>
+                    <button
+                      type="button"
+                      className="linklike danger"
+                      onClick={() => void removeManual(e.id)}
+                      disabled={busy}
+                      aria-label={`Remove ${e.developer}`}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </MethodCard>
+
+        {/* 5 — CSV import (universal fallback). */}
         <MethodCard
           id="csv"
           title="Import a CSV"
@@ -507,7 +663,7 @@ export function BuildCostActions({
           </span>
         </MethodCard>
 
-        {/* 5 — Fine-tune / training cost (one-time, manual). */}
+        {/* 6 — Fine-tune / training cost (one-time, manual). */}
         <MethodCard
           id="training"
           title="Fine-tuning / training runs"

@@ -338,6 +338,16 @@ export interface AiApplication {
 
 /** One stored account under a connector. Identity and dates only — the secret
  *  is never returned by any route. */
+/** One hand-entered build-cost line. */
+export interface ManualBuildEntry {
+  id: string;
+  developer: string;
+  handle: string | null;
+  tool: string;
+  amount: number;
+  created_at: string | null;
+}
+
 export interface ConnectorCredential {
   id: string;
   label: string | null;
@@ -1346,6 +1356,23 @@ export const api = {
     request<void>(`/connectors/${connectorType}/credentials/${credentialId}`, {
       method: "DELETE",
     }),
+
+  /** Build cost someone entered by hand. Additive: it sits alongside synced
+   *  rows rather than replacing the tool's month. */
+  addManualBuildCost: (entry: {
+    developer: string;
+    github_handle?: string;
+    tool: string;
+    amount: number;
+    period?: string;
+    months?: number;
+  }) =>
+    request<{ total: number }>("/build/manual", { method: "POST", body: JSON.stringify(entry) }),
+
+  manualBuildCost: (period?: string) =>
+    request<{ entries: ManualBuildEntry[] }>(`/build/manual${period ? `?period=${period}` : ""}`),
+
+  deleteManualBuildCost: (id: string) => request<void>(`/build/manual/${id}`, { method: "DELETE" }),
 
   // ---- Discovery + features (wizard step 2) ----
   discoveryRepos: (owner: string) =>

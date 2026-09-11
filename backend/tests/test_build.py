@@ -311,3 +311,89 @@ def test_reattribute_leaves_directly_attributed_fine_tuning_alone(discovered):
 
 def test_reattribute_with_no_allocated_rows_is_a_no_op(tenant_id):
     assert build.reattribute(tenant_id) == {"rows": 0, "attributed": 0.0, "unattributed": 0.0}
+
+
+# ---- Manually entered build cost ------------------------------------------
+# Every other path here is authoritative about a tool and a month: it replaces
+# that cell, because it can see the whole of it. A typed figure exists precisely
+# because no connector can see it, so it must be additive in both directions.
+def _manual(tenant_id, **over):
+    kwargs = {
+        "developer": "Dana",
+        "handle": "dana",
+        "tool": "cursor",
+        "amount": Decimal("120.00"),
+        "period": PERIOD,
+        "months": 1,
+    }
+    kwargs.update(over)
+    return build.add_manual_spend(tenant_id, **kwargs)
+
+
+def test_a_manual_entry_adds_to_what_a_sync_already_wrote(tenant_id):
+    build.allocate_and_store(
+        tenant_id, [build.DeveloperSpend("alice", "cursor", Decimal("80.00"))], PERIOD
+    )
+    summary = _manual(tenant_id)
+    # $80 synced + $120 typed. Replacing the cell would have shown $120.
+    assert summary["total"] == pytest.approx(200.0)
+
+
+def test_a_later_sync_does_not_delete_a_manual_entry(tenant_id):
+    _manual(tenant_id)
+    # A Cursor sync is authoritative about what Cursor can see — and it cannot
+    # see an invoice somebody typed in.
+    summary = build.allocate_and_store(
+        tenant_id, [build.DeveloperSpend("alice", "cursor", Decimal("80.00"))], PERIOD
+    )
+    assert summary["total"] == pytest.approx(200.0)
+
+
+def test_a_sync_still_replaces_its_own_rows(tenant_id):
+    # The additive rule must not turn syncs into accumulators.
+    for _ in range(3):
+        summary = build.allocate_and_store(
+            tenant_id, [build.DeveloperSpend("alice", "cursor", Decimal("80.00"))], PERIOD
+        )
+    assert summary["total"] == pytest.approx(80.0)
+
+
+def test_manual_entries_accumulate_because_that_is_the_point(tenant_id):
+    _manual(tenant_id, developer="Dana", amount=Decimal("120.00"))
+    summary = _manual(tenant_id, developer="Sam", handle="sam", amount=Decimal("30.00"))
+    assert summary["total"] == pytest.approx(150.0)
+
+
+def test_a_manual_entry_can_be_listed_and_removed(tenant_id):
+    # Without this a typo would be permanent, and invisible among synced rows.
+    _manual(tenant_id, amount=Decimal("999.00"))
+    entries = build.list_manual_spend(tenant_id, PERIOD)
+    assert [e["developer"] for e in entries] == ["Dana"]
+    assert entries[0]["amount"] == pytest.approx(999.0)
+
+    assert build.delete_manual_spend(tenant_id, entries[0]["id"]) is True
+    assert build.list_manual_spend(tenant_id, PERIOD) == []
+    assert build.build_summary(tenant_id, PERIOD)["total"] == pytest.approx(0.0)
+
+
+def test_a_manual_entry_can_backfill_several_months(tenant_id):
+    _manual(tenant_id, amount=Decimal("50.00"), months=3)
+    # $50 in each of three months, the same rule the CSV import follows.
+    assert build.build_summary(tenant_id, PERIOD)["total"] == pytest.approx(50.0)
+    earlier = dt.date(PERIOD.year, PERIOD.month - 1, 1) if PERIOD.month > 1 else PERIOD
+    if earlier != PERIOD:
+        assert build.build_summary(tenant_id, earlier)["total"] == pytest.approx(50.0)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"amount": Decimal("0")},
+        {"amount": Decimal("-5")},
+        {"tool": "notatool"},
+        {"developer": "   "},
+    ],
+)
+def test_a_nonsense_manual_entry_is_refused(tenant_id, bad):
+    with pytest.raises(ValueError):
+        _manual(tenant_id, **bad)

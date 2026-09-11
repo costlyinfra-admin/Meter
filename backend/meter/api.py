@@ -13,6 +13,7 @@ import datetime as dt
 import logging
 import os
 import time
+from decimal import Decimal
 from typing import Annotated, Literal, Optional
 
 import httpx
@@ -389,6 +390,17 @@ class InfraImportRequest(BaseModel):
     # How the customer corrected a column we guessed wrong, e.g.
     # {"amount": "Cost (USD)"}. Keys are meanings, values are the file's headers.
     mapping: Optional[dict] = None
+
+
+class ManualBuildRequest(BaseModel):
+    developer: str = Field(min_length=1, max_length=200)
+    github_handle: Optional[str] = Field(default=None, max_length=120)
+    tool: str = Field(min_length=1, max_length=40)
+    #: Dollars. Bounded so a slipped decimal point is refused rather than stored.
+    amount: float = Field(gt=0, le=10_000_000)
+    period: Optional[str] = None
+    #: How many months back to record the same figure, ending at `period`.
+    months: int = Field(default=1, ge=1, le=24)
 
 
 class BuildImportRequest(BaseModel):
@@ -1377,6 +1389,33 @@ def create_app() -> FastAPI:
         except build.CsvImportError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return build.allocate_and_store(user["tenant_id"], spends, period)
+
+    @app.post("/api/build/manual")
+    def add_manual_build_cost(body: ManualBuildRequest, user: CurrentUser) -> dict:
+        # Additive, unlike the CSV import: this is spend no connector can see,
+        # so it sits alongside whatever a sync already wrote.
+        try:
+            return build.add_manual_spend(
+                user["tenant_id"],
+                developer=body.developer,
+                handle=body.github_handle,
+                tool=body.tool,
+                amount=Decimal(str(body.amount)),
+                period=_parse_period(body.period),
+                months=body.months,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get("/api/build/manual")
+    def list_manual_build_cost(user: CurrentUser, period: Optional[str] = None) -> dict:
+        return {"entries": build.list_manual_spend(user["tenant_id"], _parse_period(period))}
+
+    @app.delete("/api/build/manual/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_manual_build_cost(entry_id: str, user: CurrentUser) -> Response:
+        if not build.delete_manual_spend(user["tenant_id"], entry_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post("/api/inference/refresh")
     def refresh_inference(user: CurrentUser) -> dict:

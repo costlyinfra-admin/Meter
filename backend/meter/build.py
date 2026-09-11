@@ -225,8 +225,13 @@ def allocate_and_store(tenant_id: str, spends: list[DeveloperSpend], period: dt.
         dist = _developer_feature_distribution(conn)
         for tool, periods in tool_periods.items():
             conn.execute(
-                "DELETE FROM build_cost WHERE tool = %s AND period = ANY(%s)",
-                (tool, list(periods)),
+                # Manual rows are excluded. A sync is authoritative about what
+                # the connector can see; it knows nothing about a figure someone
+                # typed in from an invoice, and clearing it would delete money
+                # the customer told us about on purpose.
+                "DELETE FROM build_cost WHERE tool = %s AND period = ANY(%s) "
+                "AND (source IS NULL OR source <> %s)",
+                (tool, list(periods), MANUAL_SOURCE),
             )
         for spend in spends:
             feature_counts = dist.get(_attribution_key(spend), {})
@@ -248,6 +253,10 @@ def allocate_and_store(tenant_id: str, spends: list[DeveloperSpend], period: dt.
 #: Rows written by the PR-authorship allocator. Fine-tuning runs (source
 #: 'fine_tune') are attributed directly by the user and must never be re-derived.
 _ALLOCATED_SOURCE = "coding_tool+github"
+
+#: Rows a person typed in. They are ADDITIVE — a spend a connector cannot see —
+#: so a sync must never clear them, and adding one must never clear a sync's.
+MANUAL_SOURCE = "manual"
 
 
 def reattribute(tenant_id: str) -> dict:
@@ -302,13 +311,129 @@ def reattribute(tenant_id: str) -> dict:
     }
 
 
-def _insert_build_cost(conn, tenant_id, feature_id, spend, amount, confidence, period):
+def add_manual_spend(
+    tenant_id: str,
+    *,
+    developer: str,
+    handle: Optional[str],
+    tool: str,
+    amount: Decimal,
+    period: dt.date,
+    months: int = 1,
+) -> dict:
+    """Record build cost a person entered by hand. Returns the updated summary.
+
+    ADDITIVE, unlike every other path here. The imports and syncs are
+    authoritative about a tool and a month — they replace that cell — because
+    they can see the whole of it. A typed figure is the opposite: it exists
+    precisely because no connector can see it, so it is added alongside whatever
+    is already there and is not cleared by the next sync.
+
+    Attribution is the same as everywhere else: the developer's PR authorship
+    splits the amount across features, and a developer with no attributable PRs
+    lands in Unattributed rather than being guessed at.
+    """
+    if tool not in VALID_TOOLS:
+        raise ValueError(f"Unknown tool: {tool}")
+    if amount <= 0:
+        raise ValueError("Amount must be greater than 0.")
+    months = max(1, min(int(months), 24))
+    developer = (developer or "").strip()
+    if not developer:
+        raise ValueError("A developer name is required.")
+
+    spend = DeveloperSpend(
+        developer_id=(handle or developer).strip(),
+        tool=tool,
+        amount=amount,
+        name=developer,
+        handle=(handle or "").strip() or None,
+        months=months,
+    )
+    anchor = month_start(period)
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        dist = _developer_feature_distribution(conn)
+        feature_counts = dist.get(_attribution_key(spend), {})
+        for p in _month_span(anchor, months):
+            if not feature_counts:
+                _insert_build_cost(
+                    conn, tenant_id, None, spend, spend.amount, "low", p, MANUAL_SOURCE
+                )
+                continue
+            confidence = "high" if len(feature_counts) == 1 else "med"
+            for feature_id, part in _split_amount(spend.amount, feature_counts).items():
+                _insert_build_cost(
+                    conn, tenant_id, feature_id, spend, part, confidence, p, MANUAL_SOURCE
+                )
+    return build_summary(tenant_id, period)
+
+
+def list_manual_spend(tenant_id: str, period: dt.date) -> list[dict]:
+    """Manually-entered build cost for a month, newest first.
+
+    Listed so a typo can be found and removed. Without this, a wrong figure
+    entered by hand would be permanent and invisible among the synced rows.
+    """
+    start = month_start(period)
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        rows = conn.execute(
+            """
+            SELECT MIN(id::text), COALESCE(developer_name, developer_id), github_handle, tool,
+                   SUM(amount), created_at
+            FROM build_cost
+            WHERE source = %s AND period = %s
+            GROUP BY COALESCE(developer_name, developer_id), github_handle, tool, created_at
+            ORDER BY created_at DESC
+            """,
+            (MANUAL_SOURCE, start),
+        ).fetchall()
+    return [
+        {
+            "id": rid,
+            "developer": name,
+            "handle": handle,
+            "tool": tool,
+            "amount": float(amount),
+            "created_at": created.isoformat() if created else None,
+        }
+        for rid, name, handle, tool, amount, created in rows
+    ]
+
+
+def delete_manual_spend(tenant_id: str, entry_id: str) -> bool:
+    """Remove one manual entry, across every month it was written to."""
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            "SELECT developer_name, developer_id, github_handle, tool, created_at "
+            "FROM build_cost WHERE id::text = %s AND source = %s",
+            (entry_id, MANUAL_SOURCE),
+        ).fetchone()
+        if row is None:
+            return False
+        name, dev_id, handle, tool, created = row
+        # One entry can span several months and several features, so it is
+        # identified by what was typed rather than by a single row id.
+        conn.execute(
+            """
+            DELETE FROM build_cost
+            WHERE source = %s AND tool = %s AND created_at = %s
+              AND COALESCE(developer_name, '') = COALESCE(%s, '')
+              AND COALESCE(developer_id, '') = COALESCE(%s, '')
+            """,
+            (MANUAL_SOURCE, tool, created, name, dev_id),
+        )
+    return True
+
+
+def _insert_build_cost(
+    conn, tenant_id, feature_id, spend, amount, confidence, period, source=_ALLOCATED_SOURCE
+):
     conn.execute(
         """
         INSERT INTO build_cost
             (tenant_id, feature_id, developer_id, developer_name, github_handle, tool,
              amount, period, confidence, source)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'coding_tool+github')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             tenant_id,
@@ -320,6 +445,7 @@ def _insert_build_cost(conn, tenant_id, feature_id, spend, amount, confidence, p
             amount,
             period,
             confidence,
+            source,
         ),
     )
 
