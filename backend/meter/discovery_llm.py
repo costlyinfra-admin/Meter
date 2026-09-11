@@ -44,8 +44,11 @@ class LlmConfig:
     model: str
 
 
-#: The model used when nothing else is configured.
-DEFAULT_DISCOVERY_MODEL = "llama-3.3-70b-versatile"
+#: The model used when nothing else is configured. Groq retired
+#: llama-3.3-70b-versatile for Free and Developer plans in August 2026, so a
+#: default naming it would fail for exactly the accounts most likely to be
+#: relying on a default at all.
+DEFAULT_DISCOVERY_MODEL = "openai/gpt-oss-120b"
 
 
 def env_llm_config() -> Optional[LlmConfig]:
@@ -53,7 +56,7 @@ def env_llm_config() -> Optional[LlmConfig]:
 
     METER_DISCOVERY_BASE_URL  e.g. https://api.groq.com/openai/v1
     METER_DISCOVERY_API_KEY   the provider key ("ollama" for local Ollama)
-    METER_DISCOVERY_MODEL     e.g. llama-3.3-70b-versatile
+    METER_DISCOVERY_MODEL     e.g. openai/gpt-oss-120b
     """
     base = os.environ.get("METER_DISCOVERY_BASE_URL")
     if not base:

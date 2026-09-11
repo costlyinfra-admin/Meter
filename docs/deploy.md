@@ -145,9 +145,47 @@ using the ingest token from **POST `/api/hook/token`** (offered in onboarding).
 | `METER_SECURE_COOKIES` | set to `true` in prod (blueprint default) | Secure session cookie over HTTPS |
 | `METER_STATIC_DIR` | set by the Docker image | Tells the API to also serve the web app |
 | `METER_ADMIN_EMAILS` | Render (comma-separated) | Unlocks the internal Admin Portal for these accounts |
+| `METER_DISCOVERY_BASE_URL` | Render (blueprint default) | OpenAI-compatible endpoint for feature discovery and the in-app assistant |
+| `METER_DISCOVERY_MODEL` | Render (blueprint default) | Model id on that endpoint |
+| `METER_DISCOVERY_API_KEY` | Render (secret) | Key for that endpoint — **without it both features degrade** |
 | `RESEND_API_KEY` | GitHub secrets (optional) | Resend API key — enables email alert delivery |
 | `ALERT_EMAIL_FROM` | GitHub secrets (optional) | Verified Resend sender address for alert emails |
 | `APP_BASE_URL` | GitHub secrets (optional) | App base URL for deep links in alert notifications |
+
+## The answering model (discovery + "Ask Meter")
+
+Two features share one model: **feature discovery**, which clusters pull-request
+metadata into proposed features, and the in-app **Ask Meter** assistant.
+
+The blueprint pins the endpoint and the model, because neither is a secret and a
+deploy should not depend on remembering them. Only the key is filled in:
+
+```
+METER_DISCOVERY_BASE_URL = https://api.groq.com/openai/v1   (in render.yaml)
+METER_DISCOVERY_MODEL    = openai/gpt-oss-120b              (in render.yaml)
+METER_DISCOVERY_API_KEY  = gsk_…                            (Render dashboard → Environment)
+```
+
+Get the key from [console.groq.com/keys](https://console.groq.com/keys). Set it
+on the Render service under **Environment**, then redeploy — env changes do not
+take effect until the service restarts.
+
+> Groq retired `llama-3.3-70b-versatile` for Free and Developer plans in August
+> 2026, which is why the default is now `openai/gpt-oss-120b` (131k context).
+> Any OpenAI-compatible endpoint works: point the base URL at OpenAI, OpenRouter,
+> Together, or a local Ollama and set the model to match.
+
+**What happens with no key.** Nothing breaks, and nothing pretends to work.
+Discovery falls back to a deterministic branch-name heuristic — free, offline,
+and noticeably blunter. The assistant falls back to a fixed summary of the
+tenant's own data: it can still say which runs have gone quiet and how stale
+each feed is, but it cannot hold a conversation, explain a mechanism, or answer
+"what caused yesterday's spike". The assistant's header says which mode it is in.
+
+**Whose money.** This is Meter's own key, used for every tenant. It is
+deliberately separate from the per-tenant BYOK configuration in Settings, which
+is scoped to that tenant's own discovery runs — billing a customer's key for a
+support conversation would be a surprise.
 
 ## Internal Admin Portal
 

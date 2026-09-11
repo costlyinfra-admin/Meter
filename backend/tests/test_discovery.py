@@ -423,7 +423,7 @@ def test_no_byok_leaves_the_existing_behaviour_alone(tenant_id, monkeypatch):
     config = discovery.env_llm_config()
     assert config.base_url == "https://api.groq.com/openai/v1"
     assert config.api_key == "meter_server_key"
-    assert config.model == "llama-3.3-70b-versatile"  # the shipped default
+    assert config.model == discovery_llm.DEFAULT_DISCOVERY_MODEL  # the shipped default
     assert discovery._llm_backend() is discovery.openai_compatible_cluster
 
 

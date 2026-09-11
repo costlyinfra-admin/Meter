@@ -5,6 +5,10 @@
 #   DATABASE_URL              Neon connection string (the owner/admin role)
 #   APP_SECRET_KEY            long random string; encrypts stored credentials — NEVER change once set
 #   METER_APP_DB_PASSWORD    a password you choose for the app's RLS-enforced DB role
+#   METER_DISCOVERY_API_KEY  key for the model behind feature discovery and the
+#                            in-app assistant. Without it both fall back: discovery
+#                            to a branch-name heuristic, the assistant to a fixed
+#                            summary of your data with no conversation.
 
 services:
   - type: web
@@ -25,3 +29,13 @@ services:
         value: "true"
       - key: METER_LOG_LEVEL
         value: INFO
+      # The model behind feature discovery and the "Ask Meter" assistant. The
+      # base URL and model are pinned here because they are not secret and a
+      # deploy should not depend on someone remembering them; only the key is
+      # filled in from the dashboard.
+      - key: METER_DISCOVERY_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: METER_DISCOVERY_MODEL
+        value: openai/gpt-oss-120b
+      - key: METER_DISCOVERY_API_KEY
+        sync: false
