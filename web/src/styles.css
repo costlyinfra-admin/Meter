@@ -1386,6 +1386,102 @@ select {
   font-size: 0.8rem;
 }
 
+/* "Engineering activity" heading with its freshness note pushed to the right. */
+.activity-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.activity-head h3 {
+  margin: 0;
+}
+
+.activity-freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+button.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+button.icon-button:hover:not(:disabled) {
+  color: var(--link);
+  border-color: var(--link);
+}
+
+button.icon-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.refresh-icon.spinning {
+  animation: refresh-spin 0.9s linear infinite;
+}
+
+@keyframes refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The disabled button already says it is working. */
+  .refresh-icon.spinning {
+    animation: none;
+  }
+}
+
+/* Automatic discovery, as one line: how current the list is on the left, the
+   nightly switch on the right. Everything else about it appears only once the
+   switch is on, which is when it matters. */
+.discovery-schedule-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  font-size: 0.84rem;
+}
+
+.discovery-auto-toggle {
+  gap: 0.45rem;
+}
+
+.discovery-schedule-detail {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+}
+
+.discovery-schedule-error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
 /* Adding a build cost by hand: a compact row of small fields, wrapping rather
    than stretching, because six inputs in a line would each be unreadably thin. */
 .manual-cost-form {
@@ -5480,19 +5576,6 @@ button.kpi-note-link:active {
   align-items: flex-start;
   gap: 0.5rem;
   margin-top: 0.9rem;
-}
-
-.discovery-schedule .settings-lead {
-  margin-top: -0.25rem;
-}
-
-/* Stating the cost is the point of this note, so it is not shrunk away. */
-.discovery-cost-note {
-  margin-top: 1.1rem;
-  padding-top: 0.8rem;
-  border-top: 1px solid var(--line);
-  max-width: 62ch;
-  line-height: 1.5;
 }
 
 /* ---- Install SDK: guided installer ---- */

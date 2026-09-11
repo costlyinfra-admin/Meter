@@ -1,9 +1,8 @@
 /**
- * Automatic discovery is opt-in, and the card has to say what it costs.
- *
- * The behaviour worth pinning is the refusal to default anything on: a run
- * spends the customer's GitHub rate limit and, with BYOK, their model budget,
- * and raises proposals someone has to review.
+ * Automatic discovery is opt-in, and condensing it to one line must not lose
+ * that. The behaviour worth pinning is the refusal to default anything on — a
+ * run spends the customer's GitHub rate limit and, with BYOK, their model
+ * budget — and that the lookback setting survived the condensing.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,39 +47,47 @@ beforeEach(() => {
 });
 
 describe("DiscoverySchedule", () => {
-  it("reports what discovery has covered, from the runs themselves", async () => {
+  const toggle = () => screen.findByLabelText(/Run discovery automatically/);
+
+  it("says when discovery last ran, in one line", async () => {
+    // The question someone has while looking at the feature list is whether it
+    // is current. A paragraph about coverage windows answered a question
+    // nobody was asking at that moment.
     render(<DiscoverySchedule />);
-    expect(await screen.findByText(/Discovery has covered/)).toBeInTheDocument();
-    expect(screen.getByText(/across 3 runs/)).toBeInTheDocument();
+    expect(await screen.findByText(/Last updated on May 21, 2026/)).toBeInTheDocument();
   });
 
   it("is off until someone turns it on, and says what a run costs", async () => {
     render(<DiscoverySchedule />);
-    const toggle = await screen.findByLabelText("Run discovery automatically");
-    expect(toggle).not.toBeChecked();
+    const box = await toggle();
+    expect(box).not.toBeChecked();
     expect(api.setDiscoverySchedule).not.toHaveBeenCalled();
 
-    // The cost is stated beside the switch, not buried somewhere else.
-    expect(screen.getByText(/against your rate limit/)).toBeInTheDocument();
-    expect(screen.getByText(/raise new feature proposals/)).toBeInTheDocument();
+    // The cost still has to be stated — a run spends the customer's GitHub rate
+    // limit and, with BYOK, their model budget. On the control itself now,
+    // rather than in a paragraph the one line replaced.
+    expect(box).toHaveAttribute("title", expect.stringContaining("rate limit"));
+    expect(box).toHaveAttribute("title", expect.stringContaining("your own model"));
   });
 
   it("turns on, and only then offers a lookback", async () => {
     render(<DiscoverySchedule />);
-    const toggle = await screen.findByLabelText("Run discovery automatically");
-    expect(screen.queryByLabelText(/looks back at least/)).not.toBeInTheDocument();
+    const box = await toggle();
+    expect(screen.queryByLabelText(/Looks back at least/)).not.toBeInTheDocument();
 
     vi.mocked(api.setDiscoverySchedule).mockResolvedValue({
       ...SCHEDULE,
       enabled: true,
       next_run_at: "2026-05-22T09:00:00Z",
     });
-    fireEvent.click(toggle);
+    fireEvent.click(box);
 
     await waitFor(() => expect(api.setDiscoverySchedule).toHaveBeenCalledWith(true, undefined));
-    expect(await screen.findByLabelText(/looks back at least/)).toHaveValue("14");
-    // Enabling schedules the next run rather than firing one now.
-    expect(screen.getByText(/Next run:/)).toBeInTheDocument();
+    // Condensing the display must not remove the setting.
+    expect(await screen.findByLabelText(/Looks back at least/)).toHaveValue("14");
+    expect(screen.getByText(/Next run/)).toBeInTheDocument();
+    // And the cost is spelled out once it is actually going to be spent.
+    expect(screen.getByText(/against your GitHub rate limit/)).toBeInTheDocument();
   });
 
   it("cannot be scheduled before discovery has a scope to run against", async () => {
@@ -103,9 +110,10 @@ describe("DiscoverySchedule", () => {
     });
     render(<DiscoverySchedule />);
 
-    expect(await screen.findByLabelText("Run discovery automatically")).toBeDisabled();
-    expect(screen.getByText(/Run discovery once first/)).toBeInTheDocument();
-    expect(screen.getByText(/has not completed a run yet/)).toBeInTheDocument();
+    const box = await toggle();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAttribute("title", expect.stringContaining("Run discovery once first"));
+    expect(screen.getByText(/has not run yet/)).toBeInTheDocument();
   });
 
   it("says so when the last run failed", async () => {
@@ -121,6 +129,7 @@ describe("DiscoverySchedule", () => {
       },
     });
     render(<DiscoverySchedule />);
-    expect(await screen.findByText(/which failed/)).toBeInTheDocument();
+    // A stale list because the last run failed is exactly what this line is for.
+    expect(await screen.findByText(/the last run failed/)).toBeInTheDocument();
   });
 });

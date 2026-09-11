@@ -8,6 +8,7 @@
  * discovery guesses from the PRs and the user can correct here).
  */
 import { useEffect, useState } from "react";
+import { DiscoverySchedule } from "../../components/DiscoverySchedule";
 import { api, ApiError, type Feature } from "../../api";
 import { CategoryBadge } from "../../components/badges";
 import { CategoryPicker } from "../../components/CategoryPicker";
@@ -193,6 +194,11 @@ export function ReviewStep() {
           {error}
         </p>
       )}
+
+      {/* How current this list is, and the nightly switch — directly above the
+          list's own controls, because "is this up to date?" is the question
+          someone has while looking at it. */}
+      <DiscoverySchedule />
 
       {features === null ? (
         <p className="muted">Loading…</p>

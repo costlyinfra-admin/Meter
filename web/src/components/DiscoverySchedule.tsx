@@ -1,5 +1,7 @@
 /**
- * Automatic discovery — the opt-in nightly re-run, and what it has covered.
+ * Automatic discovery, as one line: when discovery last ran, and the nightly
+ * switch. It sits directly above the feature list's own controls, because "is
+ * this list current?" is the question someone has when they look at the list.
  *
  * Off by default, and deliberately so: a run reads the customer's GitHub (their
  * rate limit), calls their own LLM when BYOK is configured (their money), and
@@ -70,52 +72,47 @@ export function DiscoverySchedule() {
 
   if (!schedule) return null;
 
+  // Everything below the one line is about turning it ON: the lookback it will
+  // use, and what a run costs the customer. Off is the default and the common
+  // case, so that state stays a single row.
   return (
-    <section className="settings-card discovery-schedule">
-      <h2>Keeping discovery up to date</h2>
+    <section className="discovery-schedule-line">
+      <span className="muted discovery-last-run">
+        {coverage?.last_run_at
+          ? `Last updated on ${day(coverage.last_run_at)}`
+          : "Discovery has not run yet"}
+        {coverage?.last_run_status === "error" ? " — the last run failed" : ""}
+      </span>
 
-      {coverage && coverage.runs > 0 ? (
-        <p className="muted settings-lead">
-          Discovery has covered {day(coverage.covered_from!)} – {day(coverage.covered_to!)} across{" "}
-          {coverage.runs} run{coverage.runs === 1 ? "" : "s"}
-          {coverage.last_run_at ? `, most recently on ${day(coverage.last_run_at)}` : ""}
-          {coverage.last_run_status === "error" ? " — which failed" : ""}.
-        </p>
-      ) : (
-        <p className="muted settings-lead">
-          Discovery has not completed a run yet. Run it above, then it can be kept up to date
-          automatically.
-        </p>
-      )}
+      <label className="toggle discovery-auto-toggle" htmlFor="auto-discovery">
+        <span>Run discovery automatically (nightly)</span>
+        <input
+          id="auto-discovery"
+          type="checkbox"
+          checked={schedule.enabled}
+          disabled={busy || !schedule.configurable}
+          onChange={(e) => save(e.target.checked)}
+          // The cost is stated on the control itself rather than in a paragraph
+          // nobody reads twice: a run spends the customer's GitHub rate limit
+          // and, with BYOK, their model budget.
+          title={
+            schedule.configurable
+              ? "Each run reads merged pull requests against your GitHub rate limit, uses your own model when one is configured, and can raise proposals to review."
+              : "Run discovery once first — an automatic run needs an owner and a repository selection."
+          }
+        />
+        <span>{schedule.enabled ? "On" : "Off"}</span>
+      </label>
 
       {error && (
-        <p className="error" role="alert">
+        <p className="error discovery-schedule-error" role="alert">
           {error}
         </p>
       )}
 
-      <div className="settings-field settings-field-inline">
-        <label htmlFor="auto-discovery">Run discovery automatically</label>
-        <label className="toggle">
-          <input
-            id="auto-discovery"
-            type="checkbox"
-            checked={schedule.enabled}
-            disabled={busy || !schedule.configurable}
-            onChange={(e) => save(e.target.checked)}
-          />
-          <span>{schedule.enabled ? "On" : "Off"}</span>
-        </label>
-        <span className="settings-hint muted">
-          {schedule.configurable
-            ? "Once a night, fetching only what has been merged since the last run."
-            : "Run discovery once first — an automatic run needs an owner and a repository selection."}
-        </span>
-      </div>
-
       {schedule.enabled && (
-        <div className="settings-field">
-          <label htmlFor="auto-lookback">Each run looks back at least</label>
+        <span className="discovery-schedule-detail muted">
+          <label htmlFor="auto-lookback">Looks back at least</label>
           <select
             id="auto-lookback"
             value={schedule.lookback_days}
@@ -128,21 +125,15 @@ export function DiscoverySchedule() {
               </option>
             ))}
           </select>
-          <span className="settings-hint muted">
-            A run reaches back to whichever is earlier: this, or just past the previous run — so a
-            gap after downtime is still collected.
+          <span>
+            Each run reads merged pull requests against your GitHub rate limit and uses your own
+            model when one is configured.
+            {schedule.next_run_at
+              ? ` Next run ${new Date(schedule.next_run_at).toLocaleString()}.`
+              : ""}
           </span>
-        </div>
+        </span>
       )}
-
-      <p className="muted settings-hint discovery-cost-note">
-        Each run reads merged pull requests from GitHub against your rate limit, and uses your own
-        model when one is configured in Settings. It can also raise new feature proposals for
-        someone to review, so nothing is turned on here by default.
-        {schedule.enabled && schedule.next_run_at
-          ? ` Next run: ${new Date(schedule.next_run_at).toLocaleString()}.`
-          : ""}
-      </p>
     </section>
   );
 }

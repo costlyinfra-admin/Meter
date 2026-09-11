@@ -98,7 +98,16 @@ export function DeveloperBreakdown({
 
       {data && data.developer_activity.length > 0 && (
         <section className="detail-section">
-          <h3 className="breakdown-subhead">Engineering activity</h3>
+          <div className="activity-head">
+            <h3 className="breakdown-subhead">Engineering activity</h3>
+            {/* This table is only as current as the last discovery run, and
+                nothing else on the tab says so. A stale run is the difference
+                between "nobody shipped" and "nobody looked". */}
+            <ActivityFreshness
+              coverage={data.activity_coverage}
+              onRefreshed={() => setReload((n) => n + 1)}
+            />
+          </div>
           <p className="section-sub muted">
             What each developer shipped over the same period, from the merged-PR evidence behind
             every build-cost attribution. This is <strong>activity, not performance</strong> — it
@@ -164,6 +173,96 @@ function windowLabel(start: string, end: string): string {
       timeZone: "UTC",
     });
   return start.slice(0, 7) === end.slice(0, 7) ? fmt(start) : `${fmt(start)} – ${fmt(end)}`;
+}
+
+/**
+ * When this table was last collected, and a way to collect it again.
+ *
+ * The refresh re-runs discovery over the same 90-day reach the empty-state
+ * button uses, because "refresh" here can only mean "go and read GitHub again"
+ * — the numbers are derived from merged-PR evidence, so re-reading the database
+ * would change nothing.
+ */
+function ActivityFreshness({
+  coverage,
+  onRefreshed,
+}: {
+  coverage: ProviderSpend["activity_coverage"];
+  onRefreshed: () => void;
+}) {
+  const [scope, setScope] = useState<DiscoveryScope | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .discoveryScope()
+      .then(setScope)
+      .catch(() => setScope(null));
+  }, []);
+
+  async function refresh() {
+    if (!scope?.owner) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.runDiscovery(scope.owner, scope.repos, 90);
+      onRefreshed();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Discovery could not be run.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="activity-freshness">
+      <span className="muted">
+        {coverage.last_run_at
+          ? `Last updated on ${shortDay(coverage.last_run_at)}`
+          : "Never updated"}
+        {coverage.last_run_status === "error" ? " — the last run failed" : ""}
+      </span>
+      {scope?.owner && (
+        <button
+          type="button"
+          className="icon-button"
+          onClick={refresh}
+          disabled={busy}
+          aria-label="Refresh engineering activity"
+          title={`Re-read merged pull requests from ${scope.owner}`}
+        >
+          <RefreshIcon spinning={busy} />
+        </button>
+      )}
+      {error && (
+        <span className="error" role="alert">
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function RefreshIcon({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      className={spinning ? "refresh-icon spinning" : "refresh-icon"}
+      viewBox="0 0 24 24"
+      width="15"
+      height="15"
+      aria-hidden
+      focusable="false"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  );
 }
 
 /**

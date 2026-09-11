@@ -19,6 +19,10 @@ vi.mock("../../api", async (importActual) => {
       mergeFeatures: vi.fn(),
       setFeatureCategory: vi.fn(),
       featureCategories: vi.fn(),
+      // ReviewStep now renders the discovery freshness line above its toolbar.
+      discoverySchedule: vi.fn(),
+      setDiscoverySchedule: vi.fn(),
+      discoveryRuns: vi.fn(),
     },
   };
 });
@@ -54,6 +58,10 @@ describe("ReviewStep", () => {
     vi.clearAllMocks();
     // Component loads the saved scope on mount; default to "nothing saved".
     vi.mocked(api.discoveryScope).mockResolvedValue({ owner: null, repos: [] });
+    // The freshness line renders nothing without a schedule, which is fine for
+    // every test here — they are about the feature list, not the schedule.
+    vi.mocked(api.discoverySchedule).mockResolvedValue(null as never);
+    vi.mocked(api.discoveryRuns).mockRejectedValue(new Error("not under test"));
     // The category picker fetches its vocabulary on mount.
     vi.mocked(api.featureCategories).mockResolvedValue({
       categories: [
