@@ -554,3 +554,66 @@ def test_byok_is_tenant_isolated(tenant_id, app_env):
     discovery_llm.remove(tenant_id)
     assert discovery_llm.active_config(tenant_id) is None
     assert discovery_llm.active_config(other) is not None
+
+
+# ---- Scope must not freeze -------------------------------------------------
+# A customer reported repositories Meter "did not pull". Their scope had been
+# chosen months earlier; every repository created since was excluded from every
+# nightly run, permanently and silently.
+def test_selecting_every_repo_keeps_following_the_owner(tenant_id, monkeypatch):
+    prs = [_pr(1, "transilienceai/eiger", "Add scoring", "feature/scoring")]
+    repos = ["transilienceai/eiger"]
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(prs, repos))
+
+    # Day one: one repo exists, and the customer ticks it — meaning "all of it".
+    discovery.run_discovery(tenant_id, "transilienceai", "tok", repos=["transilienceai/eiger"])
+    # Stored as "no selection", which is what "all of it" means once the owner grows.
+    assert discovery.get_scope(tenant_id)["repos"] == []
+
+    # Later: two more repositories appear.
+    grown = repos + ["transilienceai/elcapitan", "transilienceai/denali"]
+    later = prs + [
+        _pr(2, "transilienceai/elcapitan", "Add ingest", "feature/ingest"),
+        _pr(3, "transilienceai/denali", "Add planner", "feature/planner"),
+    ]
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(later, grown))
+
+    saved = discovery.get_scope(tenant_id)
+    summary = discovery.run_discovery(tenant_id, "transilienceai", "tok", repos=saved["repos"])
+    assert summary["repos"] == sorted(grown)
+    assert summary["repos_skipped"] == []
+    assert summary["prs"] == 3
+
+
+def test_a_deliberate_subset_is_still_honoured(tenant_id, monkeypatch):
+    # The other half of the rule: picking 1 of 3 must not quietly become 3.
+    repos = ["transilienceai/eiger", "transilienceai/elcapitan", "transilienceai/denali"]
+    prs = [
+        _pr(1, "transilienceai/eiger", "Add scoring", "feature/scoring"),
+        _pr(2, "transilienceai/elcapitan", "Add ingest", "feature/ingest"),
+    ]
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(prs, repos))
+
+    summary = discovery.run_discovery(
+        tenant_id, "transilienceai", "tok", repos=["transilienceai/eiger"]
+    )
+    assert summary["repos"] == ["transilienceai/eiger"]
+    assert discovery.get_scope(tenant_id)["repos"] == ["transilienceai/eiger"]
+    # And the repositories it did not look at are named, rather than left to be
+    # inferred from data that never arrives.
+    assert summary["repos_skipped"] == ["transilienceai/denali", "transilienceai/elcapitan"]
+
+
+def test_a_scope_saved_under_different_casing_still_matches(tenant_id, monkeypatch):
+    # The owner is typed by hand. GitHub is case-insensitive about names and
+    # returns its own spelling, so a case-sensitive intersection silently
+    # dropped repositories that were in scope all along.
+    repos = ["transilienceai/eiger"]
+    prs = [_pr(1, "transilienceai/eiger", "Add scoring", "feature/scoring")]
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(prs, repos))
+
+    summary = discovery.run_discovery(
+        tenant_id, "TransilienceAI", "tok", repos=["TransilienceAI/Eiger"]
+    )
+    assert summary["repos"] == ["transilienceai/eiger"]
+    assert summary["prs"] == 1

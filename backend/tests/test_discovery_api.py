@@ -121,16 +121,16 @@ def test_repos_endpoint_lists_org_repositories(client):
     assert resp.json() == {"owner": "acme", "repos": ["acme/core"]}
 
 
-def test_scope_is_empty_then_remembers_selection(client):
+def test_scope_is_empty_then_remembers_the_owner(client):
     # Nothing chosen yet -> empty scope prefill.
     assert client.get("/api/discovery/scope").json() == {"owner": None, "repos": []}
 
-    # Running discovery scoped to a repo persists that selection.
+    # The fixture org has exactly one repository, so selecting it is selecting
+    # everything. That is stored as "the whole owner" rather than as a frozen
+    # list of one name — otherwise the next repository the org creates would be
+    # excluded from every run from then on.
     client.post("/api/discovery/run", json={"owner": "acme", "repos": ["acme/core"]})
-    assert client.get("/api/discovery/scope").json() == {
-        "owner": "acme",
-        "repos": ["acme/core"],
-    }
+    assert client.get("/api/discovery/scope").json() == {"owner": "acme", "repos": []}
 
 
 def test_feature_category_endpoint_records_a_user_tag(client):

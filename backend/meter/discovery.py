@@ -706,11 +706,24 @@ def run_discovery(
         with _make_github_client(token) as gh:
             accessible = gh.list_repos(owner)  # repos the token can actually see
             if selected:
-                scope = [r for r in selected if r in accessible]
+                # Matched case-insensitively and resolved to GitHub's own
+                # spelling: an owner is typed by hand ("TransilienceAI"), and a
+                # scope saved under one spelling must not stop matching under
+                # another.
+                canonical = {r.lower(): r for r in accessible}
+                scope = [canonical[r.lower()] for r in selected if r.lower() in canonical]
                 prs = gh.fetch_merged_prs(owner, covered_from, repos=scope)
             else:
                 scope = accessible  # no selection -> whole org (legacy behavior)
                 prs = gh.fetch_merged_prs(owner, covered_from)
+            # A selection that covered everything the owner had is "all of it",
+            # not a frozen list of names. Stored as a list, it froze: repos
+            # created afterwards were never in it, so every nightly run skipped
+            # them silently and permanently. Stored as "no selection", the scope
+            # follows the owner as it grows. A deliberate subset stays a subset —
+            # that is the customer's choice and is left alone.
+            covers_everything = bool(scope) and len(scope) == len(accessible)
+            scope_to_save = [] if covers_everything else selected
         # A tenant's own LLM configuration (Settings -> BYOK) wins; without one this
         # is None and clustering behaves exactly as before.
         proposals = cluster_prs(prs, config=discovery_llm.active_config(tenant_id))
@@ -736,7 +749,7 @@ def run_discovery(
 
     pr_by_ref = {pr.ref: pr for pr in prs}
     _persist_proposals(tenant_id, proposals, pr_by_ref, window=(covered_from, today))
-    _save_scope(tenant_id, owner, selected)
+    _save_scope(tenant_id, owner, scope_to_save)
     # Regenerating proposals deletes the old ones, and build_cost.feature_id is
     # ON DELETE SET NULL — so previously-attributed build spend would silently fall
     # into Unattributed and stay there. Re-run the PR-authorship allocation over the
@@ -766,6 +779,12 @@ def run_discovery(
         "repos_with_prs": sorted({p.repo for p in prs}),
         "prs_by_repo": dict(per_repo),
         "repos_scanned": len(accessible),  # repos accessible to the token
+        # Repos the token can see that this run did NOT look at, because the
+        # saved scope names fewer. Reported so a narrowing scope is visible
+        # instead of being something a customer has to notice from missing data.
+        "repos_skipped": sorted(
+            r for r in accessible if r.lower() not in {s.lower() for s in scope}
+        ),
         "proposals": len(proposals),
         "build_cost_reattributed": reattributed,
         "covered_from": covered_from.isoformat(),
