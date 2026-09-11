@@ -77,21 +77,57 @@ def _attribute(record: CostRecord, maps: tuple[dict, dict]) -> tuple[Optional[st
     return None, "low"  # Unattributed bucket
 
 
-def run_inference_ingest(tenant_id: str, provider: str, period: dt.date, admin_key: str) -> dict:
+def run_inference_ingest(
+    tenant_id: str, provider: str, period: dt.date, admin_key: str | list[str]
+) -> dict:
     """Fetch a provider's monthly cost and ingest it. Returns a summary.
+
+    ``admin_key`` may be one key or several. A tenant can hold more than one
+    account with the same provider — two Anthropic organisations billed
+    separately are one Meter connector with two keys — and their bill is the
+    sum, so every key is read.
+
+    EVERY KEY IS FETCHED BEFORE ANYTHING IS WRITTEN, and that ordering is the
+    whole design. Ingestion is idempotent by clearing the provider's month and
+    rewriting it, so ingesting per key would have the second account's write
+    delete the first account's rows: the customer would see whichever key
+    happened to sync last, and nothing would look wrong. Fetching first means
+    one write with the complete picture.
+
+    It also means a partial failure writes nothing. If one of two keys is
+    expired, rewriting the month with only the healthy account's costs would
+    silently halve a bill; the error is raised instead and last-good data
+    stands.
 
     Anthropic uses the detailed path when the client exposes the Usage Report:
     authoritative Cost Report dollars are reconciled against per-workspace/per-key
     usage and labelled with an environment. Every other provider (and simpler
     clients, e.g. tests) uses the flat cost-report attribution path.
     """
-    with _make_cost_client(provider, admin_key) as client:
-        cost_records = client.fetch_costs(period)
-        if provider == "anthropic" and hasattr(client, "fetch_usage"):
-            usage = client.fetch_usage(period)
-            workspaces = client.fetch_workspaces()
-            api_keys = client.fetch_api_keys()
-            return ingest_anthropic(tenant_id, period, cost_records, usage, workspaces, api_keys)
+    keys = [admin_key] if isinstance(admin_key, str) else list(admin_key)
+    if not keys:
+        return ingest_records(tenant_id, provider, period, [])
+
+    cost_records: list = []
+    usage: list = []
+    # Workspaces and API keys are id -> name maps, so they MERGE rather than
+    # concatenate. The ids are the provider's own and unique across accounts, so
+    # two organisations' workspaces sit side by side in one map and each cost
+    # row still resolves to the right name.
+    workspaces: dict = {}
+    api_keys: dict = {}
+    detailed = False
+    for key in keys:
+        with _make_cost_client(provider, key) as client:
+            cost_records.extend(client.fetch_costs(period))
+            if provider == "anthropic" and hasattr(client, "fetch_usage"):
+                detailed = True
+                usage.extend(client.fetch_usage(period))
+                workspaces.update(client.fetch_workspaces())
+                api_keys.update(client.fetch_api_keys())
+
+    if detailed:
+        return ingest_anthropic(tenant_id, period, cost_records, usage, workspaces, api_keys)
     return ingest_records(tenant_id, provider, period, cost_records)
 
 
@@ -251,11 +287,11 @@ def sync_connected(tenant_id: str, period: Optional[dt.date] = None) -> dict:
     errors: list[dict] = []
     total = 0.0
     for provider in providers:
-        admin_key = credentials.get_secret(tenant_id, provider)
-        if not admin_key:  # credential vanished between listing and use
+        admin_keys = [secret for _, secret in credentials.get_secrets(tenant_id, provider)]
+        if not admin_keys:  # credential vanished between listing and use
             continue
         try:
-            summary = run_inference_ingest(tenant_id, provider, period, admin_key)
+            summary = run_inference_ingest(tenant_id, provider, period, admin_keys)
         except Exception as exc:  # noqa: BLE001 — report per provider, keep going
             logging.getLogger("meter.ingest").warning(
                 "refresh sync failed for %s: %s", provider, exc
@@ -936,12 +972,12 @@ def run_scheduled_ingest(periods: Optional[list[dt.date]] = None) -> list[dict]:
     results: list[dict] = []
     reconciled: set[tuple] = set()
     for tenant_id, provider in pairs:
-        admin_key = credentials.get_secret(str(tenant_id), provider)
-        if not admin_key:
+        admin_keys = [s for _, s in credentials.get_secrets(str(tenant_id), provider)]
+        if not admin_keys:
             continue
         for period in periods:
             try:
-                results.append(run_inference_ingest(str(tenant_id), provider, period, admin_key))
+                results.append(run_inference_ingest(str(tenant_id), provider, period, admin_keys))
                 # Keep hook numbers tied to the bill each cycle (no-op if no hook data).
                 if (str(tenant_id), period) not in reconciled:
                     hook.reconcile(str(tenant_id), period)

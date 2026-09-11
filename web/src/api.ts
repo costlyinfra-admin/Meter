@@ -336,6 +336,15 @@ export interface AiApplication {
   releases?: { release: string; runs: number; spend: number }[];
 }
 
+/** One stored account under a connector. Identity and dates only — the secret
+ *  is never returned by any route. */
+export interface ConnectorCredential {
+  id: string;
+  label: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface ConnectorStatus {
   type: string;
   name: string;
@@ -344,6 +353,11 @@ export interface ConnectorStatus {
   /** When the stored credential was last written. The credential itself is
    *  never returned by any route — this is all the server says about it. */
   credential_set_at?: string | null;
+  /** How many accounts are connected under this one source. */
+  credential_count?: number;
+  /** Whether a second credential would actually be read by this connector's
+   *  sync. False means saving one replaces what is stored. */
+  supports_multiple?: boolean;
 }
 
 export interface FeatureSignal {
@@ -1317,10 +1331,20 @@ export const api = {
 
   connectors: () => request<ConnectorStatus[]>("/connectors"),
 
-  saveCredential: (connectorType: string, secret: string, label?: string) =>
+  /** Add an account under a connector, or replace one by passing its id. */
+  saveCredential: (connectorType: string, secret: string, label?: string, credentialId?: string) =>
     request<void>(`/connectors/${connectorType}/credential`, {
       method: "POST",
-      body: JSON.stringify({ secret, label }),
+      body: JSON.stringify({ secret, label, credential_id: credentialId }),
+    }),
+
+  /** The accounts stored for a connector. Never includes a secret. */
+  connectorCredentials: (connectorType: string) =>
+    request<{ credentials: ConnectorCredential[] }>(`/connectors/${connectorType}/credentials`),
+
+  deleteCredential: (connectorType: string, credentialId: string) =>
+    request<void>(`/connectors/${connectorType}/credentials/${credentialId}`, {
+      method: "DELETE",
     }),
 
   // ---- Discovery + features (wizard step 2) ----

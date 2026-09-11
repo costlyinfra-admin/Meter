@@ -6,7 +6,14 @@ import { ConnectorRow } from "./ConnectorRow";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
-  return { ...actual, api: { saveCredential: vi.fn() } };
+  return {
+    ...actual,
+    api: {
+      saveCredential: vi.fn(),
+      connectorCredentials: vi.fn(),
+      deleteCredential: vi.fn(),
+    },
+  };
 });
 
 // A minimal controlled harness: ConnectorRow's expand is parent-driven (accordion).
@@ -69,7 +76,12 @@ describe("ConnectorRow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(api.saveCredential).toHaveBeenCalledWith("anthropic", "sk-ant-admin-xyz"),
+      expect(api.saveCredential).toHaveBeenCalledWith(
+        "anthropic",
+        "sk-ant-admin-xyz",
+        undefined,
+        undefined,
+      ),
     );
   });
 
@@ -99,89 +111,149 @@ describe("ConnectorRow", () => {
   });
 });
 
-describe("ConnectorRow — replacing a stored credential", () => {
-  const open = async () => {
-    fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
-    return screen.findByRole("heading", { name: /Replace token/ });
-  };
+describe("ConnectorRow — several accounts under one connector", () => {
+  const ACCOUNTS = [
+    {
+      id: "c1",
+      label: "Acme",
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+    },
+    {
+      id: "c2",
+      label: "Acme Labs",
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    },
+  ];
 
-  it("puts replace above the provider's detail, not below it", async () => {
-    // The detail is a provider's own list of workspaces, keys or accounts. On a
-    // busy connector it is long enough to push the credential form off the
-    // bottom of the screen, which is the thing someone opened Configure for.
+  const openConfigure = async (accounts = ACCOUNTS) => {
+    vi.mocked(api.connectorCredentials).mockResolvedValue({ credentials: accounts });
     render(
-      <Harness overrides={{ connected: true }} detail={<p>Workspace and API key breakdown</p>} />,
+      <Harness
+        overrides={{
+          connected: true,
+          credential_count: accounts.length,
+          supports_multiple: true,
+        }}
+      />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
-    await screen.findByRole("heading", { name: /Replace token/ });
+    return screen.findByRole("heading", { name: "Accounts" });
+  };
+
+  it("lists every stored account, and no secret", async () => {
+    // Two Anthropic organisations billed separately are one connector with two
+    // keys. Showing one would hide half the bill's source.
+    await openConfigure();
+    expect(await screen.findByText("Acme")).toBeInTheDocument();
+    expect(screen.getByText("Acme Labs")).toBeInTheDocument();
+    const panel = document.querySelector(".connector-rotate") as HTMLElement;
+    expect(panel.textContent).not.toMatch(/sk-ant|•{3,}|\*{3,}/);
+  });
+
+  it("says the accounts are summed, so nobody assumes one wins", async () => {
+    await openConfigure();
+    expect(await screen.findByText(/2 accounts .* summed/)).toBeInTheDocument();
+  });
+
+  it("adds another account without touching the existing ones", async () => {
+    vi.mocked(api.saveCredential).mockResolvedValue(undefined as never);
+    await openConfigure();
+    await screen.findByText("Acme");
+
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Third org" } });
+    fireEvent.change(screen.getByLabelText("Anthropic token"), { target: { value: "sk-ant-3" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add token/ }));
+
+    // No credential id: this is an addition, not a replacement.
+    await waitFor(() =>
+      expect(api.saveCredential).toHaveBeenCalledWith(
+        "anthropic",
+        "sk-ant-3",
+        "Third org",
+        undefined,
+      ),
+    );
+  });
+
+  it("replaces one named account, leaving the other alone", async () => {
+    vi.mocked(api.saveCredential).mockResolvedValue(undefined as never);
+    await openConfigure();
+    fireEvent.click(await screen.findByRole("button", { name: "Replace Acme Labs" }));
+
+    // The panel switches to replacing that one, and asks for no new name.
+    expect(await screen.findByRole("heading", { name: /Replace token/ })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Account name")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Anthropic token"), { target: { value: "sk-ant-new" } });
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+
+    await waitFor(() =>
+      expect(api.saveCredential).toHaveBeenCalledWith("anthropic", "sk-ant-new", undefined, "c2"),
+    );
+  });
+
+  it("removes one account", async () => {
+    vi.mocked(api.deleteCredential).mockResolvedValue(undefined as never);
+    await openConfigure();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Acme" }));
+    await waitFor(() => expect(api.deleteCredential).toHaveBeenCalledWith("anthropic", "c1"));
+  });
+
+  it("will not remove the last account", async () => {
+    // That is disconnecting, which discards more than a key — and doing it from
+    // a Remove link would be a surprise.
+    await openConfigure([ACCOUNTS[0]]);
+    expect(await screen.findByRole("button", { name: "Remove Acme" })).toBeDisabled();
+  });
+
+  it("never renders a stored credential in the field", async () => {
+    await openConfigure();
+    const field = screen.getByLabelText("Anthropic token") as HTMLInputElement;
+    expect(field.value).toBe("");
+    expect(field.type).toBe("password");
+  });
+
+  it("puts the accounts panel above the provider's detail", async () => {
+    // The detail is a provider's own list of workspaces and keys. On a busy
+    // connector it pushed the credential controls off the bottom of the screen.
+    vi.mocked(api.connectorCredentials).mockResolvedValue({ credentials: ACCOUNTS });
+    render(
+      <Harness
+        overrides={{ connected: true, supports_multiple: true }}
+        detail={<p>Workspace and API key breakdown</p>}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
+    await screen.findByRole("heading", { name: "Accounts" });
 
     const panels = [...document.querySelectorAll(".connector-panel")];
     expect(panels[0]).toHaveClass("connector-rotate");
     expect(panels[1]).toHaveTextContent("Workspace and API key breakdown");
   });
 
-  it("offers a replace form on a connected row", async () => {
-    // The whole point: before this, a connected connector had no way back to
-    // its credential, so a rotated or leaked key could not be changed at all.
-    render(<Harness overrides={{ connected: true }} />);
-    await open();
-    expect(screen.getByLabelText("Anthropic token")).toBeInTheDocument();
+  it("offers replace, not add, where a second key would never be read", async () => {
+    // GitHub's sync reads one token. Offering "Add another" would take a key
+    // and quietly never fetch with it.
+    vi.mocked(api.connectorCredentials).mockResolvedValue({ credentials: [ACCOUNTS[0]] });
+    render(
+      <Harness
+        overrides={{ type: "github", name: "GitHub", connected: true, supports_multiple: false }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
+
+    expect(await screen.findByRole("heading", { name: /Replace token/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Accounts" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Account name")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace" })).toBeInTheDocument();
   });
 
-  it("never renders the stored credential, masked or otherwise", async () => {
-    render(<Harness overrides={{ connected: true, credential_set_at: "2026-08-01T00:00:00Z" }} />);
-    const panel = (await open()).closest(".connector-panel") as HTMLElement;
-
-    const field = screen.getByLabelText("Anthropic token") as HTMLInputElement;
-    // Empty, not pre-filled with a placeholder row of dots that cannot be
-    // edited — there is no route that returns a secret to fill it with.
-    expect(field.value).toBe("");
-    expect(field.type).toBe("password");
-    expect(panel.textContent).not.toMatch(/•{3,}|\*{3,}/);
-  });
-
-  it("says when the current credential was set, so rotation is checkable", async () => {
-    const sixtyDaysAgo = new Date(Date.now() - 60 * 86_400_000).toISOString();
-    render(<Harness overrides={{ connected: true, credential_set_at: sixtyDaysAgo }} />);
-    await open();
-    expect(screen.getByText(/Current token set 2 months ago/)).toBeInTheDocument();
-  });
-
-  it("sends only the new secret, and keeps nothing after saving", async () => {
-    vi.mocked(api.saveCredential).mockResolvedValue(undefined as never);
-    render(<Harness overrides={{ connected: true }} />);
-    await open();
-
-    fireEvent.change(screen.getByLabelText("Anthropic token"), {
-      target: { value: "  sk-ant-new  " },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
-
-    await waitFor(() => expect(api.saveCredential).toHaveBeenCalledWith("anthropic", "sk-ant-new"));
-    // The panel closes and the field is cleared, so a secret is not left sitting
-    // in a form for the next person at the keyboard.
-    await waitFor(() =>
-      expect(screen.queryByRole("heading", { name: /Replace token/ })).not.toBeInTheDocument(),
-    );
-  });
-
-  it("will not submit an empty replacement", async () => {
-    // An accidental Save must never blank out a working connector.
-    render(<Harness overrides={{ connected: true }} />);
-    await open();
-    expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
-
-    fireEvent.change(screen.getByLabelText("Anthropic token"), { target: { value: "   " } });
-    expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
-  });
-
-  it("calls a multi-line credential what it is, rather than a token", async () => {
-    // Bedrock takes a service-account style blob, not a token. The word is
-    // derived from the guide so twenty of them do not have to spell it out.
-    render(<Harness overrides={{ type: "bedrock", name: "Amazon Bedrock", connected: true }} />);
-    fireEvent.click(screen.getByRole("button", { name: /Configure/ }));
-    expect(await screen.findByRole("heading", { name: /Replace credentials/ })).toBeInTheDocument();
-    expect(screen.getByLabelText("Amazon Bedrock credentials")).toBeInTheDocument();
+  it("still lets a connector be set up when it has no accounts yet", async () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
+    expect(await screen.findByLabelText("Anthropic token")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Accounts" })).not.toBeInTheDocument();
   });
 });

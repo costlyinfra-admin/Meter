@@ -73,6 +73,22 @@ KNOWN_CONNECTORS = [
 ]
 _KNOWN_TYPES = {c["type"] for c in KNOWN_CONNECTORS}
 
+#: Categories whose sync reads EVERY stored credential rather than the newest.
+#: Holding two keys is only useful where both are actually fetched, so this is
+#: the list of places that do — and the server refuses a second credential
+#: anywhere else, rather than accepting one and quietly never reading it.
+#:
+#: Inference qualifies because `run_inference_ingest` fetches from every key
+#: before writing the month. Infrastructure, build-activity and seat connectors
+#: still read one, and adding them means giving each the same treatment.
+MULTI_CREDENTIAL_CATEGORIES = {"inference"}
+_MULTI_TYPES = {c["type"] for c in KNOWN_CONNECTORS if c["category"] in MULTI_CREDENTIAL_CATEGORIES}
+
+
+def supports_multiple(connector_type: str) -> bool:
+    """Whether this connector's sync reads more than one credential."""
+    return connector_type in _MULTI_TYPES
+
 
 class ConnectorStatus(TypedDict):
     type: str
@@ -83,43 +99,148 @@ class ConnectorStatus(TypedDict):
     #: secret itself is never exposed — this is the only fact about it that
     #: leaves the server.
     credential_set_at: Optional[str]
+    #: How many credentials this connector holds. A tenant with two billing
+    #: accounts under one provider has two.
+    credential_count: int
+    #: Whether a second credential would actually be read. False means saving
+    #: one replaces the existing credential rather than adding to it.
+    supports_multiple: bool
 
 
 def save_credential(
-    tenant_id: str, connector_type: str, secret: str, label: Optional[str] = None
-) -> None:
-    """Encrypt and store a connector secret, replacing any the tenant already had.
+    tenant_id: str,
+    connector_type: str,
+    secret: str,
+    label: Optional[str] = None,
+    credential_id: Optional[str] = None,
+) -> str:
+    """Store a connector secret. Returns the credential's id.
 
-    Saving the same connector twice is how a token is rotated, and rotation is
-    usually a response to a token being leaked or over-scoped. Keeping the old
-    ciphertext would defeat that: the compromised secret would stay in the
-    database, decryptable with the same key, for as long as the tenant existed.
-    So the previous rows go, in the same transaction that writes the new one —
-    a connector has exactly one credential, which is what every reader here has
-    always assumed by taking the newest row.
+    Two operations, deliberately one function, because they differ only in
+    whether an existing credential is named:
+
+    * ``credential_id`` given — REPLACE that credential. The ciphertext is
+      overwritten in place, so the previous secret is gone rather than kept in
+      a superseded row. Rotation is usually a response to a secret being
+      exposed, and that is exactly the secret worth not keeping.
+    * ``credential_id`` omitted — ADD another credential for this connector. A
+      tenant can hold several: two Anthropic organisations billed separately are
+      one Meter connector with two keys, and collapsing them would mean seeing
+      only whichever synced last.
     """
     if connector_type not in _KNOWN_TYPES:
         raise ValueError(f"Unknown connector type: {connector_type}")
     if not secret or not secret.strip():
         raise ValueError("A credential cannot be empty.")
     ciphertext = encrypt(secret)
+    label = (label or "").strip()[:120] or None
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
-        new_id = conn.execute(
-            """
-            INSERT INTO connector_credential (tenant_id, connector_type, label, ciphertext)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id
-            """,
-            (tenant_id, connector_type, label, ciphertext),
-        ).fetchone()[0]
-        conn.execute(
-            "DELETE FROM connector_credential WHERE connector_type = %s AND id <> %s",
-            (connector_type, new_id),
+        if credential_id is None and not supports_multiple(connector_type):
+            # This connector's sync reads one credential. Storing a second would
+            # accept a key and then never fetch with it, which is worse than
+            # saying so: the customer would believe both accounts were billed.
+            existing = conn.execute(
+                "SELECT id FROM connector_credential WHERE connector_type = %s ORDER BY created_at",
+                (connector_type,),
+            ).fetchall()
+            if existing:
+                credential_id = str(existing[0][0])
+        if credential_id is not None:
+            row = conn.execute(
+                """
+                UPDATE connector_credential
+                SET ciphertext = %s,
+                    label = COALESCE(%s, label),
+                    updated_at = now()
+                WHERE id = %s AND connector_type = %s
+                RETURNING id
+                """,
+                (ciphertext, label, credential_id, connector_type),
+            ).fetchone()
+            if row is None:
+                raise ValueError("That credential no longer exists.")
+            return str(row[0])
+        return str(
+            conn.execute(
+                """
+                INSERT INTO connector_credential (tenant_id, connector_type, label, ciphertext)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (tenant_id, connector_type, label, ciphertext),
+            ).fetchone()[0]
         )
 
 
+def list_credentials(tenant_id: str, connector_type: str) -> list[dict]:
+    """Every credential stored for a connector — identity and dates, never secrets.
+
+    This is what lets a person tell two accounts apart well enough to replace
+    the right one. The ciphertext is not selected here at all, so there is no
+    path by which it could reach a response by accident.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        rows = conn.execute(
+            """
+            SELECT id, label, created_at, updated_at
+            FROM connector_credential
+            WHERE connector_type = %s
+            ORDER BY created_at
+            """,
+            (connector_type,),
+        ).fetchall()
+    return [
+        {
+            "id": str(cid),
+            "label": label,
+            "created_at": created.isoformat() if created else None,
+            "updated_at": updated.isoformat() if updated else None,
+        }
+        for cid, label, created, updated in rows
+    ]
+
+
+def delete_credential(tenant_id: str, connector_type: str, credential_id: str) -> bool:
+    """Remove one credential. Returns whether it existed.
+
+    Cost already attributed to it stays: what a month cost is a fact about the
+    month, and removing the key Meter read it with does not un-spend the money.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        row = conn.execute(
+            "DELETE FROM connector_credential WHERE id = %s AND connector_type = %s RETURNING id",
+            (credential_id, connector_type),
+        ).fetchone()
+    return row is not None
+
+
+def get_secrets(tenant_id: str, connector_type: str) -> list[tuple[str, str]]:
+    """Every (credential_id, secret) for a connector, oldest first.
+
+    The plural form. A sync that reads only the newest would silently bill a
+    customer for one of their two accounts, so anything fetching real money
+    should use this and fetch from all of them.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        rows = conn.execute(
+            """
+            SELECT id, ciphertext FROM connector_credential
+            WHERE connector_type = %s
+            ORDER BY created_at
+            """,
+            (connector_type,),
+        ).fetchall()
+    return [(str(cid), decrypt(bytes(blob))) for cid, blob in rows]
+
+
 def get_secret(tenant_id: str, connector_type: str) -> Optional[str]:
-    """Decrypt and return the most recently stored secret for a connector."""
+    """The most recently stored secret for a connector, or None.
+
+    Singular, and therefore only right where one credential is genuinely all
+    that is meant — listing an org's repositories, say. Anything that reads
+    billed cost wants `get_secrets`, because a tenant may have several accounts
+    and reading one of them would understate their bill.
+    """
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         row = conn.execute(
             """
@@ -146,10 +267,11 @@ def connector_statuses(tenant_id: str) -> list[ConnectorStatus]:
     """
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         rows = conn.execute(
-            "SELECT connector_type, MAX(created_at) FROM connector_credential "
+            "SELECT connector_type, MAX(created_at), count(*) FROM connector_credential "
             "GROUP BY connector_type"
         ).fetchall()
     set_at = {r[0]: r[1] for r in rows}
+    counts = {r[0]: int(r[2]) for r in rows}
     return [
         {
             "type": c["type"],
@@ -157,6 +279,11 @@ def connector_statuses(tenant_id: str) -> list[ConnectorStatus]:
             "category": c["category"],
             "connected": c["type"] in set_at,
             "credential_set_at": (set_at[c["type"]].isoformat() if set_at.get(c["type"]) else None),
+            # How many accounts are connected under this one source, so a tenant
+            # billed through two organisations can see both are being read.
+            "credential_count": counts.get(c["type"], 0),
+            # Whether this connector's sync actually reads more than one key.
+            "supports_multiple": supports_multiple(c["type"]),
         }
         for c in KNOWN_CONNECTORS
     ]

@@ -144,7 +144,11 @@ describe("InfrastructureSources", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(api.saveCredential).toHaveBeenCalledWith("aws", blob));
+    // Four arguments now: the label and credential id are how a connector with
+    // several accounts names which one it means. Infrastructure has one.
+    await waitFor(() =>
+      expect(api.saveCredential).toHaveBeenCalledWith("aws", blob, undefined, undefined),
+    );
   });
 
   it("reports connection state and when it last synced", async () => {

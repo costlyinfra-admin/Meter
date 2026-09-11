@@ -677,3 +677,87 @@ def test_backfill_raises_when_every_month_fails(tenant_id, monkeypatch):
     monkeypatch.setattr(inference, "_make_cost_client", lambda provider, key: _DeadClient())
     with pytest.raises(RuntimeError, match="bad admin key"):
         inference.run_inference_backfill(tenant_id, "openai", "key", months=3)
+
+
+# ---- Several accounts under one connector ---------------------------------
+# A tenant can hold two billing accounts with the same provider. Ingestion is
+# idempotent by clearing the provider's month and rewriting it, so ingesting one
+# account at a time would have the second write delete the first — the customer
+# would see one account's bill and nothing would look wrong.
+class _AccountClient:
+    """A cost API for one account, returning that account's own spend."""
+
+    def __init__(self, key):
+        self._key = key
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def fetch_costs(self, period):
+        amounts = {"key-acme": "300.00", "key-labs": "120.00"}
+        return [
+            CostRecord(
+                "openai",
+                period,
+                Decimal(amounts[self._key]),
+                api_key_ref=f"ref:{self._key}",
+                model="gpt-4o",
+            )
+        ]
+
+
+def test_two_accounts_on_one_provider_are_summed_not_overwritten(tenant_id, monkeypatch):
+    monkeypatch.setattr(inference, "_make_cost_client", lambda provider, key: _AccountClient(key))
+
+    summary = inference.run_inference_ingest(
+        tenant_id, "openai", PERIOD, ["key-acme", "key-labs"]
+    )
+    # $300 + $120. Reading one account would have reported one of them.
+    assert summary["total"] == pytest.approx(420.0)
+
+    dash = inference.inference_summary(tenant_id, PERIOD)
+    assert dash["by_provider"]["openai"] == pytest.approx(420.0)
+
+
+def test_re_ingesting_two_accounts_stays_idempotent(tenant_id, monkeypatch):
+    monkeypatch.setattr(inference, "_make_cost_client", lambda provider, key: _AccountClient(key))
+    keys = ["key-acme", "key-labs"]
+
+    inference.run_inference_ingest(tenant_id, "openai", PERIOD, keys)
+    inference.run_inference_ingest(tenant_id, "openai", PERIOD, keys)
+
+    # Twice the same month must not be twice the money.
+    assert inference.inference_summary(tenant_id, PERIOD)["by_provider"]["openai"] == pytest.approx(
+        420.0
+    )
+
+
+def test_one_broken_key_does_not_rewrite_the_month_with_half_a_bill(tenant_id, monkeypatch):
+    # Clearing the month and rewriting it from the healthy account alone would
+    # silently halve the customer's bill. Last-good data must stand instead.
+    monkeypatch.setattr(inference, "_make_cost_client", lambda provider, key: _AccountClient(key))
+    inference.run_inference_ingest(tenant_id, "openai", PERIOD, ["key-acme", "key-labs"])
+
+    class _Expired(_AccountClient):
+        def fetch_costs(self, period):
+            if self._key == "key-labs":
+                raise RuntimeError("401 Unauthorized")
+            return super().fetch_costs(period)
+
+    monkeypatch.setattr(inference, "_make_cost_client", lambda provider, key: _Expired(key))
+    with pytest.raises(RuntimeError):
+        inference.run_inference_ingest(tenant_id, "openai", PERIOD, ["key-acme", "key-labs"])
+
+    assert inference.inference_summary(tenant_id, PERIOD)["by_provider"]["openai"] == pytest.approx(
+        420.0
+    )
+
+
+def test_a_single_key_still_works_unchanged(tenant_id, monkeypatch):
+    # The old call shape — one key as a plain string — is what most callers pass.
+    monkeypatch.setattr(inference, "_make_cost_client", lambda provider, key: _AccountClient(key))
+    summary = inference.run_inference_ingest(tenant_id, "openai", PERIOD, "key-acme")
+    assert summary["total"] == pytest.approx(300.0)

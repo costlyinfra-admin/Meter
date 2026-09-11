@@ -285,6 +285,9 @@ class BudgetRequest(BaseModel):
 class CredentialRequest(BaseModel):
     secret: str = Field(min_length=1, max_length=8192)
     label: Optional[str] = Field(default=None, max_length=200)
+    #: Which stored credential to replace. Omitted means "add another account
+    #: under this connector" — a tenant may hold several.
+    credential_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class DiscoveryRequest(BaseModel):
@@ -761,16 +764,44 @@ def create_app() -> FastAPI:
     def list_connectors(user: CurrentUser) -> list[credentials.ConnectorStatus]:
         return credentials.connector_statuses(user["tenant_id"])
 
+    @app.get("/api/connectors/{connector_type}/credentials")
+    def list_connector_credentials(connector_type: str, user: CurrentUser) -> dict:
+        # Identity and dates only. No route anywhere returns a stored secret,
+        # so there is nothing here to mask.
+        return {"credentials": credentials.list_credentials(user["tenant_id"], connector_type)}
+
     @app.post("/api/connectors/{connector_type}/credential", status_code=status.HTTP_204_NO_CONTENT)
     def save_connector_credential(
         connector_type: str,
         body: CredentialRequest,
         user: CurrentUser,
     ) -> Response:
+        # With `credential_id`, replaces that one; without, adds another account
+        # under the same connector.
         try:
-            credentials.save_credential(user["tenant_id"], connector_type, body.secret, body.label)
+            credentials.save_credential(
+                user["tenant_id"],
+                connector_type,
+                body.secret,
+                body.label,
+                credential_id=body.credential_id,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.delete(
+        "/api/connectors/{connector_type}/credentials/{credential_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_connector_credential(
+        connector_type: str, credential_id: str, user: CurrentUser
+    ) -> Response:
+        # Cost already attributed to this credential stays. What a month cost is
+        # a fact about the month; removing the key Meter read it with does not
+        # un-spend the money.
+        if not credentials.delete_credential(user["tenant_id"], connector_type, credential_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ---- Feature discovery + editing (wizard step 2) --------------------

@@ -1386,6 +1386,80 @@ select {
   font-size: 0.8rem;
 }
 
+/* One row per stored account under a connector. */
+.credential-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.credential-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  font-size: 0.85rem;
+}
+
+.credential-list li.is-replacing {
+  border-color: var(--accent);
+}
+
+.credential-name {
+  font-weight: 600;
+}
+
+.credential-meta {
+  flex: 1 1 auto;
+  font-size: 0.8rem;
+}
+
+/* --link, not --accent-ink: the latter is the ink used ON the accent colour
+   and is near-white, which made Replace all but invisible on this surface. */
+button.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--link);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+button.linklike:hover:not(:disabled) {
+  color: var(--link-hover);
+}
+
+button.linklike:disabled {
+  color: var(--muted);
+  text-decoration: none;
+  cursor: default;
+}
+
+/* Removing an account is the destructive one, so it is quieter than Replace
+   until you are on it — the reverse of what the colours were doing. */
+button.linklike.danger:not(:disabled) {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+button.linklike.danger:not(:disabled):hover {
+  color: var(--error);
+  text-decoration: underline;
+}
+
+input.credential-label-input {
+  max-width: 340px;
+}
+
 .connector-rotate-note {
   margin: 0;
   font-size: 0.82rem;
