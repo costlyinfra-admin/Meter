@@ -114,28 +114,48 @@ class GitHubClient:
     def list_repos(self, owner: str) -> list[str]:
         """Full names ("owner/name") of ``owner``'s repos the token can see.
 
-        Prefer the authenticated-user endpoint (/user/repos), which returns the
-        token's accessible repos INCLUDING private ones (own + org member) — so a
-        private repo under a personal account or a new org is found. Filter those
-        to ``owner``. Fall back to the public org/user listing for an owner the
-        token isn't a member of (e.g. a public org you don't belong to).
+        The UNION of two listings, because neither is complete on its own:
+
+        * ``/user/repos`` sees private repos the token reaches personally —
+          including ones under a personal account or an org whose repo listing
+          the token cannot read.
+        * ``/orgs/{owner}/repos`` sees every repo in the org, including ones the
+          token reaches through a team rather than directly.
+
+        This used to return the first listing as soon as it produced anything,
+        which meant a token that could see twenty repos personally hid the other
+        eighty the org listing would have returned. A partial answer must never
+        win over a complete one, so both are asked and the results merged.
         """
         target = owner.lower()
-        accessible = [
-            full
-            for full in self._list_accessible_repos()
-            if full.split("/", 1)[0].lower() == target
-        ]
-        if accessible:
-            return accessible
+        found: dict[str, None] = {}  # dict, not set: first-seen order is stable
 
+        for full in self._list_accessible_repos():
+            if full.split("/", 1)[0].lower() == target:
+                found[full] = None
+
+        # An owner is an org or a user, never both. Try the org listing first and
+        # stop at whichever answers; a 404 means "wrong kind of owner", not "no
+        # repos". `type=all` includes private repos for a member.
+        failure: Optional[GitHubError] = None
         for path in (f"/orgs/{owner}/repos", f"/users/{owner}/repos"):
             try:
-                return self._paginate_full_names(path, {"type": "all"})
+                for full in self._paginate_full_names(path, {"type": "all"}):
+                    found[full] = None
+                break
             except GitHubError as exc:
                 if exc.status == 404:
                     continue
-                raise
+                # Anything else (rate limit, SAML enforcement, a scope the token
+                # lacks) is only fatal when it leaves us with nothing at all —
+                # otherwise the personal listing above still gives a real answer.
+                failure = exc
+                break
+
+        if found:
+            return list(found)
+        if failure is not None:
+            raise failure
         raise GitHubError(
             f"GitHub owner '{owner}' not found, or no repositories are accessible "
             "with this token (private repos need a token with repo access).",
@@ -143,15 +163,21 @@ class GitHubClient:
         )
 
     def _list_accessible_repos(self) -> list[str]:
-        """Every repo the token can access (own + org member), incl. private."""
+        """Every repo the token can access, including private ones.
+
+        `affiliation` is spelled out because GitHub's default drops nothing but
+        this call used to: it asked for `owner,organization_member` only, which
+        silently excluded every repo the user reaches as a direct collaborator —
+        the normal shape of an enterprise account.
+        """
         if not self._token:
             return []  # /user/repos needs auth; unauthenticated -> public listing only
         try:
             return self._paginate_full_names(
-                "/user/repos", {"affiliation": "owner,organization_member"}
+                "/user/repos", {"affiliation": "owner,collaborator,organization_member"}
             )
         except GitHubError:
-            # Some token types can't call /user/repos; fall back to public listing.
+            # Some token types can't call /user/repos; the org listing still can.
             return []
 
     def _paginate_full_names(self, path: str, extra_params: Optional[dict] = None) -> list[str]:

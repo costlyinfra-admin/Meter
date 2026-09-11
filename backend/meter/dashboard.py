@@ -1545,16 +1545,40 @@ def spend_by_provider(
         # so it lines up with the spend beside it instead of being all-time.
         # PRs merged before migration 0035 have no merged_at and no line counts;
         # they are reported as unknown ("—"), never as zero.
+        # Collapsed to one row per pull request BEFORE the sums. Clustering may
+        # place a single PR under two features, and nothing forbids it — there is
+        # no unique constraint on (feature_id, external_ref). Summing the raw
+        # rows therefore counted that PR's commits, files and lines twice, so a
+        # developer whose work spanned two features read as having shipped twice
+        # as much. The PR count was already distinct; these were not.
         activity_rows = conn.execute(
             """
-            SELECT lower(actor),
-                   COUNT(DISTINCT external_ref),
-                   COUNT(DISTINCT feature_id),
-                   SUM(commits), SUM(files_changed), SUM(additions), SUM(deletions)
-            FROM feature_signal
-            WHERE signal_type = 'pr' AND actor IS NOT NULL
-              AND merged_at >= %s AND merged_at < %s
-            GROUP BY lower(actor)
+            WITH windowed AS (
+                SELECT lower(actor) AS actor, external_ref, feature_id,
+                       commits, files_changed, additions, deletions
+                FROM feature_signal
+                WHERE signal_type = 'pr' AND actor IS NOT NULL
+                  AND merged_at >= %s AND merged_at < %s
+            ),
+            per_pr AS (
+                -- Every row for one PR carries that PR's own stats, so MAX is
+                -- simply "the value", and it survives a NULL beside it.
+                SELECT actor, external_ref,
+                       MAX(commits) AS commits, MAX(files_changed) AS files_changed,
+                       MAX(additions) AS additions, MAX(deletions) AS deletions
+                FROM windowed
+                GROUP BY actor, external_ref
+            )
+            SELECT p.actor,
+                   COUNT(*),
+                   -- Features touched stays a property of the rows, not the PRs:
+                   -- two PRs into one feature is one feature.
+                   (SELECT COUNT(DISTINCT w.feature_id)
+                      FROM windowed w WHERE w.actor = p.actor),
+                   SUM(p.commits), SUM(p.files_changed),
+                   SUM(p.additions), SUM(p.deletions)
+            FROM per_pr p
+            GROUP BY p.actor
             """,
             (start, next_month(end)),
         ).fetchall()

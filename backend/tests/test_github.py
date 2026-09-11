@@ -188,3 +188,107 @@ def test_fetch_pr_stats_from_detail_endpoint():
     # with_stats=False skips the detail call -> stats stay None.
     no_stats = _client(handler).fetch_merged_prs("testorg", since, with_stats=False)
     assert no_stats[0].commits is None
+
+
+# ---- Repository listing ---------------------------------------------------
+# A customer with ~100 repositories saw about 20. Two faults compounded: the
+# personal listing asked for an affiliation set that excluded collaborator
+# repos, and any non-empty personal listing short-circuited the org listing
+# that would have returned the rest.
+ORG = "acme"
+ALL_REPOS = [f"{ORG}/repo-{i:03d}" for i in range(100)]
+VIA_MEMBERSHIP = set(ALL_REPOS[:20])
+VIA_COLLABORATION = set(ALL_REPOS[20:])
+
+
+def _repo_handler(*, org_listing=True, seen=None):
+    """A GitHub where most repos are reachable only as a direct collaborator."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path, q = request.url.path, dict(request.url.params)
+        if seen is not None:
+            seen.append(path)
+        page, per = int(q.get("page", 1)), int(q.get("per_page", 30))
+
+        if path == "/user/repos":
+            affiliation = set(q.get("affiliation", "").split(","))
+            visible = set()
+            if "organization_member" in affiliation:
+                visible |= VIA_MEMBERSHIP
+            if "collaborator" in affiliation:
+                visible |= VIA_COLLABORATION
+            ordered = [r for r in ALL_REPOS if r in visible]
+            return httpx.Response(
+                200, json=[{"full_name": r} for r in ordered[(page - 1) * per : page * per]]
+            )
+
+        if path == f"/orgs/{ORG}/repos" and org_listing:
+            return httpx.Response(
+                200, json=[{"full_name": r} for r in ALL_REPOS[(page - 1) * per : page * per]]
+            )
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    return handler
+
+
+def _repo_client(handler) -> GitHubClient:
+    return GitHubClient("tok", client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_every_repository_is_listed_not_just_the_first_page():
+    # Pagination past 100 is the easy half; the hard half is asking both
+    # listings, since neither sees everything on its own.
+    assert _repo_client(_repo_handler()).list_repos(ORG) == ALL_REPOS
+
+
+def test_collaborator_repositories_are_not_dropped():
+    # Without the org listing, the personal one is all there is — and it must
+    # ask for collaborator repos, which is how most of these are reachable.
+    repos = _repo_client(_repo_handler(org_listing=False)).list_repos(ORG)
+    assert set(repos) == VIA_MEMBERSHIP | VIA_COLLABORATION
+
+
+def test_a_partial_personal_listing_never_hides_the_org_listing():
+    seen: list[str] = []
+    _repo_client(_repo_handler(seen=seen)).list_repos(ORG)
+    # The bug was returning as soon as /user/repos produced anything at all.
+    assert f"/orgs/{ORG}/repos" in seen
+
+
+def test_a_repo_seen_by_both_listings_appears_once():
+    repos = _repo_client(_repo_handler()).list_repos(ORG)
+    assert len(repos) == len(set(repos))
+
+
+def test_repos_of_another_owner_are_not_included():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/user/repos":
+            return httpx.Response(
+                200, json=[{"full_name": "acme/keep"}, {"full_name": "other-org/skip"}]
+            )
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    assert _repo_client(handler).list_repos(ORG) == ["acme/keep"]
+
+
+def test_an_owner_with_nothing_visible_still_reports_not_found():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/user/repos":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    with pytest.raises(GitHubError) as err:
+        _repo_client(handler).list_repos("ghost")
+    assert err.value.status == 404
+
+
+def test_a_rate_limit_is_reported_rather_than_read_as_an_empty_org():
+    # Swallowing this would tell the customer their org has no repositories.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/user/repos":
+            return httpx.Response(200, json=[])
+        return httpx.Response(403, text="API rate limit exceeded")
+
+    with pytest.raises(GitHubError) as err:
+        _repo_client(handler).list_repos(ORG)
+    assert err.value.status == 403

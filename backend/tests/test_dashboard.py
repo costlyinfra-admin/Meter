@@ -857,6 +857,36 @@ def test_developer_activity_is_scoped_to_the_period(seeded, app_env):
     assert wide["alice"]["prs"] == 4  # February's PR is inside this window
 
 
+def test_one_pr_under_two_features_is_counted_once(seeded, app_env):
+    # Clustering may place a single pull request under two features, and nothing
+    # forbids it: there is no unique constraint on (feature_id, external_ref).
+    # The developer still shipped ONE pull request with 4 commits, however many
+    # features it touched. Summing the raw signal rows doubled all of it.
+    app_env.execute(
+        """
+        INSERT INTO feature_signal
+            (tenant_id, feature_id, signal_type, external_ref, confidence, source,
+             actor, commits, files_changed, additions, deletions, merged_at)
+        SELECT %s, id, 'pr', 'acme/core#901', 'high', 'github',
+               'zoe', 4, 8, 200, 50, %s
+        FROM feature WHERE tenant_id = %s ORDER BY created_at LIMIT 2
+        """,
+        (seeded, dt.date(2026, 5, 14), seeded),
+    )
+    app_env.commit()
+
+    zoe = {
+        a["handle"]: a for a in dashboard.spend_by_provider(seeded, PERIOD)["developer_activity"]
+    }["zoe"]
+    assert zoe["prs"] == 1
+    assert zoe["commits"] == 4
+    assert zoe["files_changed"] == 8
+    assert zoe["additions"] == 200
+    assert zoe["deletions"] == 50
+    # The feature count is the one number that SHOULD see both rows.
+    assert zoe["features"] == 2
+
+
 def test_activity_coverage_explains_an_empty_activity_table(seeded, app_env):
     # An empty table has several causes and the reader can only act on the right
     # one, so the payload carries the facts that tell them apart.
