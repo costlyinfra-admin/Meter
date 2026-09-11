@@ -42,8 +42,9 @@ import urllib.error
 import urllib.request
 import uuid
 from collections import deque
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Optional
 
 __version__ = "2.0.0"
 
@@ -58,7 +59,7 @@ SHUTDOWN_TIMEOUT = 3.0
 #: genuinely working is never mistaken for one that has hung.
 HEARTBEAT_INTERVAL = 30.0
 
-_METERS: "set" = set()
+_METERS: set = set()
 
 SPAN_KINDS = ("workflow", "llm", "embedding", "retrieval", "tool", "guardrail", "evaluation")
 
@@ -165,7 +166,7 @@ class Meter:
     def agent(self, operation_name: str, *, feature_id: Optional[str] = None,
               customer_id: Optional[str] = None, application: Optional[str] = None,
               trace_id: Optional[str] = None,
-              parent_span_id: Optional[str] = None) -> Iterator["AgentRun"]:
+              parent_span_id: Optional[str] = None) -> Iterator[AgentRun]:
         """A multi-step run. Steps recorded inside it become its spans.
 
         The context manager is the point: leaving the block ends the trace and
@@ -194,7 +195,7 @@ class Meter:
             run._finish("trace.completed")
 
     @contextmanager
-    def resume(self, context: Any, **overrides: Any) -> Iterator["AgentRun"]:
+    def resume(self, context: Any, **overrides: Any) -> Iterator[AgentRun]:
         """Continue a trace started elsewhere — a queue worker, another service.
 
         The exported context carries identifiers only, so passing it through a

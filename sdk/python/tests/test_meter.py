@@ -8,8 +8,9 @@ import re
 import threading
 import time
 
-import costlyinfra_meter
 import pytest
+
+import costlyinfra_meter
 from costlyinfra_meter import Meter
 
 URL = "https://meter.example/api/hook/events"
