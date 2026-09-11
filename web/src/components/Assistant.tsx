@@ -16,7 +16,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { Inline } from "../help/render";
-import { findTopic } from "../help/content";
 import { retrieve } from "../help/retrieve";
 
 interface Message {
@@ -211,34 +210,11 @@ function Bubble({
           <Inline text={para} />
         </p>
       ))}
-      {done && message.sources && message.sources.length > 0 && <Sources ids={message.sources} />}
       {done && message.unanswered && supportEmail && (
         <a className="assist-source" href={`mailto:${supportEmail}`}>
           Email support →
         </a>
       )}
-    </div>
-  );
-}
-
-/** The handbook topics an answer was drawn from, as links. */
-function Sources({ ids }: { ids: string[] }) {
-  const found = ids
-    .map((id) => {
-      const [category, topic] = id.split("/");
-      const hit = category && topic ? findTopic(category, topic) : undefined;
-      return hit ? { id, title: hit.topic.title } : null;
-    })
-    .filter((x): x is { id: string; title: string } => x !== null);
-  if (!found.length) return null;
-  return (
-    <div className="assist-sources">
-      <span className="assist-sources-label">In the handbook</span>
-      {found.map((source) => (
-        <Link key={source.id} to={`/help/${source.id}`} className="assist-source">
-          {source.title} →
-        </Link>
-      ))}
     </div>
   );
 }

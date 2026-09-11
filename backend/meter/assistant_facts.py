@@ -302,3 +302,73 @@ def _alerts(conn) -> dict:
             for name, metric, status, observed, threshold in rows
         ]
     }
+
+
+def summarize(facts: Optional[dict]) -> Optional[str]:
+    """The snapshot as plain sentences, for when no answering model is reachable.
+
+    Not a substitute for the model — it cannot follow a conversation or explain
+    a mechanism. But the questions worth asking a dashboard are largely "what is
+    happening right now", and those have factual answers that need no prose
+    generation. Returning them beats returning documentation.
+
+    None when the snapshot holds nothing worth saying, so the caller can say so
+    rather than emit an empty shell of a reply.
+    """
+    if not facts:
+        return None
+
+    lines: list[str] = []
+    agents = facts.get("agents") or {}
+    if agents:
+        stale, running = agents.get("stale_now", 0), agents.get("running_now", 0)
+        if stale:
+            quiet = agents.get("quiet_runs") or []
+            named = ", ".join(
+                f"**{r['workflow']}** ({r['running_for_minutes']} min)" for r in quiet[:3]
+            )
+            lines.append(
+                f"{stale} run{'s' if stale != 1 else ''} "
+                f"{'have' if stale != 1 else 'has'} gone quiet for longer than "
+                f"{agents.get('stale_after_minutes')} minutes"
+                f"{': ' + named if named else ''}. A quiet run has not failed and may "
+                f"still finish — see [Traces](/traces)."
+            )
+        elif running:
+            lines.append(f"{running} run{'s' if running != 1 else ''} in flight, none gone quiet.")
+        else:
+            lines.append("No agent runs are active right now.")
+
+        loops = agents.get("repeated_steps_last_7d") or []
+        if loops:
+            top = loops[0]
+            lines.append(
+                f"The most repeated step in the last 7 days is **{top['step']}** in "
+                f"**{top['workflow']}**, {top['repeats']} times in one run. That is worth "
+                f"a look, though some workflows call a step more than once by design."
+            )
+
+    traces = facts.get("traces") or {}
+    if traces.get("runs"):
+        biggest = (traces.get("largest_by_tokens") or [{}])[0]
+        if biggest:
+            lines.append(
+                f"Over the last 7 days: {traces['runs']} runs, "
+                f"{traces['failed_runs']} failed. The heaviest was **{biggest['workflow']}** "
+                f"at {biggest['tokens']:,} tokens."
+            )
+
+    fresh = facts.get("freshness") or {}
+    ages = [
+        ("Inference cost", fresh.get("inference_cost_age")),
+        ("Infrastructure", fresh.get("infrastructure_age")),
+        ("Feature discovery", fresh.get("feature_discovery_age")),
+        ("Traces", fresh.get("last_trace_age")),
+    ]
+    known = [f"{label} {age}" for label, age in ages if age]
+    if known and not lines:
+        # Freshness is in every snapshot, so it only becomes the answer when
+        # nothing more specific applied — otherwise every reply would end with it.
+        lines.append("Last updated — " + "; ".join(known) + ".")
+
+    return "\n\n".join(lines) if lines else None

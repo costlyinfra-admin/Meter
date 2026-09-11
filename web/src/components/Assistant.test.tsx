@@ -111,7 +111,10 @@ describe("support assistant", () => {
     expect(body.page).toBe("Overview");
   });
 
-  it("links every answer back to the handbook topics behind it", async () => {
+  it("answers without citing documentation back at the reader", async () => {
+    // Documentation is supporting material. Someone who asked about their own
+    // product does not want a reading list under the reply, and a citation made
+    // every answer read as a search result.
     askAssistant.mockResolvedValue({
       answer: "They are kept separate.",
       sources: ["concepts/build-vs-inference"],
@@ -121,13 +124,16 @@ describe("support assistant", () => {
     await open();
     ask("build vs inference?");
 
-    const link = await screen.findByRole("link", { name: /Build cost vs inference cost/i });
-    expect(link).toHaveAttribute("href", "/help/concepts/build-vs-inference");
+    expect(await screen.findByText("They are kept separate.")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Build cost vs inference cost/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/In the handbook/i)).not.toBeInTheDocument();
   });
 
-  it("offers a human when the handbook has no answer", async () => {
+  it("offers a human when it cannot answer", async () => {
     askAssistant.mockResolvedValue({
-      answer: "The handbook doesn't cover that.",
+      answer: "I can't answer that one right now.",
       sources: [],
       answered: false,
       composed: true,

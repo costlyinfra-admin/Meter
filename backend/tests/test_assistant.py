@@ -50,7 +50,7 @@ def _replies(content: str, status_code: int = 200):
     return handler
 
 
-def test_answers_from_the_handbook_and_cites_its_sources():
+def test_answers_the_question_without_citing_documentation():
     handler = _replies(
         json.dumps(
             {
@@ -70,20 +70,27 @@ def test_answers_from_the_handbook_and_cites_its_sources():
 
     assert result["answered"] is True
     assert result["composed"] is True
-    assert result["sources"] == ["getting-started/what-meter-does"]
     assert "never added together" in result["answer"]
+    # Documentation is supporting material, not something to cite back at
+    # someone who asked about their own product. An answer stands on its own.
+    assert result["sources"] == []
 
-    # The excerpts, the question and the screen all reach the model.
+    # The reference, the question and the screen all still reach the model.
     sent = json.loads(handler.request.content)
     prompt = sent["messages"][-1]["content"]
     assert "The Unattributed bucket" in prompt
     assert "what is the difference" in prompt
+    # And the model is told to use it as reference, not as the only source.
+    system = sent["messages"][0]["content"]
+    assert "REFERENCE" in system and "authority on anything about their usage" in system
 
 
-def test_a_cited_topic_that_was_never_sent_is_dropped():
-    # A link to a topic that does not exist is worse than no link at all.
+def test_no_citation_is_returned_even_if_the_model_offers_one():
+    # The model may still emit sources; they are dropped rather than rendered.
     handler = _replies(
-        json.dumps({"answer": "Yes.", "sources": ["invented/topic"], "answered": True})
+        json.dumps(
+            {"answer": "Yes.", "sources": ["getting-started/what-meter-does"], "answered": True}
+        )
     )
     with _client(handler) as client:
         result = assistant.answer("anything?", passages=PASSAGES, client=client)
@@ -128,20 +135,44 @@ def test_history_is_passed_through_and_capped():
     assert sent["messages"][1]["content"] == "q14"
 
 
-def test_falls_back_to_the_handbook_when_no_model_is_configured(monkeypatch):
+def test_without_a_model_it_answers_the_data_question_from_the_data(monkeypatch):
+    # It used to paste a documentation excerpt, which read as a search result
+    # and could not touch the customer's data at all.
     monkeypatch.delenv("METER_DISCOVERY_BASE_URL", raising=False)
-    result = assistant.answer("what is build cost?", passages=PASSAGES)
+    facts = {
+        "agents": {
+            "stale_after_minutes": 10,
+            "stale_now": 1,
+            "running_now": 0,
+            "quiet_runs": [{"workflow": "resolve-ticket", "running_for_minutes": 95}],
+            "repeated_steps_last_7d": [],
+        }
+    }
+    result = assistant.answer("is an agent stuck?", passages=PASSAGES, facts=facts)
     assert result["composed"] is False
     assert result["answered"] is True
-    assert "What Meter does" in result["answer"]
-    assert result["sources"] == ["getting-started/what-meter-does"]
+    assert "resolve-ticket" in result["answer"]
+    assert "95 min" in result["answer"]
+    # No documentation, quoted or named.
+    assert "What Meter does" not in result["answer"]
+    assert result["sources"] == []
 
 
-def test_a_provider_failure_degrades_to_the_handbook_rather_than_an_error():
+def test_without_a_model_and_without_data_it_says_so_plainly(monkeypatch):
+    monkeypatch.delenv("METER_DISCOVERY_BASE_URL", raising=False)
+    result = assistant.answer("what is build cost?", passages=PASSAGES, facts=None)
+    assert result["composed"] is False
+    assert result["answered"] is False
+    # Admitting the limit beats handing back an excerpt dressed as a reply.
+    assert "isn't reachable" in result["answer"]
+    assert "What Meter does" not in result["answer"]
+
+
+def test_a_provider_failure_degrades_rather_than_erroring():
     with _client(_replies("upstream exploded", status_code=500)) as client:
         result = assistant.answer("what is build cost?", passages=PASSAGES, client=client)
     assert result["composed"] is False
-    assert "What Meter does" in result["answer"]
+    assert result["answered"] is False
 
 
 def test_a_network_failure_degrades_the_same_way():
@@ -153,10 +184,10 @@ def test_a_network_failure_degrades_the_same_way():
     assert result["composed"] is False
 
 
-def test_no_passages_means_no_invented_answer():
+def test_no_reference_and_no_data_means_no_invented_answer():
     result = assistant.answer("something obscure", passages=[])
     assert result["answered"] is False
-    assert "/help" in result["answer"]
+    assert "/traces" in result["answer"] or "/cost-sources" in result["answer"]
 
 
 def test_the_api_key_never_reaches_the_reply_or_the_log(caplog):
