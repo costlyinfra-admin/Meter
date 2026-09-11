@@ -124,6 +124,8 @@ reconciliation      →  match the two; any gap → Unattributed bucket
 
 If hook totals tie out to the provider bill, the attributed features are trustworthy. If there's a delta (untagged calls, a model we mispriced), it surfaces in the unattributed bucket instead of silently corrupting a feature's number. The provider API keeps the hook honest; the hook gives the provider API resolution.
 
+**What the hook never carries.** Prompts, responses, messages, tool arguments and results, retrieved documents, exception text. The event format has no field for them and ingest refuses payloads that try. The one exception is separate from metering entirely: **Prompt Optimization** collects prompt templates and short-lived samples on its own channel, only for features where a customer admin has explicitly consented, encrypted per tenant and deleted after 30 days. See [`prompt-optimization-spec.md`](prompt-optimization-spec.md).
+
 ### 7.3 The confidence ladder
 
 Every inference number carries a confidence level, driven by how it was attributed:

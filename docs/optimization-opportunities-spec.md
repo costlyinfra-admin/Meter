@@ -255,7 +255,9 @@ This is the same "reconcile against reality" ethos as bill reconciliation.
   ("`triage.py:88` uses Opus with a 4k static prompt and no `cache_control`").
 - **Eval-backed model downgrade** — replay a sample of real prompts against a
   cheaper model and judge quality. Highest trust, heaviest lift; requires prompt
-  capture → **explicit opt-in** and careful handling.
+  capture → **explicit opt-in** and careful handling. *Now specified as Prompt
+  Optimization — consented capture, rewrite, replay evaluation — in
+  [`prompt-optimization-spec.md`](prompt-optimization-spec.md).*
 - **LLM-as-analyst** — hand a model the assembled *measured* evidence + call-site
   facts to write the prioritized recommendation. Guardrail: it may only cite
   numbers we computed; dollars come from `pricing.py`, not the model.
@@ -712,6 +714,10 @@ world-class:
 
 ## 24. Future milestones
 
+- **Prompt Optimization (PO-1..PO-5).** Consented, per-feature prompt capture;
+  explained rewrites; replay-and-compare evaluation; a `prompt_optimization` lever
+  verified by prompt version. Its own spec:
+  [`prompt-optimization-spec.md`](prompt-optimization-spec.md).
 - **Simulator (M-opt-17).** A what-if calculator over existing pricing + a feature's
   measured token mix: provider switch, model mix, prompt-cache rate, batch API,
   input/output reduction. Reuses `pricing.py` and the feature's usage — **no new

@@ -52,6 +52,7 @@ from . import (
     okta,
     optimize_measured,
     otel,
+    prompt_capture,
     resources,
     seats,
     settings,
@@ -596,6 +597,31 @@ class AssistantRequest(BaseModel):
     #: Where the user is in the app, so the answer can be about the screen in
     #: front of them. A label, not a URL with data in it.
     page: str = Field(default="", max_length=80)
+
+
+class PromptDisclosure(BaseModel):
+    """Which provider and model would see prompts, exactly as the consent screen showed."""
+
+    source: str = Field(max_length=10)
+    provider: str = Field(max_length=80)
+    model: str = Field(max_length=200)
+
+
+class PromptConsentRequest(BaseModel):
+    """Organization consent to prompt capture. The password is checked, never stored."""
+
+    password: str = Field(min_length=1, max_length=1000)
+    accepted_version: str = Field(min_length=1, max_length=40)
+    accepted_disclosure: PromptDisclosure
+
+
+class PromptFeatureRequest(BaseModel):
+    enabled: bool
+
+
+#: Largest prompt sample body read before parsing: a little over the sample cap,
+#: so an oversized sample is refused by size rather than parsed first.
+PROMPT_SAMPLE_MAX_BODY = 4 * prompt_capture.MAX_SAMPLE_BYTES
 
 
 class DiscoveryLlmRequest(BaseModel):
@@ -1913,6 +1939,133 @@ def create_app() -> FastAPI:
     def delete_discovery_llm(user: CurrentUser) -> dict:
         """Delete the configuration and its stored key."""
         return discovery_llm.remove(user["tenant_id"])
+
+    # ---- Prompt Optimization: consented prompt capture (PO-1) -----------
+    # The only routes in Meter that touch prompt text. See prompt_capture.py and
+    # docs/prompt-optimization-spec.md.
+    def _customer_only(request: Request) -> None:
+        # Meter staff viewing a customer's account must never consent for them,
+        # switch capture on, destroy what was captured, or read it.
+        if request.session.get("impersonate_tenant"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not available while viewing a customer's account.",
+            )
+
+    @app.get("/api/prompt-optimization/consent")
+    def prompt_consent(user: CurrentUser) -> dict:
+        return prompt_capture.consent_status(user["tenant_id"])
+
+    @app.post("/api/prompt-optimization/consent")
+    def grant_prompt_consent(
+        body: PromptConsentRequest, request: Request, user: CurrentUser
+    ) -> dict:
+        _customer_only(request)
+        # Re-entering the password is the deliberate act that stands in for an
+        # admin role Meter does not have. 403, not 401: a mistyped password here
+        # is not an expired session and must not sign the person out.
+        if auth.login(user["email"], body.password) is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="That password is not correct."
+            )
+        try:
+            return prompt_capture.grant_consent(
+                user["tenant_id"],
+                user["email"],
+                accepted_version=body.accepted_version,
+                accepted_disclosure=body.accepted_disclosure.model_dump(),
+            )
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.delete("/api/prompt-optimization/consent")
+    def withdraw_prompt_consent(request: Request, user: CurrentUser) -> dict:
+        _customer_only(request)
+        return prompt_capture.withdraw_consent(user["tenant_id"], user["email"])
+
+    @app.put("/api/prompt-optimization/features/{feature_id}")
+    def set_prompt_feature(
+        feature_id: str, body: PromptFeatureRequest, request: Request, user: CurrentUser
+    ) -> dict:
+        _customer_only(request)
+        try:
+            return prompt_capture.set_feature(
+                user["tenant_id"], feature_id, body.enabled, user["email"]
+            )
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get("/api/prompt-optimization/samples")
+    def prompt_samples(user: CurrentUser, feature_id: Optional[str] = None) -> dict:
+        """Identities and numbers only. Content is a separate, audited request."""
+        try:
+            return {
+                "samples": prompt_capture.list_samples(user["tenant_id"], feature_id=feature_id)
+            }
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get("/api/prompt-optimization/samples/{sample_id}/content")
+    def prompt_sample_content(sample_id: str, request: Request, user: CurrentUser) -> dict:
+        _customer_only(request)
+        try:
+            found = prompt_capture.show_sample(user["tenant_id"], sample_id, user["email"])
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sample not found")
+        return found
+
+    @app.get("/api/prompt-optimization/audit")
+    def prompt_audit(user: CurrentUser) -> dict:
+        return {"events": prompt_capture.audit_log(user["tenant_id"])}
+
+    @app.get("/api/prompt-capture/open")
+    def prompt_capture_open(request: Request, feature_id: str) -> dict:
+        """For the SDK: would a sample for this feature be accepted right now?"""
+        tenant_id = _ingest_tenant(request)
+        try:
+            return prompt_capture.capture_open(tenant_id, feature_id)
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.post("/api/prompt-capture/samples")
+    async def capture_prompt_sample(request: Request) -> Response:
+        """One consented prompt sample, authenticated by the ingest token.
+
+        The body is read with a bound before it is parsed, so an oversized sample
+        costs a size check rather than a parse. Refusals carry a stable `reason`
+        the SDK acts on (stop for this feature, back off, drop).
+        """
+        tenant_id = await run_in_threadpool(_ingest_tenant, request)
+        chunks: list = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > PROMPT_SAMPLE_MAX_BODY:
+                return Response(
+                    json.dumps({"detail": "Sample is too large.", "reason": "too_large"}),
+                    status_code=413,
+                    media_type="application/json",
+                )
+            chunks.append(chunk)
+        try:
+            payload = json.loads(b"".join(chunks) or b"null")
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Body is not valid JSON."
+            ) from None
+        try:
+            result = await run_in_threadpool(prompt_capture.store_sample, tenant_id, payload)
+        except prompt_capture.PromptCaptureError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except prompt_capture.CaptureRefused as refused:
+            return Response(
+                json.dumps({"detail": str(refused), "reason": refused.reason}),
+                status_code=refused.status,
+                media_type="application/json",
+            )
+        return Response(json.dumps(result), media_type="application/json")
 
     # ---- Provider invoice reconciliation (opt-in, isolated module) -------
     # The whole feature lives in meter/reconciliation and is off unless a

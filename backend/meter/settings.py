@@ -33,10 +33,11 @@ TRACE_RETENTION_DAYS = (7, 30, 90)
 #: time presentation, never a stored status.
 MIN_STALE_MINUTES, MAX_STALE_MINUTES = 1, 1440
 
-#: Reserved so a future consented capture feature needs no schema change. This
-#: milestone enforces 'disabled': the API refuses to set anything else, and the
-#: UI offers no control. Deliberately independent of `store_prompts`, which
-#: governs an older, different thing — content stays absent regardless of it.
+#: The TRACE path's content policy, enforced at 'disabled': the API refuses to
+#: set anything else and the UI offers no control. Traces stay content-free even
+#: for organizations that consent to Prompt optimization, whose samples live in a
+#: separate, consented store (prompt_capture.py). Independent of `store_prompts`,
+#: an older preference that nothing reads.
 CONTENT_CAPTURE = ("disabled", "redacted", "full")
 CONTENT_CAPTURE_ENABLED = ("disabled",)
 
@@ -145,14 +146,15 @@ def update_settings(tenant_id: str, changes: dict) -> dict:
 
     if "content_capture" in changes:
         value = (changes["content_capture"] or "").strip()
-        # The reserved values exist in the schema so a future consented feature
-        # needs no migration. They are refused here so no API caller, SDK or
-        # customer can turn content capture on before that feature exists, with
-        # its own consent, encryption, retention and audit story.
+        # The reserved values are refused so no API caller, SDK or customer can
+        # put content on the trace path. Consented prompt collection does not go
+        # through here at all: it has its own store, consent and audit
+        # (prompt_capture.py).
         if value not in CONTENT_CAPTURE_ENABLED:
             raise SettingsError(
-                "Content capture cannot be enabled. Meter records prompt identity, "
-                "version, tokens and cost — never prompt or response content."
+                "Content capture cannot be enabled on traces. Traces record prompt "
+                "identity, version, tokens and cost, never content. Prompts are "
+                "collected only through Prompt optimization, with consent."
             )
         columns.append("content_capture = %s")
         params.append(value)

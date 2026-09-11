@@ -17,6 +17,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError, type OrgSettings } from "../api";
 import { BudgetCard } from "../components/BudgetCard";
 import { DiscoveryLlmCard } from "../components/DiscoveryLlmCard";
+import { PromptOptimizationCard } from "../components/PromptOptimizationCard";
 
 /** Tab ids double as URL fragments, so /settings#budgets opens the right one —
  *  the Alerts form links straight here when a rule needs a budget. */
@@ -298,21 +299,6 @@ export function SettingsPage() {
               How customer identifiers are stored once customer-level attribution ships.
             </span>
           </div>
-          <div className="settings-field settings-field-inline">
-            <label htmlFor="store-prompts">Store prompt content</label>
-            <label className="toggle">
-              <input
-                id="store-prompts"
-                type="checkbox"
-                checked={settings.store_prompts}
-                onChange={(e) => patch({ store_prompts: e.target.checked })}
-              />
-              <span>{settings.store_prompts ? "On" : "Off"}</span>
-            </label>
-            <span className="settings-hint muted">
-              Meter stores no prompt text today; leaving this off keeps it that way.
-            </span>
-          </div>
           <div className="settings-field">
             <label htmlFor="trace-retention">Trace retention</label>
             <select
@@ -355,18 +341,19 @@ export function SettingsPage() {
               not failed and may still finish.
             </span>
           </div>
-          {/* Stated, not offered. The reserved values exist in the API so a
-              future consented capture feature needs no migration, but nothing
-              may turn them on before that feature exists — with its own
-              consent, encryption, retention and audit story. */}
+          {/* Stated, not offered. This is the trace path, and it stays
+              content-free whatever is configured. Consented prompt collection
+              is a separate store with its own terms: the Prompt optimization
+              card below. */}
           <div className="settings-field">
             <span className="settings-label-static">Content capture</span>
             <span className="content-capture-value">
               <span className="badge">Disabled</span>
             </span>
             <span className="settings-hint muted">
-              Meter records prompt identity, version, tokens and cost — not prompt or response
-              content. There is no column for it, so it cannot be enabled here.
+              Traces record prompt identity, version, tokens and cost, never prompt or response
+              content, and that cannot be changed. Prompts are collected only through Prompt
+              optimization below, for the features you choose, with your consent.
             </span>
           </div>
           <div className="settings-field">
@@ -391,7 +378,6 @@ export function SettingsPage() {
                 save(
                   {
                     customer_id_storage: settings.customer_id_storage,
-                    store_prompts: settings.store_prompts,
                     data_retention: settings.data_retention,
                     trace_retention_days: settings.trace_retention_days,
                     agent_stale_after_minutes: settings.agent_stale_after_minutes,
@@ -410,6 +396,7 @@ export function SettingsPage() {
             {privacySaved && <span className="settings-saved">Saved ✓</span>}
           </div>
         </section>
+        <PromptOptimizationCard />
       </div>
     </div>
   );

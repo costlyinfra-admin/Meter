@@ -21,6 +21,11 @@ vi.mock("../api", async (importActual) => {
       testDiscoveryLlm: vi.fn(),
       setDiscoveryLlmEnabled: vi.fn(),
       removeDiscoveryLlm: vi.fn(),
+      promptConsent: vi.fn(),
+      promptAudit: vi.fn(),
+      grantPromptConsent: vi.fn(),
+      withdrawPromptConsent: vi.fn(),
+      setPromptFeature: vi.fn(),
     },
   };
 });
@@ -71,6 +76,18 @@ function setupMocks() {
     ],
     default_model: "llama-3.3-70b-versatile",
   });
+  // The Prompt optimization card loads with the page; default to "not agreed".
+  vi.mocked(api.promptConsent).mockResolvedValue({
+    consent: null,
+    current_version: "2026-09-11",
+    current_disclosure: { source: "meter", provider: "Groq", model: "openai/gpt-oss-120b" },
+    version_outdated: false,
+    disclosure_changed: false,
+    capturing: false,
+    retention_days: 30,
+    features: [],
+  });
+  vi.mocked(api.promptAudit).mockResolvedValue({ events: [] });
 }
 
 describe("SettingsPage", () => {
@@ -149,15 +166,32 @@ describe("SettingsPage", () => {
   it("saves privacy preferences together", async () => {
     renderPage();
     await openTab("Privacy & data");
-    fireEvent.click(screen.getByLabelText("Store prompt content")); // Off -> On
     fireEvent.change(screen.getByLabelText("Data retention"), { target: { value: "90d" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
       expect(api.updateSettings).toHaveBeenCalledWith(
-        expect.objectContaining({ store_prompts: true, data_retention: "90d" }),
+        expect.objectContaining({ data_retention: "90d" }),
       ),
     );
+  });
+
+  it("has no second switch that could be mistaken for consent to collect prompts", async () => {
+    // "Store prompt content" never stored anything. Consent now has a real home
+    // with real terms, and a look-alike toggle beside it would invite the wrong click.
+    renderPage();
+    await openTab("Privacy & data");
+    expect(screen.queryByLabelText("Store prompt content")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(vi.mocked(api.updateSettings).mock.calls[0][0]).not.toHaveProperty("store_prompts");
+  });
+
+  it("puts prompt optimization consent under Privacy & data", async () => {
+    renderPage();
+    await openTab("Privacy & data");
+    expect(await screen.findByRole("heading", { name: "Prompt optimization" })).toBeVisible();
+    expect(screen.getByText(/Who sees your prompts/)).toBeInTheDocument();
   });
 });
 
@@ -402,11 +436,13 @@ describe("Request-level settings", () => {
     expect(screen.queryByText("Full")).not.toBeInTheDocument();
   });
 
-  it("says what Meter records instead of content", async () => {
+  it("says what traces record instead of content, and where prompts are collected", async () => {
     renderPage();
     fireEvent.click(await screen.findByRole("tab", { name: /Privacy/ }));
-    expect(
-      await screen.findByText(/records prompt identity, version, tokens and cost/i),
-    ).toBeInTheDocument();
+    const hint = await screen.findByText(
+      /Traces record prompt identity, version, tokens and cost/i,
+    );
+    expect(hint).toHaveTextContent(/never prompt or response content/);
+    expect(hint).toHaveTextContent(/only through Prompt optimization below/);
   });
 });

@@ -957,10 +957,31 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "**All connectors are read-only.** Meter never writes to your provider accounts or your repositories.",
             "**From GitHub**: pull request metadata — title, branch, labels, description, author, size. Never source code.",
             "**From providers**: cost and usage reports. Never prompts or responses.",
-            "**From the SDK**: token counts, model, feature id, latency. Never prompt or response content.",
+            "**From the SDK**: token counts, model, feature id, latency. Never prompt or response content. The one exception is [Prompt optimization](/help/trust/prompt-optimization), and only with your consent.",
           ),
           p(
             "Credentials are encrypted before storage using your own deployment secret, and are never returned by an API or shown again in the UI.",
+          ),
+        ],
+      },
+      {
+        slug: "prompt-optimization",
+        title: "Prompt optimization and your prompts",
+        summary:
+          "The one feature that collects prompts: only with consent, per feature, for 30 days.",
+        blocks: [
+          p(
+            "Everywhere else, Meter never holds prompt or response text. Prompt optimization is the one exception, because proposing a cheaper prompt and testing it needs the prompt. It collects nothing until someone in your organization agrees to its terms in [Settings](/settings), re-enters their password, and chooses which features may be captured.",
+          ),
+          list(
+            "**What is collected**: the prompt instructions your developers wrote, and a small sample of real inputs and outputs for the chosen features. Never tool calls or their results, images or files.",
+            "**Encrypted** with a key unique to your organization, and **deleted after 30 days**.",
+            "**Who sees prompts** is named on the consent screen: your organization's own model if you set one under Bring your own key, otherwise Meter's. If that changes, capture pauses until someone agrees again.",
+            "**Every view is logged.** The activity list in Settings shows who did what, never the prompts themselves.",
+            "**Meter staff** viewing your account for support cannot turn capture on, withdraw it, or read captured prompts.",
+          ),
+          note(
+            "Withdrawing consent deletes everything collected immediately and destroys the encryption key, so no copy that survives anywhere, including a backup, can be read.",
           ),
         ],
       },
@@ -983,10 +1004,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "Name, time zone, currency, and privacy preferences.",
         blocks: [
           p(
-            "[Settings](/settings) holds your organization profile and privacy preferences: display name, time zone, reporting currency, how customer identifiers are stored, whether prompt content may ever be stored, and your data retention window.",
+            "[Settings](/settings) holds your organization profile and privacy preferences: display name, time zone, reporting currency, how customer identifiers are stored, how long traces are kept, your data retention window, and whether Prompt optimization may collect prompts.",
           ),
           note(
-            "Meter stores no prompt text today. The **store prompt content** preference is a forward-looking guarantee rather than a switch over existing data.",
+            "Traces never carry prompt or response content, and no setting changes that. Prompts are collected only through [Prompt optimization](/help/trust/prompt-optimization), with consent.",
           ),
         ],
       },

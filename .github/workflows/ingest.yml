@@ -68,6 +68,16 @@ jobs:
         # aggregates are untouched: what a month cost is a fact about the
         # month, not about how long we keep the traces explaining it.
         run: python -m meter.ai_reads
+      - name: Expire captured prompts
+        working-directory: backend
+        # Consented prompt samples are kept 30 days, whatever else failed tonight:
+        # the retention window is part of what the customer agreed to.
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+        run: python -m meter.prompt_capture
       - name: Evaluate alert rules
         working-directory: backend
         # Runs even if ingest fails, so alerts still evaluate on the last-good data.

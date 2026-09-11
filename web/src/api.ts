@@ -26,8 +26,8 @@ export interface OrgSettings {
   trace_retention_days: 7 | 30 | 90;
   /** How long a running agent may be quiet before the UI calls it stale. */
   agent_stale_after_minutes: number;
-  /** Always "disabled" today. The reserved values exist so a future consented
-   *  capture feature needs no migration; nothing may select them yet. */
+  /** Always "disabled": traces never carry content. Consented prompt collection
+   *  is a separate store with its own terms — see PromptConsentStatus. */
   content_capture: "disabled" | "redacted" | "full";
 }
 
@@ -95,6 +95,48 @@ export interface BudgetForecast {
   method: "closed" | "recent_weighted" | "month_to_date_average" | "none";
   confidence: "final" | "high" | "medium" | "low" | "none";
   observed_days: number;
+}
+
+/** Which provider and model would see an organization's prompts, as consent names it. */
+export interface PromptDisclosure {
+  source: "byok" | "meter";
+  provider: string;
+  model: string;
+}
+
+/** Where prompt-capture consent stands. Identities and counts only, never content. */
+export interface PromptConsentStatus {
+  consent: null | {
+    consent_version: string;
+    granted_by: string;
+    granted_at: string;
+    disclosed: PromptDisclosure;
+  };
+  current_version: string;
+  /** Null when no model is available, and then consent cannot be given. */
+  current_disclosure: PromptDisclosure | null;
+  version_outdated: boolean;
+  disclosure_changed: boolean;
+  /** True only when capture is actually open. */
+  capturing: boolean;
+  retention_days: number;
+  features: {
+    feature_id: string;
+    name: string;
+    enabled: boolean;
+    enabled_by: string | null;
+    enabled_at: string | null;
+    samples: number;
+  }[];
+}
+
+export interface PromptAuditEvent {
+  event: string;
+  actor: string | null;
+  feature_id: string | null;
+  feature_name: string | null;
+  detail: Record<string, unknown>;
+  created_at: string;
 }
 
 /** BYOK: the tenant's own LLM for feature discovery. The key is write-only —
@@ -1299,6 +1341,30 @@ export const api = {
     }),
 
   removeDiscoveryLlm: () => request<DiscoveryLlm>("/settings/discovery-llm", { method: "DELETE" }),
+
+  promptConsent: () => request<PromptConsentStatus>("/prompt-optimization/consent"),
+
+  /** The password is checked by the server and never stored. */
+  grantPromptConsent: (body: {
+    password: string;
+    accepted_version: string;
+    accepted_disclosure: PromptDisclosure;
+  }) =>
+    request<PromptConsentStatus>("/prompt-optimization/consent", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  withdrawPromptConsent: () =>
+    request<PromptConsentStatus>("/prompt-optimization/consent", { method: "DELETE" }),
+
+  setPromptFeature: (featureId: string, enabled: boolean) =>
+    request<PromptConsentStatus>(`/prompt-optimization/features/${encodeURIComponent(featureId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  promptAudit: () => request<{ events: PromptAuditEvent[] }>("/prompt-optimization/audit"),
 
   getBudget: () => request<{ budget: Budget | null }>("/budget"),
 
