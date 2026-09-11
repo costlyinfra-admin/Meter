@@ -569,7 +569,7 @@ def _record_run(
 def sync_window(
     tenant_id: str,
     provider_type: str,
-    secret: str,
+    secret: str | list[str],
     *,
     start: dt.date,
     end: dt.date,
@@ -577,23 +577,44 @@ def sync_window(
 ) -> dict:
     """Fetch, classify and store ``[start, end)``, recording the run either way.
 
+    ``secret`` may be one credential or several: a tenant can hold more than one
+    account with the same cloud — two AWS payer accounts, say — and their bill
+    is the sum.
+
+    EVERY ACCOUNT IS FETCHED BEFORE ANYTHING IS WRITTEN. `persist` is idempotent
+    by clearing the provider's window and rewriting it, so persisting per account
+    would have the second account's write delete the first account's rows: the
+    customer would see one account's cloud bill and nothing would look wrong.
+    A partial failure therefore writes nothing and the run is recorded as failed,
+    because rewriting the window from the accounts that answered would silently
+    drop the one that did not.
+
     A failure is stored as a failed run with its message, so the connector card
     can say what went wrong instead of showing a state nobody wrote down. The
     message comes from ProviderError/InfraError, which are written to never
     contain a credential.
     """
+    secrets = [secret] if isinstance(secret, str) else list(secret)
     try:
-        with _make_client(provider_type, secret) as client:
-            items = client.fetch_items(start, end)
-            summary = persist(
-                tenant_id,
-                provider_type,
-                items,
-                start=start,
-                end=end,
-                metric=client.metric,
-                granularity=client.granularity,
-            )
+        items: list = []
+        metric = None
+        granularity = None
+        for one in secrets:
+            with _make_client(provider_type, one) as client:
+                items.extend(client.fetch_items(start, end))
+                # Same provider, so every client reports the same metric and
+                # granularity; the first to answer names them.
+                metric = metric or client.metric
+                granularity = granularity or client.granularity
+        summary = persist(
+            tenant_id,
+            provider_type,
+            items,
+            start=start,
+            end=end,
+            metric=metric,
+            granularity=granularity,
+        )
     except Exception as exc:
         message = str(exc)[:500] if isinstance(exc, (ProviderError, InfraError)) else None
         _record_run(
@@ -700,7 +721,7 @@ def backfill_start(months: int, *, today: Optional[dt.date] = None) -> dt.date:
 def run_infra_sync(
     tenant_id: str,
     provider_type: str,
-    secret: str,
+    secret: str | list[str],
     *,
     months: int = DEFAULT_BACKFILL_MONTHS,
     today: Optional[dt.date] = None,
@@ -730,12 +751,12 @@ def sync_connected(
     synced: list[dict] = []
     errors: list[dict] = []
     for provider_type in LIVE_PROVIDERS:
-        secret = credentials.get_secret(tenant_id, provider_type)
-        if not secret:
+        secrets = [sec for _, sec in credentials.get_secrets(tenant_id, provider_type)]
+        if not secrets:
             continue
         try:
             summary = run_infra_sync(
-                tenant_id, provider_type, secret, months=months, today=today, trigger=trigger
+                tenant_id, provider_type, secrets, months=months, today=today, trigger=trigger
             )
         except Exception as exc:  # noqa: BLE001 — report per provider, keep going
             errors.append({"provider": provider_type, "error": str(exc)[:200]})
@@ -759,13 +780,13 @@ def run_scheduled_infra_sync(months: int = 1) -> list[dict]:
         ).fetchall()
     results: list[dict] = []
     for tenant_id, provider_type in rows:
-        secret = credentials.get_secret(str(tenant_id), provider_type)
-        if not secret:
+        secrets = [sec for _, sec in credentials.get_secrets(str(tenant_id), provider_type)]
+        if not secrets:
             continue
         try:
             results.append(
                 run_infra_sync(
-                    str(tenant_id), provider_type, secret, months=months, trigger="scheduled"
+                    str(tenant_id), provider_type, secrets, months=months, trigger="scheduled"
                 )
             )
         except Exception as exc:  # one tenant failing must not stop the rest
@@ -834,6 +855,9 @@ def provider_status(tenant_id: str) -> list[dict]:
             # A credential is not a connection unless there is a client behind
             # it, so a provider this module cannot ingest never reads connected.
             is_connected = p["type"] in LIVE_PROVIDERS and p["type"] in connected
+            # The newest credential, and only to describe non-secret settings
+            # (region, metric) on the card. With several accounts this describes
+            # one of them; it is display, never a figure.
             secret = credentials.get_secret(tenant_id, p["type"]) if is_connected else None
         out.append(
             {

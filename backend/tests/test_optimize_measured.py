@@ -326,9 +326,7 @@ def test_measured_finding_supersedes_directional_estimate(tenant_id):
             (tenant_id, triage["id"], PERIOD),
         )
     # ...and a measured prompt-caching finding from the SDK.
-    hook.ingest_events(
-        tenant_id, [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000)]
-    )
+    hook.ingest_events(tenant_id, [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000)])
 
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
     measured_pc = _opp(result, "prompt_caching")

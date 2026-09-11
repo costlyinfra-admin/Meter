@@ -147,3 +147,47 @@ def test_okta_credential_parsing_and_client_auth():
     )
     users = client.list_app_users("app1")
     assert users[0]["profile"]["login"] == "alice"
+
+
+def test_two_okta_directories_both_contribute_seats(discovered, monkeypatch):
+    # A company with two Okta tenants has people in both. Build cost is rewritten
+    # per tool and month, so reading one directory would price only half the
+    # seats and the other half would look free.
+    credentials.save_credential(
+        discovered, "okta", json.dumps({"domain": "acme.okta.com", "token": "SSWS-a"}), label="Acme"
+    )
+    credentials.save_credential(
+        discovered, "okta", json.dumps({"domain": "labs.okta.com", "token": "SSWS-b"}), label="Labs"
+    )
+    seats.register_seat_source(discovered, "okta", "0oaCursor", "Cursor", "cursor", "business")
+
+    rosters = {
+        "acme.okta.com": [{"profile": {"email": "alice@acme.com"}}],
+        "labs.okta.com": [{"profile": {"login": "bob"}}],
+    }
+
+    class _FakeOkta:
+        def __init__(self, domain):
+            self._domain = domain
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def list_app_users(self, app_id):
+            return rosters[self._domain]
+
+    monkeypatch.setattr(seats.okta, "OktaClient", lambda domain, token: _FakeOkta(domain))
+
+    summary = seats.sync_idp_seats(discovered, PERIOD)
+
+    # One seat in each directory: both are paid for.
+    assert summary["total_seats"] == 2
+    # Still ONE source row, not one per user.
+    assert len(summary["sources"]) == 1
+    assert summary["sources"][0]["seats"] == 2
+    features = {f["name"]: f for f in summary["features"]}
+    assert features["Threat"]["amount"] == 40.0  # alice, Cursor business
+    assert features["Reports"]["amount"] == 40.0  # bob

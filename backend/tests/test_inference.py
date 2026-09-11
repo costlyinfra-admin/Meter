@@ -712,9 +712,7 @@ class _AccountClient:
 def test_two_accounts_on_one_provider_are_summed_not_overwritten(tenant_id, monkeypatch):
     monkeypatch.setattr(inference, "_make_cost_client", lambda provider, key: _AccountClient(key))
 
-    summary = inference.run_inference_ingest(
-        tenant_id, "openai", PERIOD, ["key-acme", "key-labs"]
-    )
+    summary = inference.run_inference_ingest(tenant_id, "openai", PERIOD, ["key-acme", "key-labs"])
     # $300 + $120. Reading one account would have reported one of them.
     assert summary["total"] == pytest.approx(420.0)
 

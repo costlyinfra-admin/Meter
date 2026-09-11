@@ -133,9 +133,20 @@ def _make_client(admin_key: str):  # seam so tests can inject a fake
 
 
 def import_claude_code_spend(tenant_id: str, period: dt.date) -> dict:
-    """Pull per-developer Claude Code spend and allocate it to features."""
-    admin_key = credentials.get_secret(tenant_id, "anthropic")
-    if not admin_key:
+    """Pull per-developer Claude Code spend and allocate it to features.
+
+    Reads every Anthropic credential the tenant holds. A company billed through
+    two organisations has developers in both, and `allocate_and_store` clears the
+    tool's month before rewriting it — so allocating per account would have the
+    second write delete the first, leaving one organisation's developers looking
+    like they spent nothing.
+
+    Every account is fetched before anything is stored, and a developer who
+    appears in both has their spend SUMMED: one person with seats in two orgs
+    costs the company both.
+    """
+    admin_keys = [secret for _, secret in credentials.get_secrets(tenant_id, "anthropic")]
+    if not admin_keys:
         raise ClaudeCodeError("Connect Anthropic (admin key) before syncing Claude Code spend.")
 
     start = month_start(period)
@@ -147,8 +158,17 @@ def import_claude_code_spend(tenant_id: str, period: dt.date) -> dict:
             ).fetchall()
         }
 
-    with _make_client(admin_key) as client:
-        members = client.fetch_member_spend(period)
+    # Kept as Decimal: these are dollars, and build cost is stored to the cent.
+    by_email: dict[str, Decimal] = {}
+    for admin_key in admin_keys:
+        with _make_client(admin_key) as client:
+            for member in client.fetch_member_spend(period):
+                email = (member["email"] or "").lower()
+                amount = member["amount"]
+                if not isinstance(amount, Decimal):
+                    amount = Decimal(str(amount))
+                by_email[email] = by_email.get(email, Decimal("0")) + amount
+    members = [{"email": email, "amount": amount} for email, amount in by_email.items()]
 
     spends = [
         build.DeveloperSpend(

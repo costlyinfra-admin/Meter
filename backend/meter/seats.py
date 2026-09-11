@@ -125,27 +125,33 @@ def sync_idp_seats(tenant_id: str, period: dt.date) -> dict:
     spends: list[build.DeveloperSpend] = []
     per_source: list[dict] = []
     for provider, srcs in by_provider.items():
-        secret = credentials.get_secret(tenant_id, provider)
-        if not secret:
+        secrets = [sec for _, sec in credentials.get_secrets(tenant_id, provider)]
+        if not secrets:
             raise SeatSourceError(f"Connect {provider} before syncing its seats.")
-        with _idp_client(provider, secret) as client:
-            for app_id, app_label, tool, plan in srcs:
-                users = client.list_app_users(app_id)
-                price = seatpricing.seat_price(tool, plan)
-                for user in users:
-                    spends.append(
-                        build.DeveloperSpend(_resolve_login(user, actors_lower), tool, price)
-                    )
-                per_source.append(
-                    {
-                        "provider": provider,
-                        "app_label": app_label or app_id,
-                        "tool": tool,
-                        "plan": plan,
-                        "seats": len(users),
-                        "seat_price": float(price),
-                    }
-                )
+        for app_id, app_label, tool, plan in srcs:
+            # Every directory is read before any seat is priced. A company with
+            # two Okta tenants has people in both, and build cost is rewritten
+            # per tool and month — so reading one directory would price only
+            # half the seats. A person in both directories holds one seat per
+            # directory and is charged for each.
+            users: list = []
+            for secret in secrets:
+                with _idp_client(provider, secret) as client:
+                    users.extend(client.list_app_users(app_id))
+            price = seatpricing.seat_price(tool, plan)
+            for user in users:
+                spends.append(build.DeveloperSpend(_resolve_login(user, actors_lower), tool, price))
+            # One entry per source, not per user: `seats` already counts them.
+            per_source.append(
+                {
+                    "provider": provider,
+                    "app_label": app_label or app_id,
+                    "tool": tool,
+                    "plan": plan,
+                    "seats": len(users),
+                    "seat_price": float(price),
+                }
+            )
 
     if spends:
         summary = build.allocate_and_store(tenant_id, spends, period)

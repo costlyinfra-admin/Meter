@@ -89,9 +89,15 @@ def _make_cursor_client(api_key: str):  # seam so tests can inject a fake
 
 
 def import_cursor_spend(tenant_id: str, period: dt.date) -> dict:
-    """Pull per-member Cursor spend and allocate it to features. Idempotent."""
-    secret = credentials.get_secret(tenant_id, "cursor")
-    if not secret:
+    """Pull per-member Cursor spend and allocate it to features. Idempotent.
+
+    Reads every Cursor credential. `allocate_and_store` clears the tool's month
+    before rewriting it, so allocating per team would have the second write
+    delete the first; every team is fetched first and a member in two of them
+    has their spend summed.
+    """
+    secrets = [sec for _, sec in credentials.get_secrets(tenant_id, "cursor")]
+    if not secrets:
         raise CursorError("Connect Cursor (admin API key) before syncing spend.")
 
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
@@ -102,8 +108,16 @@ def import_cursor_spend(tenant_id: str, period: dt.date) -> dict:
             ).fetchall()
         }
 
-    with _make_cursor_client(secret) as client:
-        members = client.fetch_member_spend()
+    by_email: dict[str, Decimal] = {}
+    for secret in secrets:
+        with _make_cursor_client(secret) as client:
+            for member in client.fetch_member_spend():
+                email = (member["email"] or "").lower()
+                amount = member["amount"]
+                if not isinstance(amount, Decimal):
+                    amount = Decimal(str(amount))
+                by_email[email] = by_email.get(email, Decimal("0")) + amount
+    members = [{"email": email, "amount": amount} for email, amount in by_email.items()]
 
     spends = [
         build.DeveloperSpend(

@@ -78,10 +78,17 @@ _KNOWN_TYPES = {c["type"] for c in KNOWN_CONNECTORS}
 #: the list of places that do — and the server refuses a second credential
 #: anywhere else, rather than accepting one and quietly never reading it.
 #:
-#: Inference qualifies because `run_inference_ingest` fetches from every key
-#: before writing the month. Infrastructure, build-activity and seat connectors
-#: still read one, and adding them means giving each the same treatment.
-MULTI_CREDENTIAL_CATEGORIES = {"inference"}
+#: Each of these fetches from every credential BEFORE writing anything, because
+#: all three ingest paths are idempotent by clearing a period and rewriting it:
+#: persisting per account would have the second account's write delete the
+#: first's. See run_inference_ingest, infrastructure.sync_window,
+#: claudecode/cursorspend import, and seats.sync_idp_seats.
+#:
+#: `build_activity` covers Cursor and the SSO seat directories. GitHub is not
+#: here: discovery reads one token and scans one owner, so a second would change
+#: what is scanned rather than add to it — that is the multi-owner question,
+#: not this one.
+MULTI_CREDENTIAL_CATEGORIES = {"inference", "infrastructure", "build_activity"}
 _MULTI_TYPES = {c["type"] for c in KNOWN_CONNECTORS if c["category"] in MULTI_CREDENTIAL_CATEGORIES}
 
 

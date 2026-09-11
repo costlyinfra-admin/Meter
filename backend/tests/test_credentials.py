@@ -140,6 +140,10 @@ def test_inference_connectors_hold_several_accounts(tenant_id):
 
 def test_status_says_whether_a_second_key_would_be_read(tenant_id):
     status = {c["type"]: c for c in credentials.connector_statuses(tenant_id)}
-    assert status["anthropic"]["supports_multiple"] is True
+    # Inference, infrastructure and build-activity syncs each fetch from every
+    # credential before writing, so a second account is really read.
+    for connector in ("anthropic", "aws", "gcp", "cursor", "okta"):
+        assert status[connector]["supports_multiple"] is True, connector
+    # GitHub reads one token and scans one owner: a second would change what is
+    # scanned rather than add to it, which is a different question.
     assert status["github"]["supports_multiple"] is False
-    assert status["aws"]["supports_multiple"] is False

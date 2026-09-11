@@ -142,3 +142,43 @@ def test_import_allocates_claude_code_spend_to_features(discovered, monkeypatch)
 def test_import_requires_anthropic_connected(tenant_id):
     with pytest.raises(claudecode.ClaudeCodeError):
         claudecode.import_claude_code_spend(tenant_id, PERIOD)
+
+
+# ---- Several Anthropic organisations --------------------------------------
+def test_two_organisations_spend_is_summed_per_developer(discovered, monkeypatch):
+    # A company billed through two Anthropic organisations has developers in
+    # both. build.allocate_and_store clears the tool's month before rewriting
+    # it, so allocating per organisation would have the second write delete the
+    # first — the first org's developers would look like they spent nothing.
+    credentials.save_credential(discovered, "anthropic", "sk-acme", label="Acme")
+    credentials.save_credential(discovered, "anthropic", "sk-labs", label="Acme Labs")
+
+    class _PerOrgClient:
+        def __init__(self, key):
+            self._key = key
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def fetch_member_spend(self, period):
+            if self._key == "sk-acme":
+                return [
+                    {"email": "alice@acme.com", "amount": Decimal("100")},
+                    {"email": "bob@acme.com", "amount": Decimal("84")},
+                ]
+            # alice has a seat in both organisations; the company pays for both.
+            return [{"email": "alice@acme.com", "amount": Decimal("17")}]
+
+    monkeypatch.setattr(claudecode, "_make_client", _PerOrgClient)
+
+    summary = claudecode.import_claude_code_spend(discovered, PERIOD)
+    # Two people, not three rows: alice is one developer across two orgs.
+    assert summary["members"] == 2
+    assert summary["spending_members"] == 2
+
+    features = {f["name"]: f for f in summary["features"]}
+    assert features["Threat"]["amount"] == 117.0  # alice: 100 + 17
+    assert features["Reports"]["amount"] == 84.0  # bob, from one org only

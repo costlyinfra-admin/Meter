@@ -892,3 +892,80 @@ def test_csv_providers_are_not_polled_by_the_scheduled_run(tenant_id, monkeypatc
     infrastructure.run_scheduled_infra_sync(months=1)
 
     assert not any(c in infrastructure.CSV_PROVIDERS for c in calls)
+
+
+# ---- Several cloud accounts under one connector ---------------------------
+# `persist` clears the provider's window and rewrites it, so persisting per
+# account would have the second account's write delete the first's — a customer
+# with two payer accounts would see one cloud bill and nothing would look wrong.
+def _per_account_client(items_by_secret):
+    def make(provider_type, secret):
+        return _FakeClient(items_by_secret[secret])
+
+    return make
+
+
+def test_two_cloud_accounts_are_summed_not_overwritten(tenant_id, monkeypatch):
+    monkeypatch.setattr(
+        infrastructure,
+        "_make_client",
+        _per_account_client(
+            {
+                "acct-a": [item("Amazon S3", "10.00")],
+                "acct-b": [item("Amazon EC2", "25.00")],
+            }
+        ),
+    )
+    summary = infrastructure.sync_window(
+        tenant_id, "aws", ["acct-a", "acct-b"], start=WINDOW[0], end=WINDOW[1]
+    )
+    # $10 + $25. Reading one account would have reported one of them.
+    assert summary["infrastructure"] == pytest.approx(35.0)
+    assert summary["items"] == 2
+
+
+def test_re_syncing_two_cloud_accounts_stays_idempotent(tenant_id, monkeypatch):
+    monkeypatch.setattr(
+        infrastructure,
+        "_make_client",
+        _per_account_client(
+            {"acct-a": [item("Amazon S3", "10.00")], "acct-b": [item("Amazon EC2", "25.00")]}
+        ),
+    )
+    for _ in range(2):
+        summary = infrastructure.sync_window(
+            tenant_id, "aws", ["acct-a", "acct-b"], start=WINDOW[0], end=WINDOW[1]
+        )
+    # Twice the same window must not be twice the money.
+    assert summary["infrastructure"] == pytest.approx(35.0)
+
+
+def test_one_broken_cloud_account_does_not_rewrite_the_window(tenant_id, monkeypatch):
+    good = {"acct-a": [item("Amazon S3", "10.00")], "acct-b": [item("Amazon EC2", "25.00")]}
+    monkeypatch.setattr(infrastructure, "_make_client", _per_account_client(good))
+    infrastructure.sync_window(
+        tenant_id, "aws", ["acct-a", "acct-b"], start=WINDOW[0], end=WINDOW[1]
+    )
+
+    def broken(provider_type, secret):
+        if secret == "acct-b":
+            return _FakeClient(error=infrastructure.ProviderError("credentials rejected"))
+        return _FakeClient(good[secret])
+
+    monkeypatch.setattr(infrastructure, "_make_client", broken)
+    with pytest.raises(infrastructure.ProviderError):
+        infrastructure.sync_window(
+            tenant_id, "aws", ["acct-a", "acct-b"], start=WINDOW[0], end=WINDOW[1]
+        )
+
+    # Rewriting from the healthy account alone would have silently dropped $25.
+    stored = infrastructure.summary(tenant_id, "aws", WINDOW[0])
+    assert stored["total"] == pytest.approx(35.0)
+
+
+def test_a_single_cloud_credential_still_works_unchanged(tenant_id, monkeypatch):
+    monkeypatch.setattr(
+        infrastructure, "_make_client", lambda *_: _FakeClient([item("Amazon S3", "10.00")])
+    )
+    summary = infrastructure.sync_window(tenant_id, "aws", "{}", start=WINDOW[0], end=WINDOW[1])
+    assert summary["infrastructure"] == pytest.approx(10.0)
