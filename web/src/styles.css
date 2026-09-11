@@ -4869,17 +4869,24 @@ button.method-head:hover .method-title {
   cursor: default;
 }
 
-.assist-actions {
-  display: flex;
-  gap: 8px;
-  padding-top: 4px;
-}
-
 /* Secondary exits from the conversation. Two full-width buttons competed with
    the thing someone opened this panel to do, so they are icons — the label
    survives as the accessible name and the tooltip. */
 .assist-actions {
+  display: flex;
   justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+/* The support address, after the mail icon is clicked: a mailto: that the
+   operating system ignores has to leave something behind. */
+.assist-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  user-select: all;
 }
 
 .assist-icon-btn {

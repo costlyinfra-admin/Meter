@@ -48,25 +48,49 @@ function useTypewriter(text: string, active: boolean): [string, boolean] {
   const [shown, setShown] = useState(active ? "" : text);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || !text) {
       setShown(text);
       return;
     }
     // Someone who has asked for less motion wants the answer, not the effect.
     const still = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-    if (still) {
+    // Nobody is watching an animation on a tab they have switched away from,
+    // and a background tab's timers are throttled hard enough that the reveal
+    // would stall mid-sentence until they came back.
+    if (still || document.hidden) {
       setShown(text);
       return;
     }
-    const perTick = Math.max(1, Math.ceil(text.length / (TYPE_MAX_MS / TYPE_TICK_MS)));
-    let at = 0;
+
+    const total = Math.min(TYPE_MAX_MS, text.length * TYPE_TICK_MS);
+    const start = Date.now();
+    let timer = 0;
     setShown("");
-    const timer = window.setInterval(() => {
-      at += perTick;
-      setShown(text.slice(0, at));
-      if (at >= text.length) window.clearInterval(timer);
+
+    const finish = () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onHidden);
+      setShown(text);
+    };
+    // Leaving the tab ends the reveal rather than pausing it, so coming back
+    // shows a finished answer instead of a half-written one.
+    const onHidden = () => {
+      if (document.hidden) finish();
+    };
+
+    timer = window.setInterval(() => {
+      // How far the reveal should be by now, from the clock rather than from a
+      // count of ticks — a throttled or skipped tick then costs nothing.
+      const at = Math.ceil((text.length * (Date.now() - start)) / total);
+      if (at >= text.length) finish();
+      else setShown(text.slice(0, at));
     }, TYPE_TICK_MS);
-    return () => window.clearInterval(timer);
+    document.addEventListener("visibilitychange", onHidden);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onHidden);
+    };
   }, [text, active]);
 
   return [shown, shown.length >= text.length];
@@ -145,16 +169,26 @@ function MailIcon() {
   );
 }
 
+/**
+ * The same open book the sidebar uses for Knowledge base (AppShell's `help`
+ * glyph, verbatim). Both lead to /help, so they should look like the same door
+ * rather than two different places that happen to share a destination.
+ */
 function BookIcon() {
   return (
-    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden fill="none" stroke="currentColor">
-      <path
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2Z"
-      />
-      <path strokeWidth="2" strokeLinecap="round" d="M8 7h7M8 11h7" />
+    <svg
+      viewBox="0 0 20 20"
+      width="17"
+      height="17"
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10 5.6S8.4 3.4 3 3.4v10.9c5.4 0 7 2.2 7 2.2s1.6-2.2 7-2.2V3.4c-5.4 0-7 2.2-7 2.2Z" />
+      <path d="M10 5.6v10.9" />
     </svg>
   );
 }
@@ -228,6 +262,8 @@ export function Assistant() {
   // a thread restored from storage is history, and history does not type itself.
   const [typingAt, setTypingAt] = useState<number | null>(null);
   const [supportEmail, setSupportEmail] = useState("");
+  /** Shown after the support icon is clicked; see `contactSupport`. */
+  const [emailNote, setEmailNote] = useState("");
   const [composed, setComposed] = useState(true);
   const location = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -258,9 +294,28 @@ export function Assistant() {
     if (open) inputRef.current?.focus();
   }, [open]);
 
+  const asked = useMemo(() => thread.some((m) => m.role === "user"), [thread]);
+
+  /** Starters minus anything already asked — offering the same question twice
+   *  reads as though the first answer didn't count. */
+  const starters = useMemo(() => {
+    const spent = new Set(
+      thread.filter((m) => m.role === "user").map((m) => m.content.trim().toLowerCase()),
+    );
+    return SUGGESTIONS.filter((question) => !spent.has(question.toLowerCase()));
+  }, [thread]);
+
+  // Starters are a way back in, not only a way to start: they come back once a
+  // reply has landed and finished revealing itself. They stay out of the way
+  // while an answer is still arriving, so they never look like part of it.
+  const showStarters = starters.length > 0 && !pending && typingAt === null;
+
+  // Starters returning grows the footer and shortens the thread, which would
+  // otherwise push the answer someone is still reading up out of sight — so
+  // their arrival scrolls the thread too, not just a new message.
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [thread, pending, open]);
+  }, [thread, pending, open, showStarters]);
 
   useEffect(() => {
     if (!open) return;
@@ -317,7 +372,25 @@ export function Assistant() {
     [location.pathname, pending, thread],
   );
 
-  const asked = useMemo(() => thread.some((m) => m.role === "user"), [thread]);
+  /**
+   * mailto: is handed to the operating system, and a browser with no mail
+   * handler registered drops it in silence — which is exactly what "the email
+   * icon does not work" looks like. The href stays (it is right for everyone
+   * who does have a mail client, and keeps right-click → copy address), but the
+   * click also puts the address on the clipboard and says so, so it always
+   * leaves someone with a way to write.
+   */
+  const contactSupport = useCallback(() => {
+    const say = (note: string) => setEmailNote(note);
+    try {
+      navigator.clipboard.writeText(supportEmail).then(
+        () => say(`${supportEmail} — copied`),
+        () => say(supportEmail),
+      );
+    } catch {
+      say(supportEmail); // no clipboard here; showing it is still enough to use
+    }
+  }, [supportEmail]);
 
   return (
     <>
@@ -360,11 +433,11 @@ export function Assistant() {
           </div>
 
           <div className="assist-foot">
-            {!asked && (
+            {showStarters && (
               <>
-                <p className="assist-label">Common questions</p>
+                <p className="assist-label">{asked ? "Ask something else" : "Common questions"}</p>
                 <div className="assist-chips">
-                  {SUGGESTIONS.map((question) => (
+                  {starters.map((question) => (
                     <button key={question} className="assist-chip" onClick={() => ask(question)}>
                       {question}
                     </button>
@@ -406,8 +479,9 @@ export function Assistant() {
                 <a
                   className="assist-icon-btn"
                   href={`mailto:${supportEmail}`}
+                  onClick={contactSupport}
                   aria-label="Contact support"
-                  title="Contact support"
+                  title={`Contact support — ${supportEmail}`}
                 >
                   <MailIcon />
                 </a>
@@ -422,6 +496,11 @@ export function Assistant() {
                 <BookIcon />
               </Link>
             </div>
+            {emailNote && (
+              <p className="assist-note" aria-live="polite">
+                {emailNote}
+              </p>
+            )}
           </div>
         </div>
       )}

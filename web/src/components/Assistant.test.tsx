@@ -157,8 +157,68 @@ describe("support assistant", () => {
     fireEvent.click(screen.getByRole("button", { name: /Which traces used the most tokens/i }));
 
     await waitFor(() => expect(askAssistant).toHaveBeenCalled());
-    // Suggestions give way to the conversation once it has started.
-    expect(screen.queryByText("Common questions")).not.toBeInTheDocument();
+    expect(askAssistant.mock.calls[0][0].question).toBe("Which traces used the most tokens?");
+  });
+
+  it("offers the starters again once an answer has landed", async () => {
+    // They are a way back in, not only a way to start. Someone who has just
+    // read one answer is at their most likely to want a second.
+    askAssistant.mockResolvedValue({
+      answer: "Sure.",
+      sources: [],
+      answered: true,
+      composed: true,
+    });
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: /Which traces used the most tokens/i }));
+    await screen.findByText("Sure.");
+
+    expect(await screen.findByText("Ask something else")).toBeInTheDocument();
+    // The one already asked is not offered a second time — answering it again
+    // would read as though the first answer had not counted.
+    expect(
+      screen.queryByRole("button", { name: /Which traces used the most tokens/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /When was my data last refreshed/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("holds the starters back while an answer is still arriving", async () => {
+    let release: (reply: unknown) => void = () => {};
+    askAssistant.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: /Is an agent stuck in a loop/i }));
+
+    await waitFor(() => expect(screen.queryByText("Common questions")).not.toBeInTheDocument());
+    expect(screen.queryByText("Ask something else")).not.toBeInTheDocument();
+
+    release({ answer: "No.", sources: [], answered: true, composed: true });
+    expect(await screen.findByText("Ask something else")).toBeInTheDocument();
+  });
+
+  it("leaves the support address somewhere it can be used", async () => {
+    // A mailto: is handed to the operating system, and a browser with no mail
+    // handler registered drops it in silence — the icon looks broken. The click
+    // has to leave the address behind whatever the OS does with the link.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    await open();
+    fireEvent.click(screen.getByRole("link", { name: /contact support/i }));
+
+    expect(writeText).toHaveBeenCalledWith("support@costlyinfra.com");
+    expect(await screen.findByText(/support@costlyinfra\.com — copied/)).toBeInTheDocument();
+  });
+
+  it("still shows the support address when there is no clipboard to copy to", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    await open();
+    fireEvent.click(screen.getByRole("link", { name: /contact support/i }));
+
+    expect(await screen.findByText("support@costlyinfra.com")).toBeInTheDocument();
   });
 
   it("says something useful when the assistant is unreachable", async () => {
@@ -232,6 +292,30 @@ describe("support assistant — how a reply arrives", () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(screen.getByText(/never added together/)).toBeInTheDocument();
     vi.useRealTimers();
+  });
+
+  it("shows it whole on a tab nobody is looking at", async () => {
+    // A background tab's timers are throttled hard enough that a tick-by-tick
+    // reveal stalls mid-sentence, and coming back to half an answer — with the
+    // panel still behaving as though it were mid-reply — is the bug.
+    instantReplies(false);
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    askAssistant.mockResolvedValue({
+      answer: "Finished, not frozen halfway.",
+      sources: [],
+      answered: true,
+    });
+    try {
+      await open();
+      fireEvent.change(screen.getByLabelText(/ask the assistant/i), { target: { value: "how?" } });
+      fireEvent.submit(screen.getByRole("button", { name: /send question/i }).closest("form")!);
+
+      expect(await screen.findByText("Finished, not frozen halfway.")).toBeInTheDocument();
+      // And the panel knows the reply is done: the starters come back.
+      expect(await screen.findByText("Ask something else")).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    }
   });
 
   it("shows it whole for someone who asked for less motion", async () => {
