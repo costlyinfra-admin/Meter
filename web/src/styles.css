@@ -6915,3 +6915,59 @@ button.span-head:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* Product trend segments. A product list is customer-defined and variable in
+   length, so the colours cycle the --chart ramp rather than being named per
+   bucket the way the classification chart's are. Classes, not inline fills, so
+   the dark-mode overrides of --chart-* still apply. */
+.product-seg-1 {
+  background: var(--chart-1);
+}
+.product-seg-2 {
+  background: var(--chart-2);
+}
+.product-seg-3 {
+  background: var(--chart-3);
+}
+.product-seg-4 {
+  background: var(--chart-4);
+}
+.product-seg-5 {
+  background: var(--chart-5);
+}
+.product-seg-6 {
+  background: var(--chart-6);
+}
+/* Neither residual is a product, so both sit in the grey family — two shades,
+   because they are not the same thing either (one is assignable, one is not). */
+.product-seg-unassigned {
+  background: var(--chart-none);
+}
+.product-seg-unattributed {
+  background: var(--muted);
+}
+
+.trend-seg-fill.product-seg-1 {
+  fill: var(--chart-1);
+}
+.trend-seg-fill.product-seg-2 {
+  fill: var(--chart-2);
+}
+.trend-seg-fill.product-seg-3 {
+  fill: var(--chart-3);
+}
+.trend-seg-fill.product-seg-4 {
+  fill: var(--chart-4);
+}
+.trend-seg-fill.product-seg-5 {
+  fill: var(--chart-5);
+}
+.trend-seg-fill.product-seg-6 {
+  fill: var(--chart-6);
+}
+.trend-seg-fill.product-seg-unassigned {
+  fill: var(--chart-none);
+}
+.trend-seg-fill.product-seg-unattributed {
+  fill: var(--muted);
+}

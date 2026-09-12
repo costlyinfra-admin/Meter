@@ -8,7 +8,7 @@
  * move, so it can never belong to a product. One number is an action; the other
  * is a fact.
  */
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type ProductSpend } from "../api";
@@ -51,6 +51,26 @@ const SPEND: ProductSpend = {
   },
   unattributed: { build_cost: 30, inference_cost: 1460 },
   totals: { build_cost: 5385.55, inference_cost: 21462.4 },
+  trend: [
+    {
+      period: "2026-04-01",
+      products: [
+        { product_id: "p1", name: "Threat Platform", build_cost: 588, inference_cost: 6830 },
+        { product_id: "p2", name: "Customer Reporting", build_cost: 142, inference_cost: 1000 },
+      ],
+      unassigned: { build_cost: 217, inference_cost: 968 },
+      unattributed: { build_cost: 0, inference_cost: 0 },
+    },
+    {
+      period: "2026-05-01",
+      products: [
+        { product_id: "p1", name: "Threat Platform", build_cost: 703, inference_cost: 10342 },
+        { product_id: "p2", name: "Customer Reporting", build_cost: 144, inference_cost: 2260 },
+      ],
+      unassigned: { build_cost: 4509, inference_cost: 7400 },
+      unattributed: { build_cost: 30, inference_cost: 1460 },
+    },
+  ],
 };
 
 const renderTab = () =>
@@ -84,8 +104,11 @@ describe("Cost by product", () => {
 
   it("keeps Unassigned and Unattributed apart, with different explanations", async () => {
     renderTab();
-    const unassigned = (await screen.findByText("Unassigned")).closest("tr")!;
-    const unattributed = screen.getByText("Unattributed").closest("tr")!;
+    // Scoped to the table: the chart's legend names both residuals as well, and
+    // this test is about the two rows under the products.
+    const table = await screen.findByRole("table");
+    const unassigned = within(table).getByText("Unassigned").closest("tr")!;
+    const unattributed = within(table).getByText("Unattributed").closest("tr")!;
     expect(unassigned).not.toBe(unattributed);
 
     // Assignable: says what it is and offers somewhere to go.
@@ -108,8 +131,38 @@ describe("Cost by product", () => {
     ).toBeInTheDocument();
   });
 
+  it("charts each product month by month, including both residuals", async () => {
+    renderTab();
+    await screen.findByText("Cost by product");
+    const legend = screen.getByLabelText("Product legend");
+    expect(within(legend).getByText("Threat Platform")).toBeInTheDocument();
+    expect(within(legend).getByText("Unassigned")).toBeInTheDocument();
+    // Without the residuals the total would climb as features get assigned, and
+    // look like growth that never happened.
+    expect(within(legend).getByText("Unattributed")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /Inference cost per product, per month/ }),
+    ).toBeVisible();
+  });
+
+  it("charts one kind of money at a time, never a blended per-product figure", async () => {
+    renderTab();
+    await screen.findByText("Cost by product");
+    // Inference by default; the axis and label say which.
+    expect(screen.getByRole("button", { name: "Inference" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Build" }));
+    expect(
+      await screen.findByRole("img", { name: /Build cost per product, per month/ }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("says what a product is when there are none yet", async () => {
-    vi.mocked(api.productSpend).mockResolvedValue({ ...SPEND, products: [] });
+    vi.mocked(api.productSpend).mockResolvedValue({ ...SPEND, products: [], trend: [] });
     renderTab();
     expect(await screen.findByText("No products yet")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Set up products" })).toHaveAttribute(

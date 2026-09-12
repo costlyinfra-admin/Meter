@@ -1362,6 +1362,22 @@ def spend_by_product(
         build = _rollup(conn, "build_cost", start, end)
         inference, inference_unattributed = _inference_rollup(conn, start, end)
 
+        # The per-month series, computed with the SAME two functions as the
+        # totals above, called one month at a time. A month's reconciliation is
+        # then that month's real one, and the chart can never disagree with the
+        # table it sits under. Costs two small queries per month (<= 24).
+        month_rows = []
+        month = start
+        while month <= end:
+            month_rows.append(
+                (
+                    month,
+                    _rollup(conn, "build_cost", month, month),
+                    *_inference_rollup(conn, month, month),
+                )
+            )
+            month = dt.date(month.year + (month.month // 12), (month.month % 12) + 1, 1)
+
     by_product: dict = {
         str(pid): {
             "product_id": str(pid),
@@ -1415,11 +1431,45 @@ def spend_by_product(
         key=lambda p: p["build_cost"] + p["inference_cost"],
         reverse=True,
     )
+    # Which product each feature rolls into, for the per-month series.
+    product_of = {str(fid): (str(pid) if pid else None) for fid, pid, _name in features}
+    trend = []
+    for month, m_build, m_inference, m_unattributed in month_rows:
+        per = {p["product_id"]: {"build_cost": 0.0, "inference_cost": 0.0} for p in products_out}
+        month_unassigned = {"build_cost": 0.0, "inference_cost": 0.0}
+        for fid, pid in product_of.items():
+            b = m_build.get(fid, {"amount": 0.0})["amount"]
+            i = m_inference.get(fid, {"amount": 0.0})["amount"]
+            target = per.get(pid) if pid else None
+            if target is None:
+                month_unassigned["build_cost"] += b
+                month_unassigned["inference_cost"] += i
+            else:
+                target["build_cost"] += b
+                target["inference_cost"] += i
+        trend.append(
+            {
+                "period": month.isoformat(),
+                # Every product every month, in the table's order, so a stacked
+                # chart keeps its colours in place as months change.
+                "products": [
+                    {"product_id": p["product_id"], "name": p["name"], **per[p["product_id"]]}
+                    for p in products_out
+                ],
+                "unassigned": month_unassigned,
+                "unattributed": {
+                    "build_cost": m_build.get(None, {"amount": 0.0})["amount"],
+                    "inference_cost": m_unattributed,
+                },
+            }
+        )
+
     return {
         "start": start.isoformat(),
         "end": end.isoformat(),
         "months": n,
         "products": products_out,
+        "trend": trend,
         "unassigned": unassigned,
         "unattributed": unattributed,
         "totals": {

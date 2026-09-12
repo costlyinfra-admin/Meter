@@ -850,6 +850,17 @@ export interface ProductSpend {
   };
   unattributed: { build_cost: number; inference_cost: number };
   totals: { build_cost: number; inference_cost: number };
+  /** One entry per month in the range. Every product appears every month, in the
+   *  table's order, so a stacked chart keeps its colours in place. Build and
+   *  inference stay apart here; stacking them is the chart's decision. */
+  trend: ProductTrendMonth[];
+}
+
+export interface ProductTrendMonth {
+  period: string;
+  products: { product_id: string; name: string; build_cost: number; inference_cost: number }[];
+  unassigned: { build_cost: number; inference_cost: number };
+  unattributed: { build_cost: number; inference_cost: number };
 }
 
 /** A feature whose repositories belong to more than one product — the only case
