@@ -3,7 +3,7 @@ name: Seed demo data
 # Manually-triggered: seeds the demo "Acme Security" tenant + a login into the
 # production database. Run from the Actions tab -> "Seed demo data" -> Run workflow.
 # Idempotent: re-running does nothing if the demo user already exists.
-# Requires repo secret: DATABASE_URL.
+# Requires repo secrets: DATABASE_URL, APP_SECRET_KEY.
 
 on:
   workflow_dispatch:
@@ -37,6 +37,11 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # The prompt-optimization demo is encrypted content: its per-tenant data
+          # key is wrapped by this, and it must be the SAME key the running app
+          # uses, or the app cannot open what this seeds. Without it the seed
+          # silently leaves Optimize -> Prompts empty.
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
           DEMO_USER_EMAIL: ${{ inputs.email }}
           DEMO_USER_PASSWORD: ${{ inputs.password }}
         run: python -m seed

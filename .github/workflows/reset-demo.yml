@@ -6,7 +6,7 @@ name: Reset demo data
 # "Reset demo data" -> Run workflow.
 #
 # Destructive but scoped: only the demo tenant matching DEMO_USER_EMAIL is
-# touched; no other tenant is affected. Requires repo secret: DATABASE_URL.
+# touched; no other tenant is affected. Requires repo secrets: DATABASE_URL, APP_SECRET_KEY.
 
 on:
   workflow_dispatch:
@@ -40,6 +40,11 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # The prompt-optimization demo is encrypted content: its per-tenant data
+          # key is wrapped by this, and it must be the SAME key the running app
+          # uses, or the app cannot open what this seeds. Without it the seed
+          # silently leaves Optimize -> Prompts empty.
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
           DEMO_USER_EMAIL: ${{ inputs.email }}
           DEMO_USER_PASSWORD: ${{ inputs.password }}
         run: python -m seed --reset
