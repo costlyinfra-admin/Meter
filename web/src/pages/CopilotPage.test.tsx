@@ -95,7 +95,9 @@ describe("CopilotPage", () => {
 
   it("shows three distinct savings figures, never combined", async () => {
     renderPage();
-    expect(await screen.findByText("Optimization Copilot")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Recommendations" })).toBeInTheDocument();
+    // The Copilot is still named, so the knowledge base's term means something.
+    expect(screen.getByText(/Optimization Copilot/)).toBeInTheDocument();
     // Measured (guaranteed), modeled ceiling ("up to"), verified (annualized).
     expect(screen.getByText("$708/mo")).toBeInTheDocument();
     expect(screen.getAllByText("up to $3,127/mo").length).toBeGreaterThan(0); // KPI + rollups

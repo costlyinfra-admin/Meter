@@ -112,9 +112,11 @@ const SUGGESTIONS = [
 
 /** A human-readable name for the screen the user is on, for context. */
 function pageLabel(pathname: string): string {
+  // Prompts lives under /optimize but is its own screen in the nav.
+  if (pathname.startsWith("/optimize/prompts")) return "Prompts";
   const first = pathname.split("/").filter(Boolean)[0];
   const labels: Record<string, string> = {
-    optimize: "Optimize",
+    optimize: "Recommendations",
     "cost-sources": "Cost sources",
     features: "Features",
     "install-sdk": "Install SDK",

@@ -26,6 +26,7 @@ type IconName =
   | "sdk"
   | "settings"
   | "help"
+  | "prompts"
   | "reconciliation";
 
 interface NavItem {
@@ -51,11 +52,17 @@ const NAV: { section?: string; items: NavItem[] }[] = [
     ],
   },
   {
-    section: "Act",
+    section: "Optimize",
     items: [
-      { to: "/optimize", label: "Optimize", end: false, icon: "optimize" },
-      { to: "/alerts", label: "Alerts", end: false, icon: "alerts" },
+      // `end` matters on the first one: without it /optimize keeps matching
+      // while the reader is on Prompts, and two rows look active at once.
+      { to: "/optimize", label: "Recommendations", end: true, icon: "optimize" },
+      { to: "/optimize/prompts", label: "Prompts", end: false, icon: "prompts" },
     ],
+  },
+  {
+    section: "Act",
+    items: [{ to: "/alerts", label: "Alerts", end: false, icon: "alerts" }],
   },
   {
     section: "Set up",
@@ -128,6 +135,12 @@ function NavIcon({ name }: { name: IconName }) {
         <>
           <path d="M2.75 5.5 7.5 10.25 11 6.75l6.25 6.25" />
           <path d="M13 13h4.25V8.75" />
+        </>
+      )}
+      {name === "prompts" && (
+        <>
+          <path d="M4.75 3.75h10.5a2 2 0 0 1 2 2v5.25a2 2 0 0 1-2 2H9.4l-3.65 2.9v-2.9H4.75a2 2 0 0 1-2-2V5.75a2 2 0 0 1 2-2Z" />
+          <path d="M6.4 7.1h7.2M6.4 9.9h4.4" />
         </>
       )}
       {name === "alerts" && (

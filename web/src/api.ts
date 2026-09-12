@@ -146,8 +146,16 @@ export interface PromptSummary {
   calls: number;
   cost: number;
   candidate_id: string | null;
-  candidate_status: "not_evaluated" | null;
+  candidate_status: CandidateStatus | null;
 }
+
+/** Every state a rewrite can be in, matching the check constraint in 0054. */
+export type CandidateStatus =
+  | "not_evaluated"
+  | "evaluating"
+  | "recommended"
+  | "not_recommended"
+  | "discarded";
 
 export interface PromptCandidateMeta {
   candidate_id: string;
@@ -157,7 +165,7 @@ export interface PromptCandidateMeta {
   provider: string;
   model: string;
   /** Never "recommended" until a replay evaluation says so (that arrives later). */
-  status: "not_evaluated";
+  status: CandidateStatus;
   created_by: string;
   created_at: string;
 }

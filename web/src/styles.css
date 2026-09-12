@@ -1786,6 +1786,7 @@ input.credential-label-input {
 
 .badge.connected,
 .badge.conf-high,
+.badge.ok,
 .badge.worth-healthy {
   background: var(--good-bg);
   color: var(--good);

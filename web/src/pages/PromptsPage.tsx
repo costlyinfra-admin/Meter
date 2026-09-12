@@ -7,9 +7,10 @@
  *
  * Two rules the UI has to keep visible:
  *
- *   **Nothing here is recommended yet.** A rewrite that has not been tested
- *   against real examples is a suggestion. It says so, and it carries no dollar
- *   figure, because the saving is only real once the tokens have been measured.
+ *   **A rewrite is a suggestion until it is tested.** One that has not been run
+ *   against real examples says so, and carries no dollar figure. Once a run has
+ *   finished, every place that mentions the rewrite shows that verdict — the
+ *   list, the rewrite itself, the panel — rather than three different answers.
  *
  *   **Looking at a prompt is an act.** The text is fetched only when someone
  *   asks for it, and the server records who looked. So the page does not load
@@ -40,6 +41,22 @@ const CHANGE_LABELS: Record<string, string> = {
   wording: "Wording",
 };
 
+/** What the list says about a rewrite, by status. A rewrite that has been
+ *  tested is the whole point of the feature, so the list names the result
+ *  instead of falling through to a dash. A discarded one says nothing. */
+const CANDIDATE_BADGES: Record<string, { label: string; className: string }> = {
+  not_evaluated: { label: "Not tested", className: "badge" },
+  evaluating: { label: "Testing", className: "badge" },
+  recommended: { label: "Recommended", className: "badge ok" },
+  not_recommended: { label: "Not recommended", className: "badge" },
+};
+
+function CandidateBadge({ status }: { status: string | null }) {
+  const badge = status ? CANDIDATE_BADGES[status] : undefined;
+  if (!badge) return <span className="muted">—</span>;
+  return <span className={badge.className}>{badge.label}</span>;
+}
+
 export function PromptsPage() {
   const navigate = useNavigate();
   const [data, setData] = useState<{
@@ -58,9 +75,6 @@ export function PromptsPage() {
 
   return (
     <div className="content">
-      <Link to="/optimize" className="link breadcrumb">
-        ← Optimization Copilot
-      </Link>
       <div className="dash-head">
         <h1>Prompts</h1>
       </div>
@@ -146,11 +160,7 @@ export function PromptsPage() {
                     )}
                   </td>
                   <td>
-                    {p.candidate_status === "not_evaluated" ? (
-                      <span className="badge">Proposed, not tested</span>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
+                    <CandidateBadge status={p.candidate_status} />
                   </td>
                 </tr>
               ))}
@@ -330,7 +340,7 @@ export function PromptDetail() {
         ) : (
           <>
             <p className="detail-meta">
-              <span className="badge">Not tested</span>
+              <CandidateBadge status={candidate.status} />
               <span className="muted">
                 written by {candidate.provider} ({candidate.model})
               </span>
@@ -341,10 +351,12 @@ export function PromptDetail() {
                 {num(candidate.original_chars)} → {num(candidate.candidate_chars)} characters
               </span>
             </p>
-            <p className="hint">
-              No saving is claimed yet. What a rewrite saves, and whether it answers as well, is
-              only known once it has been tested against real examples.
-            </p>
+            {candidate.status === "not_evaluated" && (
+              <p className="hint">
+                No saving is claimed yet. What a rewrite saves, and whether it answers as well, is
+                only known once it has been tested against real examples.
+              </p>
+            )}
 
             {content?.candidate ? (
               <ul className="prompt-changes">

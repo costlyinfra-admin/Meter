@@ -216,7 +216,37 @@ describe("Prompts list", () => {
       prompts: [summary({ candidate_id: "c1", candidate_status: "not_evaluated" })],
     });
     renderList();
-    expect(await screen.findByText("Proposed, not tested")).toBeInTheDocument();
+    expect(await screen.findByText("Not tested")).toBeInTheDocument();
+  });
+
+  it("names a rewrite that passed testing, rather than showing nothing", async () => {
+    vi.mocked(api.prompts).mockResolvedValue({
+      usage_days: 30,
+      min_samples: 20,
+      prompts: [summary({ candidate_id: "c1", candidate_status: "recommended" })],
+    });
+    renderList();
+    expect(await screen.findByText("Recommended")).toBeInTheDocument();
+  });
+
+  it("names one that failed testing too, so a bad result is not silence", async () => {
+    vi.mocked(api.prompts).mockResolvedValue({
+      usage_days: 30,
+      min_samples: 20,
+      prompts: [summary({ candidate_id: "c1", candidate_status: "not_recommended" })],
+    });
+    renderList();
+    expect(await screen.findByText("Not recommended")).toBeInTheDocument();
+  });
+
+  it("says when a test is still running", async () => {
+    vi.mocked(api.prompts).mockResolvedValue({
+      usage_days: 30,
+      min_samples: 20,
+      prompts: [summary({ candidate_id: "c1", candidate_status: "evaluating" })],
+    });
+    renderList();
+    expect(await screen.findByText("Testing")).toBeInTheDocument();
   });
 
   it("says how prompts get here when there are none", async () => {
@@ -298,6 +328,21 @@ describe("Prompt detail", () => {
     renderDetail();
     fireEvent.click(await screen.findByRole("button", { name: "Suggest a cheaper prompt" }));
     expect(await screen.findByText("The model found nothing to change.")).toBeInTheDocument();
+  });
+});
+
+describe("A rewrite that has been tested", () => {
+  it("stops calling itself untested, and drops the no-saving caution", async () => {
+    vi.mocked(api.prompt).mockResolvedValue(
+      detail({ candidate: { ...CANDIDATE, status: "recommended" } }),
+    );
+    vi.mocked(api.latestEvaluation).mockResolvedValue(RUN);
+    renderDetail();
+    await screen.findByRole("heading", { name: "Proposed rewrite" });
+    expect(screen.queryByText("Not tested")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No saving is claimed yet/)).not.toBeInTheDocument();
+    // The verdict appears on the rewrite itself, not only down in the panel.
+    expect(screen.getAllByText("Recommended").length).toBeGreaterThan(1);
   });
 });
 

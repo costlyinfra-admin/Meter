@@ -45,16 +45,11 @@ export function CopilotPage() {
   return (
     <div className="content">
       <div className="dash-head">
-        <h1>Optimization Copilot</h1>
+        <h1>Recommendations</h1>
       </div>
       <p className="muted">
-        Where AI money is being wasted, and what to fix first — measured across every feature.
-      </p>
-      <p className="muted">
-        <Link to="/optimize/prompts" className="link">
-          Prompts →
-        </Link>{" "}
-        the prompts your product runs, and cheaper versions of them.
+        The Optimization Copilot: where AI money is being wasted, and what to fix first — measured
+        across every feature.
       </p>
 
       {error && (
