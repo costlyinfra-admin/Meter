@@ -471,56 +471,28 @@ select {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+  /* Take the space left between the brand and the account block, and scroll
+     inside it rather than growing the column past the screen. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* No permanent scrollbar: it would sit against the nav labels on every
+     screen, including the many where nothing overflows. Scrolling still works
+     by wheel, trackpad, keyboard and touch, and a row cut by the bottom edge is
+     what says the list continues. (.tabs-scroll keeps its thin bar — a
+     horizontal row of tabs has no equivalent hint.) */
+  scrollbar-width: none;
+  /* A flick inside the nav must not start scrolling the page behind it. */
+  overscroll-behavior: contain;
 }
 
-/* Sections of the nav. The gap above each heading is what does the grouping —
-   the label only names a group the spacing has already made visible. */
-.nav-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+.sidebar-nav::-webkit-scrollbar {
+  display: none;
 }
 
-.nav-group + .nav-group {
-  margin-top: 0.85rem;
-}
-
-.nav-group-label {
-  padding: 0 0.7rem 0.3rem;
-  font-size: 0.68rem;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.nav-link {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.5rem 0.7rem;
-  border-radius: var(--radius-sm);
-  color: var(--ink-soft);
-  font-weight: 550;
-  font-size: 0.92rem;
-  text-decoration: none;
-}
-
-.nav-link:hover {
-  background: var(--bg);
-  text-decoration: none;
-}
-
-.nav-link.active {
-  background: var(--accent-soft);
-  color: var(--accent-hover);
-  font-weight: 650;
-}
-
-/* Bottom of the sidebar: organization name above the account divider line. */
 .sidebar-bottom {
   margin-top: auto;
+  flex: 0 0 auto;
 }
 
 .sidebar-org {
