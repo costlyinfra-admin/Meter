@@ -6227,6 +6227,21 @@ button.provider-toggle:focus-visible {
   padding: 0.35rem 0.6rem;
 }
 
+/* The product filter sits at the right-hand end of the tab row, with the search
+   box beside it. It takes the auto margin; without the sibling rule below the
+   search box would claim a second one and the pair would drift apart. */
+.tab-filter {
+  margin-left: auto;
+  align-self: center;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.6rem;
+}
+
+.tab-filter + .tab-search {
+  margin-left: 0.4rem;
+  min-width: 10rem;
+}
+
 .savings-cell {
   color: var(--good);
   font-weight: 600;

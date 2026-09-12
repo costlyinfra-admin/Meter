@@ -295,6 +295,90 @@ describe("Dashboard (Overview)", () => {
     expect(screen.getByText("$5,171")).toBeInTheDocument();
   });
 
+  it("narrows the table to one product, and drops Unattributed while it does", async () => {
+    vi.mocked(api.dashboard).mockResolvedValue({
+      ...DATA,
+      features: [
+        TRIAGE,
+        { ...TRIAGE, feature_id: "f2", name: "Report generator", product_name: "Reporting" },
+        {
+          ...TRIAGE,
+          feature_id: "f3",
+          name: "Misc work",
+          product_id: null,
+          product_name: null,
+          product_source: null,
+        },
+      ],
+    });
+    renderDashboard();
+    await screen.findByText("Key insights");
+
+    const table = () => screen.getByRole("table");
+    expect(within(table()).getByText("Report generator")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Filter by product"), {
+      target: { value: "Threat Platform" },
+    });
+
+    expect(within(table()).getByText("AI threat triage")).toBeInTheDocument();
+    expect(within(table()).queryByText("Report generator")).not.toBeInTheDocument();
+    expect(within(table()).queryByText("Misc work")).not.toBeInTheDocument();
+    // Unattributed is spend with no feature at all. Leaving it under a product
+    // filter would read as that product's spend, which it can never be.
+    expect(within(table()).queryByText("Unattributed")).not.toBeInTheDocument();
+  });
+
+  it("treats Unassigned as its own answer, not the absence of one", async () => {
+    vi.mocked(api.dashboard).mockResolvedValue({
+      ...DATA,
+      features: [
+        TRIAGE,
+        {
+          ...TRIAGE,
+          feature_id: "f3",
+          name: "Misc work",
+          product_id: null,
+          product_name: null,
+          product_source: null,
+        },
+      ],
+    });
+    renderDashboard();
+    await screen.findByText("Key insights");
+
+    fireEvent.change(screen.getByLabelText("Filter by product"), {
+      target: { value: "\u0000unassigned" },
+    });
+
+    const table = screen.getByRole("table");
+    expect(within(table).getByText("Misc work")).toBeInTheDocument();
+    expect(within(table).queryByText("AI threat triage")).not.toBeInTheDocument();
+  });
+
+  it("keeps Unattributed while only the search box is narrowing the list", async () => {
+    renderDashboard();
+    await screen.findByText("Key insights");
+
+    fireEvent.change(screen.getByLabelText("Search features"), {
+      target: { value: "threat" },
+    });
+    // A name search says nothing about which product spend belongs to, so the
+    // bucket stays where a reader expects it.
+    expect(within(screen.getByRole("table")).getByText("Unattributed")).toBeInTheDocument();
+  });
+
+  it("offers no product filter when nothing has a product yet", async () => {
+    vi.mocked(api.dashboard).mockResolvedValue({
+      ...DATA,
+      features: [{ ...TRIAGE, product_id: null, product_name: null, product_source: null }],
+    });
+    renderDashboard();
+    await screen.findByText("Key insights");
+    // One choice that changes nothing is a control that should not be there.
+    expect(screen.queryByLabelText("Filter by product")).not.toBeInTheDocument();
+  });
+
   it("shows which part of the product each feature belongs to", async () => {
     vi.mocked(api.dashboard).mockResolvedValue({
       ...DATA,
@@ -384,9 +468,7 @@ describe("Dashboard (Overview)", () => {
     vi.mocked(api.providerSpend).mockResolvedValue({
       ...EMPTY_SPEND,
       total: 4960,
-      by_provider: [
-        { provider: "anthropic", amount: 4960, pct: 100, requests: 10, by_model: [] },
-      ],
+      by_provider: [{ provider: "anthropic", amount: 4960, pct: 100, requests: 10, by_model: [] }],
       build_total: 211,
       build_by_tool: [{ tool: "cursor", amount: 211, pct: 100 }],
     });
@@ -480,9 +562,7 @@ describe("Dashboard (Overview)", () => {
 
   it("asks for the forecast on the window the page is showing", async () => {
     renderDashboard();
-    await waitFor(() =>
-      expect(api.budgetForecast).toHaveBeenCalledWith({ kind: "last_3_months" }),
-    );
+    await waitFor(() => expect(api.budgetForecast).toHaveBeenCalledWith({ kind: "last_3_months" }));
   });
 
   it("offers to set a budget rather than inventing one when none exists", async () => {

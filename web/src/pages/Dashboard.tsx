@@ -40,6 +40,10 @@ import { compact, money, num } from "../format";
 
 type OverviewTab = "products" | "features" | "providers" | "developers" | "customers";
 
+/** The filter value meaning "features in no product". Not a product name, so a
+ *  customer who literally names a product "Unassigned" still filters correctly. */
+const UNASSIGNED = "\u0000unassigned";
+
 /** Notify the app shell (which owns the alerts badge) to re-poll alert state. */
 export const REFRESH_ALERTS_EVENT = "meter:refresh-alerts";
 
@@ -90,6 +94,8 @@ export function Dashboard() {
   const [forecast, setForecast] = useState<BudgetForecast | null>(null);
   const [forecastFailed, setForecastFailed] = useState(false);
   const [query, setQuery] = useState("");
+  // "" is every product; UNASSIGNED is its own answer, not the absence of one.
+  const [product, setProduct] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -187,13 +193,38 @@ export function Dashboard() {
     };
   }, [range, refreshKey]);
 
-  // Filtering is on the name alone: it is what someone types a search box for,
-  // and matching on numbers would make a stray digit hide rows without saying so.
+  // Text filtering is on the name alone: it is what someone types a search box
+  // for, and matching on numbers would make a stray digit hide rows without
+  // saying so. The product filter is exact, because it is a choice from a list.
   const visibleFeatures = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const rows = data?.features ?? [];
+    let rows = data?.features ?? [];
+    if (product) {
+      rows = rows.filter((f) =>
+        product === UNASSIGNED ? f.product_name === null : f.product_name === product,
+      );
+    }
     return needle ? rows.filter((f) => f.name.toLowerCase().includes(needle)) : rows;
-  }, [data, query]);
+  }, [data, query, product]);
+
+  // The products actually present in the table, so the filter can never offer a
+  // choice that selects nothing. Taken from the rows rather than fetched: the
+  // Overview already has them, and a second source could disagree with the first.
+  const productOptions = useMemo(() => {
+    const names = new Set<string>();
+    let anyUnassigned = false;
+    for (const f of data?.features ?? []) {
+      if (f.product_name) names.add(f.product_name);
+      else anyUnassigned = true;
+    }
+    const list = [...names].sort((a, b) => a.localeCompare(b));
+    return {
+      names: list,
+      anyUnassigned,
+      // More than one bucket to choose between, counting Unassigned as one.
+      canFilter: list.length + (anyUnassigned ? 1 : 0) > 1,
+    };
+  }, [data]);
 
   const hasFeatures = !!data && data.features.length > 0;
   const hasBuild = !!data && data.totals.build_cost > 0;
@@ -346,14 +377,32 @@ export function Dashboard() {
             By Customer
           </button>
           {tab === "features" && (
-            <input
-              type="search"
-              className="tab-search"
-              value={query}
-              placeholder="Search features…"
-              aria-label="Search features"
-              onChange={(e) => setQuery(e.target.value)}
-            />
+            <>
+              {productOptions.canFilter && (
+                <select
+                  className="tab-filter"
+                  value={product}
+                  aria-label="Filter by product"
+                  onChange={(e) => setProduct(e.target.value)}
+                >
+                  <option value="">All products</option>
+                  {productOptions.names.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                  {productOptions.anyUnassigned && <option value={UNASSIGNED}>Unassigned</option>}
+                </select>
+              )}
+              <input
+                type="search"
+                className="tab-search"
+                value={query}
+                placeholder="Search features…"
+                aria-label="Search features"
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </>
           )}
         </div>
       )}
@@ -422,20 +471,22 @@ export function Dashboard() {
                 </td>
               </tr>
             ))}
-            <tr className="unattributed-row">
-              <td>Unattributed</td>
-              <td className="muted">—</td>
-              <td className="muted">—</td>
-              <td className="num">{money(data.unattributed.build_cost)}</td>
-              <td className="num">{money(data.unattributed.inference_cost)}</td>
-              <td className="num">—</td>
-              <td className="num">—</td>
-              <td className="num">—</td>
-              <td className="num">—</td>
-              <td colSpan={2} className="muted">
-                spend not yet mapped to a feature
-              </td>
-            </tr>
+            {!product && (
+              <tr className="unattributed-row">
+                <td>Unattributed</td>
+                <td className="muted">—</td>
+                <td className="muted">—</td>
+                <td className="num">{money(data.unattributed.build_cost)}</td>
+                <td className="num">{money(data.unattributed.inference_cost)}</td>
+                <td className="num">—</td>
+                <td className="num">—</td>
+                <td className="num">—</td>
+                <td className="num">—</td>
+                <td colSpan={2} className="muted">
+                  spend not yet mapped to a feature
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       ) : null}
