@@ -490,6 +490,54 @@ select {
   display: none;
 }
 
+/* Sections of the nav. The gap above each heading is what does the grouping —
+   the label only names a group the spacing has already made visible. */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.nav-group + .nav-group {
+  margin-top: 0.85rem;
+}
+
+.nav-group-label {
+  padding: 0 0.7rem 0.3rem;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+  font-weight: 550;
+  font-size: 0.92rem;
+  text-decoration: none;
+}
+
+.nav-link:hover {
+  background: var(--bg);
+  text-decoration: none;
+}
+
+.nav-link.active {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-weight: 650;
+}
+
+/* Bottom of the sidebar: organization name above the account divider line.
+   It never shrinks and never scrolls away — the organization you are looking at
+   and the way out of it are the two things that must always be on screen. */
 .sidebar-bottom {
   margin-top: auto;
   flex: 0 0 auto;
