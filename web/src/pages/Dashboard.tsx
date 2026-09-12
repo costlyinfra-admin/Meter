@@ -15,11 +15,12 @@ import {
   type RangeKind,
   type ReviewRange,
 } from "../api";
-import { CategoryBadge, ConfidenceBadge, WorthBadge } from "../components/badges";
+import { CategoryBadge, ConfidenceBadge, ProductBadge, WorthBadge } from "../components/badges";
 import { CustomerBreakdown } from "../components/CustomerBreakdown";
 import { DeveloperBreakdown } from "../components/DeveloperBreakdown";
 import { OnboardingChecklist } from "../components/OnboardingChecklist";
 import { PeriodSelector } from "../components/PeriodSelector";
+import { ProductBreakdown } from "../components/ProductBreakdown";
 import {
   BudgetForecastPanel,
   KeyInsights,
@@ -37,7 +38,7 @@ interface SavingsState extends SavingsSummary {
 import { ProviderBreakdown, type SpendSource } from "../components/ProviderBreakdown";
 import { compact, money, num } from "../format";
 
-type OverviewTab = "features" | "providers" | "developers" | "customers";
+type OverviewTab = "products" | "features" | "providers" | "developers" | "customers";
 
 /** Notify the app shell (which owns the alerts badge) to re-poll alert state. */
 export const REFRESH_ALERTS_EVENT = "meter:refresh-alerts";
@@ -286,11 +287,7 @@ export function Dashboard() {
           {/* The middle column: what it cost, then where that is heading. */}
           <div className="overview-middle">
             <SpendTrend trend={data.trend} />
-            <BudgetForecastPanel
-              trend={data.trend}
-              forecast={forecast}
-              failed={forecastFailed}
-            />
+            <BudgetForecastPanel trend={data.trend} forecast={forecast} failed={forecastFailed} />
           </div>
           <div className="overview-side">
             <ProviderSpendPanel providers={data.providers} />
@@ -303,6 +300,15 @@ export function Dashboard() {
           and totals above stay put no matter which tab is active. */}
       {data && (
         <div className="tabs" role="tablist" aria-label="Cost breakdown" ref={tabsRef}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "products"}
+            className={tab === "products" ? "tab active" : "tab"}
+            onClick={() => setTab("products")}
+          >
+            By Product
+          </button>
           <button
             type="button"
             role="tab"
@@ -364,7 +370,8 @@ export function Dashboard() {
           <thead>
             <tr>
               <th>Feature</th>
-              <th title="Which part of the product this feature belongs to">Type</th>
+              <th title="Which product this feature is part of">Product</th>
+              <th title="What kind of feature this is">Type</th>
               <th className="num">Build cost</th>
               <th className="num">{data.months > 1 ? "Inference" : "Inference / mo"}</th>
               <th className="num">Active users</th>
@@ -388,6 +395,9 @@ export function Dashboard() {
                   <Link to={`/features/${f.feature_id}`} onClick={(e) => e.stopPropagation()}>
                     {f.name}
                   </Link>
+                </td>
+                <td>
+                  <ProductBadge product={f.product_name} source={f.product_source} />
                 </td>
                 <td>
                   <CategoryBadge category={f.category} source={f.category_source} />
@@ -415,6 +425,7 @@ export function Dashboard() {
             <tr className="unattributed-row">
               <td>Unattributed</td>
               <td className="muted">—</td>
+              <td className="muted">—</td>
               <td className="num">{money(data.unattributed.build_cost)}</td>
               <td className="num">{money(data.unattributed.inference_cost)}</td>
               <td className="num">—</td>
@@ -434,6 +445,8 @@ export function Dashboard() {
           "Cost health" is directional (cost per active user), not a revenue-based ROI.
         </p>
       )}
+
+      {data && tab === "products" && <ProductBreakdown range={range} refreshKey={refreshKey} />}
 
       {data && tab === "providers" && (
         <ProviderBreakdown

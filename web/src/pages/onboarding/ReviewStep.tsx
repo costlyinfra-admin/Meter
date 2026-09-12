@@ -9,9 +9,10 @@
  */
 import { useEffect, useState } from "react";
 import { DiscoverySchedule } from "../../components/DiscoverySchedule";
-import { api, ApiError, type Feature } from "../../api";
-import { CategoryBadge } from "../../components/badges";
+import { api, ApiError, type Feature, type Product } from "../../api";
+import { CategoryBadge, ProductBadge } from "../../components/badges";
 import { CategoryPicker } from "../../components/CategoryPicker";
+import { ProductPicker } from "../../components/ProductPicker";
 
 const NEEDS_REVIEW = "Needs review";
 
@@ -27,6 +28,7 @@ export function ReviewStep() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [products, setProducts] = useState<Product[] | null>(null);
 
   // Repo selector: the org's repositories, and which the user picked to analyze.
   const [repoList, setRepoList] = useState<string[] | null>(null);
@@ -37,6 +39,10 @@ export function ReviewStep() {
 
   useEffect(() => {
     reload().catch(() => setFeatures([]));
+    api
+      .listProducts()
+      .then((d) => setProducts(d.products))
+      .catch(() => setProducts([]));
     // Prefill the last-used org + repo selection so re-runs are one click.
     api
       .discoveryScope()
@@ -224,6 +230,7 @@ export function ReviewStep() {
               <FeatureCard
                 key={f.id}
                 feature={f}
+                products={products}
                 selected={selected.has(f.id)}
                 onToggleSelect={() => toggleSelect(f.id)}
                 onChanged={reload}
@@ -261,11 +268,13 @@ function AddFeature({ onAdded }: { onAdded: () => Promise<void> }) {
 
 function FeatureCard({
   feature,
+  products,
   selected,
   onToggleSelect,
   onChanged,
 }: {
   feature: Feature;
+  products: Product[] | null;
   selected: boolean;
   onToggleSelect: () => void;
   onChanged: () => Promise<void>;
@@ -314,8 +323,17 @@ function FeatureCard({
             ) : (
               <ConfidenceBadge level={feature.discovery_confidence} />
             )}
+            <ProductBadge product={feature.product_name} source={feature.product_source} />
             <CategoryBadge category={feature.category} source={feature.category_source} />
             <span className="feature-actions">
+              <ProductPicker
+                value={feature.product_id}
+                products={products}
+                onChange={async (productId) => {
+                  await api.setFeatureProduct(feature.id, productId);
+                  await onChanged();
+                }}
+              />
               <CategoryPicker
                 value={feature.category}
                 onChange={async (category) => {

@@ -236,9 +236,11 @@ def dashboard(
 
         features = conn.execute(
             """
-            SELECT id, name, status, discovery_confidence, category, category_source
-            FROM feature WHERE status IN ('proposed', 'confirmed')
-            ORDER BY created_at
+            SELECT f.id, f.name, f.status, f.discovery_confidence,
+                   f.category, f.category_source, f.product_id, p.name, f.product_source
+            FROM feature f LEFT JOIN product p ON p.id = f.product_id
+            WHERE f.status IN ('proposed', 'confirmed')
+            ORDER BY f.created_at
             """
         ).fetchall()
 
@@ -306,7 +308,17 @@ def dashboard(
         providers = _provider_spend(conn, start, end)
 
     rows = []
-    for fid, name, _status, _disc, category, category_source in features:
+    for (
+        fid,
+        name,
+        _status,
+        _disc,
+        category,
+        category_source,
+        product_id,
+        product_name,
+        product_source,
+    ) in features:
         fid = str(fid)
         kind, kind_source = resolve_category(category, category_source)
         b = build.get(fid, {"amount": 0.0, "confidence": None})
@@ -324,10 +336,14 @@ def dashboard(
                 # Number of AI model calls this feature made (None when unknown —
                 # e.g. connector-only, no hook, since cost APIs don't report counts).
                 "requests": i.get("requests"),
-                # Product surface (chat/api/ui/...), or None when untagged;
+                # Feature type (chat/api/ui/...), or None when untagged;
                 # category_source says whether a person or discovery set it.
                 "category": kind,
                 "category_source": kind_source,
+                # The product this feature rolls up into, or None (Unassigned).
+                "product_id": str(product_id) if product_id else None,
+                "product_name": product_name,
+                "product_source": product_source,
                 "worth_it": _worth_indicator(i["amount"], users),
                 "confidence": _min_confidence(b["confidence"], i["confidence"]),
             }
@@ -994,9 +1010,10 @@ def feature_detail(
 
         feature = conn.execute(
             """
-            SELECT id, name, description, status, discovery_confidence,
-                   category, category_source
-            FROM feature WHERE id = %s
+            SELECT f.id, f.name, f.description, f.status, f.discovery_confidence,
+                   f.category, f.category_source, f.product_id, p.name, f.product_source
+            FROM feature f LEFT JOIN product p ON p.id = f.product_id
+            WHERE f.id = %s
             """,
             (feature_id,),
         ).fetchone()
@@ -1121,6 +1138,11 @@ def feature_detail(
         "status": feature[3],
         "category": category,
         "category_source": category_source,
+        # The product this feature rolls up into, so the drill-down can name it
+        # and offer to change it.
+        "product_id": str(feature[7]) if feature[7] else None,
+        "product_name": feature[8],
+        "product_source": feature[9],
         "discovery_confidence": feature[4],
         "period": end.isoformat(),
         "start": start.isoformat(),
@@ -1292,6 +1314,122 @@ def spend_by_customer(
         # Metered spend as a share of the real inference bill for this window.
         "inference_total": inference_total,
         "coverage_pct": (total / inference_total * 100.0) if inference_total else 0.0,
+    }
+
+
+def spend_by_product(
+    tenant_id: str,
+    start: Optional[dt.date] = None,
+    end: Optional[dt.date] = None,
+    range_token: Optional[str] = None,
+) -> dict:
+    """What each product cost over a month range — build and inference, apart.
+
+    A product is the customer's own grouping above features, so this is the
+    feature rollup re-keyed by product. It reuses `_rollup` and `_inference_rollup`
+    rather than querying the cost tables again: those two already apply the active
+    environment filter and reconcile hook rows against the provider bill, so the
+    numbers here cannot drift from the Overview's.
+
+    TWO RESIDUALS, AND THEY ARE NOT THE SAME THING:
+
+      `unassigned`   — features that exist but belong to no product. Assignable:
+                       the customer can map a repo or pick a product and it moves.
+      `unattributed` — spend with no feature at all. Part of it is not even a row
+                       (it is the bill-minus-hook reconciliation gap), so it can
+                       never belong to a product, no matter how complete the
+                       mapping gets.
+
+    Merging them would let unattributable dollars appear under a product heading.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        start, end = _resolve_range(conn, range_token, start, end)
+        n = _month_count(start, end)
+
+        features = conn.execute(
+            """
+            SELECT f.id, f.product_id, p.name
+            FROM feature f LEFT JOIN product p ON p.id = f.product_id
+            WHERE f.status IN ('proposed', 'confirmed')
+            """
+        ).fetchall()
+        repos = conn.execute("SELECT product_id, repo FROM product_repo ORDER BY repo").fetchall()
+        # Products with no features yet still belong on the screen: a customer who
+        # has just created one should see it sitting at zero, not wonder where it
+        # went.
+        all_products = conn.execute("SELECT id, name FROM product ORDER BY lower(name)").fetchall()
+
+        build = _rollup(conn, "build_cost", start, end)
+        inference, inference_unattributed = _inference_rollup(conn, start, end)
+
+    by_product: dict = {
+        str(pid): {
+            "product_id": str(pid),
+            "name": pname,
+            "build_cost": 0.0,
+            "inference_cost": 0.0,
+            "feature_count": 0,
+            "repos": [],
+            "confidence": None,
+        }
+        for pid, pname in all_products
+    }
+    for pid, repo in repos:
+        entry = by_product.get(str(pid))
+        if entry is not None:
+            entry["repos"].append(repo)
+
+    unassigned = {
+        "build_cost": 0.0,
+        "inference_cost": 0.0,
+        "feature_count": 0,
+        "spanning_count": 0,
+    }
+    for fid, product_id, _pname in features:
+        fid = str(fid)
+        b = build.get(fid, {"amount": 0.0, "confidence": None})
+        i = inference.get(fid, {"amount": 0.0, "confidence": None})
+        target = by_product.get(str(product_id)) if product_id else None
+        if target is None:
+            unassigned["build_cost"] += b["amount"]
+            unassigned["inference_cost"] += i["amount"]
+            unassigned["feature_count"] += 1
+            continue
+        target["build_cost"] += b["amount"]
+        target["inference_cost"] += i["amount"]
+        target["feature_count"] += 1
+        target["confidence"] = _min_confidence(
+            target["confidence"], _min_confidence(b["confidence"], i["confidence"])
+        )
+
+    # Spend with no feature at all. Build's Unattributed is the NULL-feature key;
+    # inference's also carries the reconciliation gap, which has no row to assign.
+    unattributed = {
+        "build_cost": build.get(None, {"amount": 0.0})["amount"],
+        "inference_cost": inference_unattributed,
+    }
+    # Ranked by what a product costs in total — to ORDER the list only. The two
+    # figures are never added together for display (invariant 2).
+    products_out = sorted(
+        by_product.values(),
+        key=lambda p: p["build_cost"] + p["inference_cost"],
+        reverse=True,
+    )
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "months": n,
+        "products": products_out,
+        "unassigned": unassigned,
+        "unattributed": unattributed,
+        "totals": {
+            "build_cost": sum(p["build_cost"] for p in products_out)
+            + unassigned["build_cost"]
+            + unattributed["build_cost"],
+            "inference_cost": sum(p["inference_cost"] for p in products_out)
+            + unassigned["inference_cost"]
+            + unattributed["inference_cost"],
+        },
     }
 
 

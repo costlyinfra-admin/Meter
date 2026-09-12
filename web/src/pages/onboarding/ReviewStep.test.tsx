@@ -19,6 +19,8 @@ vi.mock("../../api", async (importActual) => {
       mergeFeatures: vi.fn(),
       setFeatureCategory: vi.fn(),
       featureCategories: vi.fn(),
+      listProducts: vi.fn(),
+      setFeatureProduct: vi.fn(),
       // ReviewStep now renders the discovery freshness line above its toolbar.
       discoverySchedule: vi.fn(),
       setDiscoverySchedule: vi.fn(),
@@ -46,6 +48,9 @@ const THREAT: Feature = {
   discovery_confidence: "high",
   category: "chat",
   category_source: "discovery",
+  product_id: null,
+  product_name: null,
+  product_source: null,
   signals: [
     { id: "s1", signal_type: "pr", external_ref: "acme/core#1", confidence: "high" },
     { id: "s2", signal_type: "pr", external_ref: "acme/core#2", confidence: "high" },
@@ -58,6 +63,8 @@ describe("ReviewStep", () => {
     vi.clearAllMocks();
     // Component loads the saved scope on mount; default to "nothing saved".
     vi.mocked(api.discoveryScope).mockResolvedValue({ owner: null, repos: [] });
+    // The product picker on each proposal reads one shared product list.
+    vi.mocked(api.listProducts).mockResolvedValue({ products: [] });
     // The freshness line renders nothing without a schedule, which is fine for
     // every test here — they are about the feature list, not the schedule.
     vi.mocked(api.discoverySchedule).mockResolvedValue(null as never);

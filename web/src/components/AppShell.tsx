@@ -27,6 +27,7 @@ type IconName =
   | "settings"
   | "help"
   | "prompts"
+  | "products"
   | "reconciliation";
 
 interface NavItem {
@@ -47,6 +48,7 @@ const NAV: { section?: string; items: NavItem[] }[] = [
     items: [
       { to: "/cost-sources", label: "Cost sources", end: false, icon: "sources" },
       { to: "/applications", label: "Applications", end: false, icon: "applications" },
+      { to: "/products", label: "Products", end: false, icon: "products" },
       { to: "/features", label: "Features", end: false, icon: "features" },
       { to: "/traces", label: "Traces", end: false, icon: "traces" },
     ],
@@ -135,6 +137,12 @@ function NavIcon({ name }: { name: IconName }) {
         <>
           <path d="M2.75 5.5 7.5 10.25 11 6.75l6.25 6.25" />
           <path d="M13 13h4.25V8.75" />
+        </>
+      )}
+      {name === "products" && (
+        <>
+          <path d="M10 2.75 3.25 6.1v7.8L10 17.25l6.75-3.35V6.1Z" />
+          <path d="M3.25 6.1 10 9.45l6.75-3.35M10 9.45v7.8" />
         </>
       )}
       {name === "prompts" && (

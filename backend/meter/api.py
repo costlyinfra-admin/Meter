@@ -52,6 +52,7 @@ from . import (
     okta,
     optimize_measured,
     otel,
+    products,
     prompt_capture,
     prompt_eval,
     prompt_optimize,
@@ -528,6 +529,27 @@ class UsageRequest(BaseModel):
     active_users: int = Field(ge=0)
     events: Optional[int] = Field(default=None, ge=0)
     period: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+
+
+class ProductRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=500)
+
+
+class ProductPatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+
+
+class ProductRepoRequest(BaseModel):
+    """The repositories a product is built in, as "owner/name" full names."""
+
+    repos: list[str] = Field(default_factory=list, max_length=500)
+
+
+class FeatureProductRequest(BaseModel):
+    # null clears the assignment and hands the feature back to the repo mapping.
+    product_id: Optional[str] = None
 
 
 class CategoryRequest(BaseModel):
@@ -2259,6 +2281,17 @@ def create_app() -> FastAPI:
         e = _parse_period(end) if end else None
         return dashboard.spend_by_provider(user["tenant_id"], s, e, range)
 
+    @app.get("/api/dashboard/products")
+    def dashboard_products(
+        user: CurrentUser,
+        range: Optional[str] = Query(default=None, pattern=_RANGE_RE),
+        start: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+        end: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    ) -> dict:
+        s = _parse_period(start) if start else None
+        e = _parse_period(end) if end else None
+        return dashboard.spend_by_product(user["tenant_id"], s, e, range)
+
     @app.get("/api/dashboard/customers")
     def dashboard_customers(
         user: CurrentUser,
@@ -2280,6 +2313,98 @@ def create_app() -> FastAPI:
         except features.FeatureNotFound as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found"
+            ) from exc
+
+    @app.get("/api/products")
+    def list_products(user: CurrentUser) -> dict:
+        return {"products": products.list_products(user["tenant_id"])}
+
+    @app.get("/api/products/suggestions")
+    def product_suggestions(user: CurrentUser) -> dict:
+        """Products proposed from repository names — never created, only proposed."""
+        return products.suggest_from_repos(user["tenant_id"])
+
+    @app.get("/api/products/spanning")
+    def product_spanning(user: CurrentUser) -> dict:
+        """Features whose repositories belong to more than one product."""
+        return {"features": products.spanning_features(user["tenant_id"])}
+
+    @app.post("/api/products/reassign")
+    def product_reassign(request: Request, user: CurrentUser) -> dict:
+        """Re-derive every feature's product from the repo mapping."""
+        _customer_only(request)
+        return products.reassign_from_repos(user["tenant_id"])
+
+    @app.post("/api/products", status_code=status.HTTP_201_CREATED)
+    def create_product(body: ProductRequest, request: Request, user: CurrentUser) -> dict:
+        _customer_only(request)
+        try:
+            return products.create_product(user["tenant_id"], body.name, body.description)
+        except products.DuplicateProduct as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A product with that name already exists",
+            ) from exc
+
+    @app.patch("/api/products/{product_id}")
+    def rename_product(
+        product_id: str, body: ProductPatch, request: Request, user: CurrentUser
+    ) -> dict:
+        _customer_only(request)
+        try:
+            return products.rename_product(
+                user["tenant_id"], product_id, body.name, body.description
+            )
+        except products.ProductNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+            ) from exc
+        except products.DuplicateProduct as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A product with that name already exists",
+            ) from exc
+
+    @app.delete("/api/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_product(product_id: str, request: Request, user: CurrentUser) -> None:
+        """Delete a product. Its features survive and become Unassigned."""
+        _customer_only(request)
+        try:
+            products.delete_product(user["tenant_id"], product_id)
+        except products.ProductNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+            ) from exc
+
+    @app.put("/api/products/{product_id}/repos")
+    def set_product_repos(
+        product_id: str, body: ProductRepoRequest, request: Request, user: CurrentUser
+    ) -> dict:
+        """Map repositories to a product, then re-derive what that changes."""
+        _customer_only(request)
+        try:
+            product = products.set_repos(user["tenant_id"], product_id, body.repos)
+        except products.ProductNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+            ) from exc
+        return {"product": product, "reassigned": products.reassign_from_repos(user["tenant_id"])}
+
+    @app.put("/api/features/{feature_id}/product")
+    def set_feature_product(
+        feature_id: str, body: FeatureProductRequest, request: Request, user: CurrentUser
+    ) -> dict:
+        """Assign a feature to a product by hand (or clear the assignment)."""
+        _customer_only(request)
+        try:
+            return features.set_product(user["tenant_id"], feature_id, body.product_id)
+        except features.FeatureNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found"
+            ) from exc
+        except products.ProductNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
             ) from exc
 
     @app.get("/api/features/categories")

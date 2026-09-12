@@ -38,6 +38,34 @@ const CATEGORY_BASIS: Record<string, string> = {
   discovery: "Guessed from keywords in its pull requests",
 };
 
+/** Where a product assignment came from — a person, or the repo mapping. The
+ *  two are not the same claim, exactly as with a feature's Type. */
+const PRODUCT_BASIS: Record<string, string> = {
+  user: "Assigned by hand",
+  discovery: "Derived from the repositories its pull requests are in",
+};
+
+export function ProductBadge({
+  product,
+  source,
+}: {
+  product: string | null;
+  source?: string | null;
+}) {
+  if (!product) {
+    return (
+      <span className="badge cat-untagged" title="This feature is not part of any product yet">
+        Unassigned
+      </span>
+    );
+  }
+  return (
+    <span className="badge" title={source ? PRODUCT_BASIS[source] : undefined}>
+      {product}
+    </span>
+  );
+}
+
 export function CategoryBadge({
   category,
   source,

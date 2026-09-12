@@ -19,6 +19,8 @@ vi.mock("../api", async (importActual) => {
       featureDetail: vi.fn(),
       setFeatureCategory: vi.fn(),
       featureCategories: vi.fn(),
+      listProducts: vi.fn(),
+      setFeatureProduct: vi.fn(),
       featureInference: vi.fn(),
       featureOpportunities: vi.fn(),
       applyOpportunity: vi.fn(),
@@ -100,6 +102,9 @@ const DETAIL = {
   discovery_confidence: "high",
   category: "api",
   category_source: "discovery",
+  product_id: "p1",
+  product_name: "Threat Platform",
+  product_source: "discovery",
   period: "2026-05-01",
   start: "2026-05-01",
   end: "2026-05-01",
@@ -177,6 +182,8 @@ describe("FeatureDetail", () => {
     vi.clearAllMocks();
     vi.mocked(api.me).mockResolvedValue({ id: "u1", tenant_id: "t1", email: "cto@acme.com" });
     vi.mocked(api.featureDetail).mockResolvedValue(DETAIL);
+    // The product picker fetches the customer's product list on mount.
+    vi.mocked(api.listProducts).mockResolvedValue({ products: [] });
     // The category picker fetches its vocabulary on mount.
     vi.mocked(api.featureCategories).mockResolvedValue({
       categories: [

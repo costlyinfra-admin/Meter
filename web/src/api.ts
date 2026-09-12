@@ -581,10 +581,15 @@ export interface Feature {
   description: string;
   status: string;
   discovery_confidence: string | null;
-  /** Product surface (chat/api/ui/...), or null when nobody has tagged it. */
+  /** Feature type (chat/api/ui/...), or null when nobody has tagged it. */
   category: string | null;
   /** 'user' | 'discovery' — the basis for `category`. */
   category_source: string | null;
+  /** The product this feature is part of, or null (Unassigned). */
+  product_id: string | null;
+  product_name: string | null;
+  /** 'user' when a person assigned it, 'discovery' when the repo mapping did. */
+  product_source: string | null;
   signals: FeatureSignal[];
 }
 
@@ -808,11 +813,74 @@ export interface SourceDetail {
   message?: string;
 }
 
+/** A thing the customer sells. Groups features and rolls up their cost — not to
+ *  be confused with an Application, which is an instrumented service. */
+export interface Product {
+  id: string;
+  name: string;
+  description: string;
+  /** "owner/name" repositories this product is built in. */
+  repos: string[];
+  feature_count: number;
+}
+
+export interface ProductRow {
+  product_id: string;
+  name: string;
+  build_cost: number;
+  inference_cost: number;
+  feature_count: number;
+  repos: string[];
+  confidence: string | null;
+}
+
+/** The By-Product tab. The two residuals are deliberately separate: `unassigned`
+ *  is features with no product (assignable), `unattributed` is spend with no
+ *  feature at all (part of it has no row, so it never can be). */
+export interface ProductSpend {
+  start: string;
+  end: string;
+  months: number;
+  products: ProductRow[];
+  unassigned: {
+    build_cost: number;
+    inference_cost: number;
+    feature_count: number;
+    spanning_count: number;
+  };
+  unattributed: { build_cost: number; inference_cost: number };
+  totals: { build_cost: number; inference_cost: number };
+}
+
+/** A feature whose repositories belong to more than one product — the only case
+ *  the mapping cannot decide on its own. */
+export interface SpanningFeature {
+  feature_id: string;
+  name: string;
+  repos: string[];
+  products: string[];
+}
+
+export interface ReassignResult {
+  assigned: number;
+  unassigned: number;
+  spanning: number;
+}
+
+export interface ProductSuggestions {
+  suggestions: { name: string; repos: string[] }[];
+  unmapped: string[];
+  mapped_count: number;
+}
+
 export interface DashboardRow {
   feature_id: string;
   name: string;
   category: string | null;
   category_source: string | null;
+  product_id: string | null;
+  product_name: string | null;
+  product_source: string | null;
   build_cost: number;
   inference_cost: number;
   active_users: number | null;
@@ -911,6 +979,9 @@ export interface FeatureDetail {
   end: string;
   category: string | null;
   category_source: string | null;
+  product_id: string | null;
+  product_name: string | null;
+  product_source: string | null;
   headline: {
     build_cost: number;
     inference_cost: number;
@@ -1785,7 +1856,46 @@ export const api = {
   customerSpend: (range?: ReviewRange) =>
     request<CustomerSpend>(`/dashboard/customers${rangeQuery(range)}`),
 
-  /** Tag a feature with its product surface; null clears the tag. */
+  productSpend: (range?: ReviewRange) =>
+    request<ProductSpend>(`/dashboard/products${rangeQuery(range)}`),
+
+  listProducts: () => request<{ products: Product[] }>("/products"),
+
+  createProduct: (name: string, description = "") =>
+    request<Product>("/products", {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    }),
+
+  renameProduct: (id: string, name?: string, description?: string) =>
+    request<Product>(`/products/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name, description }),
+    }),
+
+  deleteProduct: (id: string) => request<void>(`/products/${id}`, { method: "DELETE" }),
+
+  /** Map repositories to a product. The server re-derives what that changes. */
+  setProductRepos: (id: string, repos: string[]) =>
+    request<{ product: Product; reassigned: ReassignResult }>(`/products/${id}/repos`, {
+      method: "PUT",
+      body: JSON.stringify({ repos }),
+    }),
+
+  reassignProducts: () => request<ReassignResult>("/products/reassign", { method: "POST" }),
+
+  productSuggestions: () => request<ProductSuggestions>("/products/suggestions"),
+
+  spanningFeatures: () => request<{ features: SpanningFeature[] }>("/products/spanning"),
+
+  /** Assign a feature to a product by hand; null clears it. */
+  setFeatureProduct: (id: string, productId: string | null) =>
+    request<Feature>(`/features/${id}/product`, {
+      method: "PUT",
+      body: JSON.stringify({ product_id: productId }),
+    }),
+
+  /** Tag a feature with its type (chat/api/ui/...); null clears the tag. */
   setFeatureCategory: (id: string, category: string | null) =>
     request<Feature>(`/features/${id}/category`, {
       method: "PUT",

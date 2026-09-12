@@ -617,3 +617,74 @@ def test_a_scope_saved_under_different_casing_still_matches(tenant_id, monkeypat
     )
     assert summary["repos"] == ["transilienceai/eiger"]
     assert summary["prs"] == 1
+
+
+# --- Products: the repos a feature was built in ---------------------------
+# Discovery has always known which repositories a feature's pull requests came
+# from and thrown them away. It now records them, because they are the evidence
+# behind the feature's product.
+
+
+def test_discovery_records_the_repos_a_feature_was_built_in(tenant_id, monkeypatch):
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(MCS_PRS))
+    discovery.run_discovery(tenant_id, "transilienceai", "tok")
+
+    for feature in features.list_features(tenant_id):
+        repos = [s["external_ref"] for s in feature["signals"] if s["signal_type"] == "repo"]
+        assert repos == [MCS], f"{feature['name']} recorded no repository"
+
+
+def test_a_repo_a_person_attached_survives_a_re_run(tenant_id, monkeypatch):
+    """Discovery may replace its own evidence, never a person's."""
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(MCS_PRS))
+    discovery.run_discovery(tenant_id, "transilienceai", "tok")
+
+    feature = features.list_features(tenant_id)[0]
+    features.add_signal(tenant_id, feature["id"], "repo", "transilienceai/hand-added")
+
+    discovery.run_discovery(tenant_id, "transilienceai", "tok")
+
+    after = features.list_features(tenant_id)
+    kept = [
+        s
+        for f in after
+        for s in f["signals"]
+        if s["signal_type"] == "repo" and s["external_ref"] == "transilienceai/hand-added"
+    ]
+    assert len(kept) == 1, "a hand-attached repository was wiped by a re-run"
+
+
+def test_features_land_in_the_product_their_repo_belongs_to(tenant_id, monkeypatch, app_env):
+    from meter import products
+
+    made = products.create_product(tenant_id, "MCS")
+    products.set_repos(tenant_id, made["id"], [MCS])
+
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(MCS_PRS))
+    discovery.run_discovery(tenant_id, "transilienceai", "tok")
+
+    listed = features.list_features(tenant_id)
+    assert listed, "discovery produced no features"
+    for feature in listed:
+        assert feature["product_name"] == "MCS"
+        assert feature["product_source"] == "discovery"
+
+
+def test_a_person_s_product_survives_a_discovery_run(tenant_id, monkeypatch):
+    from meter import products
+
+    mcs = products.create_product(tenant_id, "MCS")
+    other = products.create_product(tenant_id, "Something else")
+    products.set_repos(tenant_id, mcs["id"], [MCS])
+
+    monkeypatch.setattr(discovery, "_make_github_client", lambda token: _FakeGitHub(MCS_PRS))
+    discovery.run_discovery(tenant_id, "transilienceai", "tok")
+
+    feature = features.list_features(tenant_id)[0]
+    features.set_product(tenant_id, feature["id"], other["id"])
+
+    discovery.run_discovery(tenant_id, "transilienceai", "tok")  # the repos say MCS
+
+    again = {f["id"]: f for f in features.list_features(tenant_id)}[feature["id"]]
+    assert again["product_name"] == "Something else"
+    assert again["product_source"] == "user"

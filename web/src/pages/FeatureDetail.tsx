@@ -15,11 +15,13 @@ import {
   type FeatureOpportunities,
   type Opportunity,
   type OptimizationAction,
+  type Product,
   type RangeKind,
   type ReviewRange,
 } from "../api";
-import { CategoryBadge, ConfidenceBadge } from "../components/badges";
+import { CategoryBadge, ConfidenceBadge, ProductBadge } from "../components/badges";
 import { CategoryPicker } from "../components/CategoryPicker";
+import { ProductPicker } from "../components/ProductPicker";
 import { PeriodSelector } from "../components/PeriodSelector";
 import { TrendChart } from "../components/TrendChart";
 import { compact, money, num } from "../format";
@@ -63,6 +65,8 @@ export function FeatureDetail() {
   const setRange = (r: ReviewRange) => setSearchParams(paramsForRange(r), { replace: true });
 
   const [detail, setDetail] = useState<Detail | null>(null);
+  // One feature, so one fetch: the picker needs the customer's product list.
+  const [products, setProducts] = useState<Product[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -73,6 +77,13 @@ export function FeatureDetail() {
       setError(err instanceof ApiError ? err.message : "Could not load this feature.");
     }
   }, [id, range]);
+
+  useEffect(() => {
+    api
+      .listProducts()
+      .then((d) => setProducts(d.products))
+      .catch(() => setProducts([]));
+  }, []);
 
   useEffect(() => {
     load();
@@ -117,7 +128,16 @@ export function FeatureDetail() {
           {detail.description && <p className="muted">{detail.description}</p>}
           <p className="detail-meta">
             <span className="badge">{detail.status}</span>
+            <ProductBadge product={detail.product_name} source={detail.product_source} />
             <CategoryBadge category={detail.category} source={detail.category_source} />
+            <ProductPicker
+              value={detail.product_id}
+              products={products}
+              onChange={async (productId) => {
+                await api.setFeatureProduct(detail.feature_id, productId);
+                await load();
+              }}
+            />
             <CategoryPicker
               value={detail.category}
               onChange={async (category) => {

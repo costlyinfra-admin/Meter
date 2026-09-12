@@ -22,7 +22,7 @@ from typing import Callable, Optional
 
 import httpx
 
-from . import build, credentials, discovery_llm
+from . import build, credentials, discovery_llm, products
 from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .discovery_llm import (
     DEFAULT_DISCOVERY_MODEL,
@@ -1131,6 +1131,8 @@ def _persist_proposals(
     lo, hi = window or (dt.date.min, dt.date.max)
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         by_branch, by_name, stale = _match_existing(conn)
+        # repo -> product, read once: every proposal is scored against it below.
+        product_map = products.repo_map(conn)
 
         # Clear the evidence this run is entitled to replace, across every
         # proposed feature: what it saw (by merge date) plus anything it fetched
@@ -1158,6 +1160,10 @@ def _persist_proposals(
             elif by_name.get(key_name) in stale:
                 feature_id = by_name[key_name]
 
+            # Which product these repos say this feature belongs to. None when
+            # nothing is mapped yet, or when its repos span two products.
+            product_id = products.product_for(prop.repos, product_map)
+
             if feature_id is not None:
                 stale.discard(feature_id)  # reused, so not deleted below
                 # A person's AI/non-AI decision outlives re-discovery: the guess
@@ -1175,7 +1181,12 @@ def _persist_proposals(
                                         THEN category ELSE %s END,
                         category_source = CASE WHEN category_source = 'user' THEN 'user'
                                                WHEN %s::text IS NULL THEN NULL
-                                               ELSE 'discovery' END
+                                               ELSE 'discovery' END,
+                        product_id = CASE WHEN product_source = 'user'
+                                          THEN product_id ELSE %s::uuid END,
+                        product_source = CASE WHEN product_source = 'user' THEN 'user'
+                                              WHEN %s::uuid IS NULL THEN NULL
+                                              ELSE 'discovery' END
                     WHERE id = %s
                     """,
                     (
@@ -1185,14 +1196,19 @@ def _persist_proposals(
                         prop.ai_kind,
                         prop.category,
                         prop.category,
+                        product_id,
+                        product_id,
                         feature_id,
                     ),
                 )
                 # Its PR signals for this window are already gone (above); the
                 # branch signal is regenerated below. Anything merged outside the
                 # window stays — this run never looked at those months.
+                # The `source` clause matters: a repo a person attached by hand
+                # is written with source='manual', and must survive every run.
                 conn.execute(
-                    "DELETE FROM feature_signal WHERE feature_id = %s AND signal_type = 'branch'",
+                    "DELETE FROM feature_signal WHERE feature_id = %s "
+                    "AND signal_type IN ('branch', 'repo') AND source = 'github'",
                     (feature_id,),
                 )
             else:
@@ -1200,9 +1216,12 @@ def _persist_proposals(
                     """
                     INSERT INTO feature
                         (tenant_id, name, description, status, discovery_confidence,
-                         ai_kind, ai_kind_source, category, category_source)
+                         ai_kind, ai_kind_source, category, category_source,
+                         product_id, product_source)
                     VALUES (%s, %s, %s, 'proposed', %s, %s, 'discovery', %s,
-                            CASE WHEN %s::text IS NULL THEN NULL ELSE 'discovery' END)
+                            CASE WHEN %s::text IS NULL THEN NULL ELSE 'discovery' END,
+                            %s::uuid,
+                            CASE WHEN %s::uuid IS NULL THEN NULL ELSE 'discovery' END)
                     RETURNING id
                     """,
                     (
@@ -1213,6 +1232,8 @@ def _persist_proposals(
                         prop.ai_kind,
                         prop.category,
                         prop.category,
+                        product_id,
+                        product_id,
                     ),
                 ).fetchone()[0]
 
@@ -1220,6 +1241,11 @@ def _persist_proposals(
                 _add_signal(
                     conn, tenant_id, feature_id, "branch", prop.branch_pattern, prop.confidence
                 )
+            # The repositories this feature's pull requests came from. Discovery
+            # has always known them and thrown them away; they are the evidence
+            # behind its product, and what a changed repo mapping is read from.
+            for repo in prop.repos:
+                _add_signal(conn, tenant_id, feature_id, "repo", repo, prop.confidence)
             for ref in prop.pr_refs:
                 # record the PR author + stats (build cost attributes per developer)
                 # and its title/branch/url (the review UI shows real product context).

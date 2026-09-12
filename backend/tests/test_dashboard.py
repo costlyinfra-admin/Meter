@@ -1175,3 +1175,114 @@ def test_a_month_with_no_tokens_reports_no_cache_rate_rather_than_dividing_by_ze
     [month] = dashboard.dashboard(tenant_id)["trend"]
     assert month["tokens_in"] == 0
     assert month["cache_rate"] == 0.0
+
+
+# --- Products: the rollup above features ---------------------------------
+# The one thing a product rollup must never do is lose or invent a dollar, so
+# these check the arithmetic against the Overview rather than against constants.
+
+
+#: The product the seeded demo maps acme-security/platform to.
+SEEDED_PRODUCT = "Threat Platform"
+
+
+def _product_id(app_env, tenant_id, name=SEEDED_PRODUCT):
+    row = app_env.execute(
+        "SELECT id FROM product WHERE tenant_id = %s AND lower(name) = lower(%s)",
+        (tenant_id, name),
+    ).fetchone()
+    return str(row[0]) if row else None
+
+
+def _new_product(app_env, tenant_id, name, repo):
+    """A product the seed does NOT create, for the empty-rollup case."""
+    pid = app_env.execute(
+        "INSERT INTO product (tenant_id, name) VALUES (%s, %s) RETURNING id", (tenant_id, name)
+    ).fetchone()[0]
+    app_env.execute(
+        "INSERT INTO product_repo (tenant_id, product_id, repo) VALUES (%s, %s, %s)",
+        (tenant_id, pid, repo),
+    )
+    app_env.commit()
+    return str(pid)
+
+
+def test_product_rollup_reconciles_to_the_overview_totals(seeded, app_env):
+    over = dashboard.dashboard(seeded, PERIOD)
+    rolled = dashboard.spend_by_product(seeded, PERIOD)
+
+    for kind in ("build_cost", "inference_cost"):
+        total = (
+            sum(p[kind] for p in rolled["products"])
+            + rolled["unassigned"][kind]
+            + rolled["unattributed"][kind]
+        )
+        # Not one dollar invented, not one lost, for either kind of cost.
+        assert round(total, 6) == round(over["totals"][kind], 6)
+
+
+def test_product_rollup_keeps_build_and_inference_apart(seeded, app_env):
+    rolled = dashboard.spend_by_product(seeded, PERIOD)
+    threat = next(p for p in rolled["products"] if p["name"] == SEEDED_PRODUCT)
+    assert threat["build_cost"] > 0 and threat["inference_cost"] > 0
+    # Invariant 2: no blended field anywhere in the payload.
+    assert not any(k in threat for k in ("cost", "total", "amount"))
+
+
+def test_the_two_residuals_are_not_the_same_bucket(seeded, app_env):
+    """Unassigned is assignable; Unattributed is not, and must not absorb it."""
+    from meter import features as features_mod
+
+    pid = _product_id(app_env, seeded)
+    before = dashboard.spend_by_product(seeded, PERIOD)
+    assigned = next(p for p in before["products"] if p["name"] == SEEDED_PRODUCT)
+    assert assigned["build_cost"] > 0
+
+    # Take one feature out of the product by hand.
+    fid = next(
+        f["feature_id"]
+        for f in dashboard.dashboard(seeded, PERIOD)["features"]
+        if f["product_id"] == pid and f["build_cost"] > 0
+    )
+    features_mod.set_product(seeded, fid, None)
+
+    after = dashboard.spend_by_product(seeded, PERIOD)
+    moved = next(p for p in after["products"] if p["name"] == SEEDED_PRODUCT)
+    assert moved["build_cost"] < assigned["build_cost"]
+    assert after["unassigned"]["build_cost"] > before["unassigned"]["build_cost"]
+    # Spend with no feature at all is untouched by anything a person does to
+    # products — part of it is a reconciliation gap with no row to move.
+    assert after["unattributed"] == before["unattributed"]
+
+
+def test_product_rollup_ignores_the_ignored_environment(seeded, app_env):
+    """Same environment filter as the Overview, or the two screens disagree."""
+    before = dashboard.spend_by_product(seeded, PERIOD)["totals"]["inference_cost"]
+
+    app_env.execute(
+        """
+        INSERT INTO inference_cost
+            (tenant_id, provider, model, amount, period, source, confidence, environment)
+        VALUES (%s, 'anthropic', 'c', 999.00, %s, 'cost_api', 'high', 'ignore')
+        """,
+        (seeded, PERIOD),
+    )
+    app_env.commit()
+
+    after = dashboard.spend_by_product(seeded, PERIOD)["totals"]["inference_cost"]
+    assert round(after, 6) == round(before, 6)
+
+
+def test_a_product_with_no_features_still_appears(seeded, app_env):
+    """A customer who just created a product should see it sitting at zero."""
+    _new_product(app_env, seeded, "Brand New", "acme-security/nothing-here")
+    rolled = dashboard.spend_by_product(seeded, PERIOD)
+    fresh = next(p for p in rolled["products"] if p["name"] == "Brand New")
+    assert fresh["build_cost"] == 0.0 and fresh["feature_count"] == 0
+
+
+def test_overview_rows_carry_their_product(seeded, app_env):
+    rows = {f["name"]: f for f in dashboard.dashboard(seeded, PERIOD)["features"]}
+    assert rows["AI threat triage"]["product_name"] == SEEDED_PRODUCT
+    assert rows["AI threat triage"]["product_source"] == "discovery"
+    assert rows["SOC copilot"]["product_name"] is None  # its repo is not mapped

@@ -12,7 +12,7 @@ from typing import Optional
 
 import psycopg
 
-from . import dashboard, discovery
+from . import dashboard, discovery, products
 from .db import app_dsn, connect, tenant_tx
 from .providers import month_start
 
@@ -55,9 +55,10 @@ def _signals(conn: psycopg.Connection, feature_id: str) -> list[dict]:
 def _feature(conn: psycopg.Connection, feature_id: str) -> Optional[dict]:
     row = conn.execute(
         """
-        SELECT id, name, description, status, discovery_confidence,
-               category, category_source
-        FROM feature WHERE id = %s
+        SELECT f.id, f.name, f.description, f.status, f.discovery_confidence,
+               f.category, f.category_source, f.product_id, p.name, f.product_source
+        FROM feature f LEFT JOIN product p ON p.id = f.product_id
+        WHERE f.id = %s
         """,
         (feature_id,),
     ).fetchone()
@@ -71,9 +72,14 @@ def _feature(conn: psycopg.Connection, feature_id: str) -> Optional[dict]:
         "description": row[2],
         "status": row[3],
         "discovery_confidence": row[4],
-        # Product surface (chat/api/ui/...), or None when nobody has tagged it.
+        # Feature type (chat/api/ui/...), or None when nobody has tagged it.
         "category": category,
         "category_source": category_source,
+        # The product this feature belongs to — the customer's own grouping, one
+        # level above the feature. None means Unassigned.
+        "product_id": str(row[7]) if row[7] else None,
+        "product_name": row[8],
+        "product_source": row[9],
         "signals": _signals(conn, str(row[0])),
     }
 
@@ -123,8 +129,29 @@ def rename_feature(
         return _feature(conn, feature_id)
 
 
+def set_product(tenant_id: str, feature_id: str, product_id: Optional[str]) -> dict:
+    """Assign a feature to one of the customer's products.
+
+    Passing None clears the assignment, handing the feature back to the repo
+    mapping. An assignment made here is never overwritten by a later discovery
+    run or by re-applying the mapping — see products.reassign_from_repos.
+    """
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        if _feature(conn, feature_id) is None:
+            raise FeatureNotFound(feature_id)
+        if product_id is not None:
+            exists = conn.execute("SELECT 1 FROM product WHERE id = %s", (product_id,)).fetchone()
+            if exists is None:
+                raise products.ProductNotFound(product_id)
+        conn.execute(
+            "UPDATE feature SET product_id = %s, product_source = %s WHERE id = %s",
+            (product_id, "user" if product_id else None, feature_id),
+        )
+        return _feature(conn, feature_id)
+
+
 def set_category(tenant_id: str, feature_id: str, category: Optional[str]) -> dict:
-    """Tag a feature with the product surface it belongs to.
+    """Tag a feature with the kind of thing it is (its Type).
 
     Passing None clears the tag, handing the feature back to the discovery guess.
     A tag set here is never overwritten by a later discovery run — see
@@ -166,8 +193,9 @@ def split_feature(tenant_id: str, feature_id: str, groups: list[dict]) -> list[d
         for group in groups:
             new_id = conn.execute(
                 """
-                INSERT INTO feature (tenant_id, name, description, status, discovery_confidence)
-                VALUES (%s, %s, %s, 'proposed', %s)
+                INSERT INTO feature (tenant_id, name, description, status,
+                                     discovery_confidence, product_id, product_source)
+                VALUES (%s, %s, %s, 'proposed', %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -175,6 +203,10 @@ def split_feature(tenant_id: str, feature_id: str, groups: list[dict]) -> list[d
                     group["name"],
                     group.get("description", f"Split from {original['name']}."),
                     original["discovery_confidence"],
+                    # Both halves stay in the product the original belonged to;
+                    # without this, splitting silently unassigns a feature.
+                    original["product_id"],
+                    original["product_source"],
                 ),
             ).fetchone()[0]
             signal_ids = group.get("signal_ids", [])

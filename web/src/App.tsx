@@ -11,6 +11,7 @@ import { AlertDetailPage } from "./pages/AlertDetailPage";
 import { AlertFormPage } from "./pages/AlertFormPage";
 import { AlertsPage } from "./pages/AlertsPage";
 import { CopilotPage } from "./pages/CopilotPage";
+import { ProductsPage } from "./pages/ProductsPage";
 import { PromptDetail, PromptsPage } from "./pages/PromptsPage";
 import { CostSourcesPage } from "./pages/CostSourcesPage";
 import { ReconciliationPage } from "./pages/ReconciliationPage";
@@ -81,6 +82,7 @@ export function App() {
         }
       >
         <Route path="/" element={<Dashboard />} />
+        <Route path="/products" element={<ProductsPage />} />
         <Route path="/optimize" element={<CopilotPage />} />
         <Route path="/optimize/prompts" element={<PromptsPage />} />
         <Route path="/optimize/prompts/:id" element={<PromptDetail />} />

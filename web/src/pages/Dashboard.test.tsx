@@ -19,6 +19,7 @@ vi.mock("../api", async (importActual) => {
       discoveryScope: vi.fn(),
       runDiscovery: vi.fn(),
       customerSpend: vi.fn(),
+      productSpend: vi.fn(),
       refreshInference: vi.fn(),
     },
   };
@@ -29,6 +30,9 @@ const TRIAGE = {
   name: "AI threat triage",
   category: "api",
   category_source: "discovery",
+  product_id: "p1",
+  product_name: "Threat Platform",
+  product_source: "discovery",
   build_cost: 181,
   inference_cost: 4200,
   active_users: 540,

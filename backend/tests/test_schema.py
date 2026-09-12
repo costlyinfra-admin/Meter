@@ -16,6 +16,8 @@ ALL_TABLES = [
     "inference_cost",
     "bill_reconciliation",
     "feature_usage",
+    "product",
+    "product_repo",
 ]
 
 

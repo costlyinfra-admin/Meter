@@ -77,6 +77,27 @@ def _add_feature(
     return row[0]
 
 
+def _add_product(
+    conn: psycopg.Connection,
+    tenant_id: str,
+    name: str,
+    description: str,
+    repos: list,
+) -> str:
+    """DEMO ONLY. A product and the repositories it is built in."""
+    row = conn.execute(
+        "INSERT INTO product (tenant_id, name, description) VALUES (%s, %s, %s) RETURNING id",
+        (tenant_id, name, description),
+    ).fetchone()
+    for repo in repos:
+        conn.execute(
+            "INSERT INTO product_repo (tenant_id, product_id, repo) VALUES (%s, %s, %s) "
+            "ON CONFLICT (tenant_id, repo) DO NOTHING",
+            (tenant_id, row[0], repo.lower()),
+        )
+    return row[0]
+
+
 def _add_signal(
     conn,
     tenant_id,
@@ -333,6 +354,25 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         "docs",
     )
 
+    # --- Products (the grouping above features) ---------------------------
+    # Two products over the four features, and SOC copilot deliberately left
+    # unassigned: an empty Unassigned bucket would teach the demo's reader that
+    # everything maps itself, which is not the state they will open the product in.
+    _add_product(
+        conn,
+        tenant_id,
+        "Threat Platform",
+        "Detection and triage for the security operations product.",
+        ["acme-security/platform", "acme-security/detections"],
+    )
+    _add_product(
+        conn,
+        tenant_id,
+        "Customer Reporting",
+        "Customer-facing posture and incident reporting.",
+        ["acme-security/reporting"],
+    )
+
     # --- Evidence signals (the trail) -------------------------------------
     # PR signals carry their author (actor) so build cost attributes per developer.
     _add_signal(conn, tenant_id, triage, "branch", "feature/threat-*", "high")
@@ -341,7 +381,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         tenant_id,
         triage,
         "pr",
-        "acme/core#1421",
+        "acme-security/platform#1421",
         "high",
         actor="alice",
         commits=9,
@@ -355,7 +395,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         tenant_id,
         triage,
         "pr",
-        "acme/core#1432",
+        "acme-security/platform#1432",
         "high",
         actor="alice",
         commits=5,
@@ -369,7 +409,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         tenant_id,
         triage,
         "pr",
-        "acme/core#1440",
+        "acme-security/platform#1440",
         "high",
         actor="bob",
         commits=7,
@@ -383,7 +423,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         tenant_id,
         report,
         "pr",
-        "acme/core#1455",
+        "acme-security/reporting#1455",
         "high",
         actor="alice",
         commits=6,
@@ -392,13 +432,13 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         deletions=60,
         merged_at=_dt.date(2026, 5, 19),
     )
-    _add_signal(conn, tenant_id, soc, "repo", "acme/soc-copilot", "med")
+    _add_signal(conn, tenant_id, soc, "repo", "acme-security/soc-copilot", "med")
     _add_signal(
         conn,
         tenant_id,
         soc,
         "pr",
-        "acme/soc-copilot#12",
+        "acme-security/soc-copilot#12",
         "med",
         actor="carol",
         commits=4,
@@ -412,7 +452,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         tenant_id,
         vuln,
         "pr",
-        "acme/core#1490",
+        "acme-security/detections#1490",
         "low",
         actor="dave",
         commits=3,
@@ -425,13 +465,31 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
     # --- Build cost (by developer and tool) -------------------------------
     # developer_id matches the PR author (actor) so per-developer PRs line up.
     _add_build_cost(
-        conn, tenant_id, triage, "alice", "claude_code", "acme/core#1421", 117.00, "high"
+        conn,
+        tenant_id,
+        triage,
+        "alice",
+        "claude_code",
+        "acme-security/platform#1421",
+        117.00,
+        "high",
     )
-    _add_build_cost(conn, tenant_id, triage, "bob", "cursor", "acme/core#1440", 64.00, "med")
     _add_build_cost(
-        conn, tenant_id, report, "alice", "claude_code", "acme/core#1455", 88.50, "high"
+        conn, tenant_id, triage, "bob", "cursor", "acme-security/platform#1440", 64.00, "med"
     )
-    _add_build_cost(conn, tenant_id, soc, "carol", "copilot", "acme/soc-copilot#12", 42.25, "med")
+    _add_build_cost(
+        conn,
+        tenant_id,
+        report,
+        "alice",
+        "claude_code",
+        "acme-security/reporting#1455",
+        88.50,
+        "high",
+    )
+    _add_build_cost(
+        conn, tenant_id, soc, "carol", "copilot", "acme-security/soc-copilot#12", 42.25, "med"
+    )
     # Unattributed build cost — a developer whose PRs didn't map to a feature.
     _add_build_cost(conn, tenant_id, None, "dave", "cursor", None, 30.00, "low")
 
@@ -607,7 +665,54 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         _add_trace_demo(conn, tenant_id, {"triage": triage, "report": report})
         _add_prompt_demo(conn, tenant_id, triage)
 
+    # Products are DERIVED, never hand-assigned here: the demo has to show the
+    # mechanism the customer will actually use, and a seed that asserts its own
+    # assignments would be a second attribution path free to disagree with the
+    # first. Runs last, once every feature and signal exists.
+    _derive_products(conn, tenant_id)
+
     return {"features": feature_count, "tenant_id": tenant_id}
+
+
+def _derive_products(conn: psycopg.Connection, tenant_id: str) -> None:
+    """Assign each feature its product from the repo mapping.
+
+    The same rule as products.reassign_from_repos, applied on the seeding
+    (owner) connection rather than through the app role — the seed runs before
+    any session exists. The RULE itself is imported, not copied, so the demo can
+    never drift from what the product does.
+    """
+    from .products import product_for
+
+    mapping = {
+        r[0]: str(r[1])
+        for r in conn.execute(
+            "SELECT repo, product_id FROM product_repo WHERE tenant_id = %s", (tenant_id,)
+        ).fetchall()
+    }
+    by_feature: dict = {}
+    for feature_id, repo in conn.execute(
+        """
+        SELECT feature_id,
+               CASE WHEN signal_type = 'repo' THEN lower(external_ref)
+                    ELSE lower(split_part(external_ref, '#', 1)) END
+        FROM feature_signal
+        WHERE tenant_id = %s AND signal_type IN ('repo', 'pr') AND external_ref LIKE %s
+        """,
+        (tenant_id, "%/%"),
+    ).fetchall():
+        if repo:
+            by_feature.setdefault(str(feature_id), set()).add(repo)
+
+    for (fid,) in conn.execute(
+        "SELECT id FROM feature WHERE tenant_id = %s", (tenant_id,)
+    ).fetchall():
+        product_id = product_for(sorted(by_feature.get(str(fid), set())), mapping)
+        if product_id:
+            conn.execute(
+                "UPDATE feature SET product_id = %s, product_source = 'discovery' WHERE id = %s",
+                (product_id, fid),
+            )
 
 
 def _add_discovery_demo(conn, tenant_id) -> None:
@@ -627,7 +732,12 @@ def _add_discovery_demo(conn, tenant_id) -> None:
         VALUES (%s, 'acme-security', %s, false, 14)
         ON CONFLICT (tenant_id) DO NOTHING
         """,
-        (tenant_id, _json.dumps(["acme-security/platform", "acme-security/detections"])),
+        (
+            tenant_id,
+            _json.dumps(
+                ["acme-security/platform", "acme-security/detections", "acme-security/soc-copilot"]
+            ),
+        ),
     )
     # Two runs: an initial sweep, then a recent top-up — which is what the run
     # history looks like once someone has been using the product for a while.
@@ -647,7 +757,13 @@ def _add_discovery_demo(conn, tenant_id) -> None:
             """,
             (
                 tenant_id,
-                _json.dumps(["acme-security/platform", "acme-security/detections"]),
+                _json.dumps(
+                    [
+                        "acme-security/platform",
+                        "acme-security/detections",
+                        "acme-security/soc-copilot",
+                    ]
+                ),
                 covered_from,
                 covered_to,
                 prs,
@@ -706,8 +822,8 @@ _NEW_FEATURES = [
             ("anthropic", "claude-haiku-4-5", "key:phishing", 520.00, "high"),
         ],
         "build": [
-            ("erin", "claude_code", "acme/core#1502", 96.00, "high", 11, 28),
-            ("frank", "cursor", "acme/core#1509", 58.00, "med", 6, 15),
+            ("erin", "claude_code", "acme-security/detections#1502", 96.00, "high", 11, 28),
+            ("frank", "cursor", "acme-security/detections#1509", 58.00, "med", 6, 15),
         ],
     },
     {
@@ -724,7 +840,7 @@ _NEW_FEATURES = [
             ("anthropic", "claude-sonnet-4-6", "key:sandbox", 360.00, "med"),
         ],
         "build": [
-            ("grace", "claude_code", "acme/core#1521", 134.00, "high", 9, 33),
+            ("grace", "claude_code", "acme-security/detections#1521", 134.00, "high", 9, 33),
         ],
     },
     {
@@ -741,8 +857,8 @@ _NEW_FEATURES = [
             ("openai", "gpt-4o", "proj:compliance", 240.00, "med"),
         ],
         "build": [
-            ("heidi", "copilot", "acme/core#1538", 73.00, "med", 7, 19),
-            ("erin", "claude_code", "acme/core#1544", 41.00, "high", 4, 9),
+            ("heidi", "copilot", "acme-security/platform#1538", 73.00, "med", 7, 19),
+            ("erin", "claude_code", "acme-security/platform#1544", 41.00, "high", 4, 9),
         ],
     },
     {
@@ -758,7 +874,7 @@ _NEW_FEATURES = [
             ("anthropic", "claude-haiku-4-5", "key:anomaly", 380.00, "med"),
         ],
         "build": [
-            ("frank", "cursor", "acme/core#1551", 52.00, "low", 5, 12),
+            ("frank", "cursor", "acme-security/detections#1551", 52.00, "low", 5, 12),
         ],
     },
 ]
@@ -950,7 +1066,7 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         base["triage"],
         "alice",
         "claude_code",
-        "acme/core#1421",
+        "acme-security/platform#1421",
         117.00,
         _bld_hist,
         "high",
@@ -961,7 +1077,7 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         base["report"],
         "alice",
         "claude_code",
-        "acme/core#1455",
+        "acme-security/reporting#1455",
         88.50,
         _bld_hist,
         "high",
@@ -972,7 +1088,7 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         base["soc"],
         "carol",
         "copilot",
-        "acme/soc-copilot#12",
+        "acme-security/soc-copilot#12",
         42.25,
         _bld_hist,
         "med",
@@ -1061,7 +1177,20 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         "data",
     )
     _add_signal(conn, tenant_id, enrich, "branch", "feature/enrich-*", "high")
-    _add_build_cost(conn, tenant_id, enrich, "grace", "claude_code", "acme/core#1560", 68.00, "med")
+    _add_signal(
+        conn,
+        tenant_id,
+        enrich,
+        "pr",
+        "acme-security/platform#1560",
+        "med",
+        actor="grace",
+        commits=6,
+        files_changed=14,
+    )
+    _add_build_cost(
+        conn, tenant_id, enrich, "grace", "claude_code", "acme-security/platform#1560", 68.00, "med"
+    )
     _add_inference_cost(
         conn,
         tenant_id,
@@ -1163,6 +1292,19 @@ _DEMO_ACTIVITY = [
 ]
 
 
+def _repo_for(conn, feature_id: str) -> str:
+    """The repo a demo feature already has pull-request evidence in."""
+    row = conn.execute(
+        """
+        SELECT split_part(external_ref, '#', 1) FROM feature_signal
+        WHERE feature_id = %s AND signal_type = 'pr' AND external_ref LIKE %s
+        ORDER BY external_ref LIMIT 1
+        """,
+        (feature_id, "%/%#%"),
+    ).fetchone()
+    return row[0] if row else "acme-security/console"
+
+
 def _add_activity_demo(conn, tenant_id, feature_ids: list) -> None:
     """A year of merged PRs per developer, so activity can be read per period.
 
@@ -1186,7 +1328,10 @@ def _add_activity_demo(conn, tenant_id, feature_ids: list) -> None:
                     tenant_id,
                     feature_ids[number % len(feature_ids)],
                     "pr",
-                    f"acme/core#{number}",
+                    # The repo this feature already has evidence in, so a year of
+                    # fabricated activity does not drag every feature into one
+                    # product the way a single hardcoded repo would.
+                    f"{_repo_for(conn, feature_ids[number % len(feature_ids)])}#{number}",
                     "high",
                     actor=handle,
                     commits=commits,
@@ -1208,8 +1353,8 @@ _NON_AI_FEATURES = [
         "branch": "feature/sso-*",
         "category": "auth",
         "build": [
-            ("dave", "cursor", "acme/core#1571", 74.00, 12, 31),
-            ("heidi", "copilot", "acme/core#1578", 41.00, 7, 18),
+            ("dave", "cursor", "acme-security/console#1571", 74.00, 12, 31),
+            ("heidi", "copilot", "acme-security/console#1578", 41.00, 7, 18),
         ],
     },
     {
@@ -1217,14 +1362,14 @@ _NON_AI_FEATURES = [
         "desc": "Scheduled CSV/PDF exports of usage and invoices for finance teams.",
         "branch": "feature/billing-export-*",
         "category": "reporting",
-        "build": [("bob", "cursor", "acme/core#1583", 52.00, 9, 22)],
+        "build": [("bob", "cursor", "acme-security/reporting#1583", 52.00, 9, 22)],
     },
     {
         "name": "Audit log viewer",
         "desc": "Searchable, filterable audit trail of every action taken in the console.",
         "branch": "feature/audit-log-*",
         "category": "ui",
-        "build": [("grace", "claude_code", "acme/core#1590", 63.00, 8, 19)],
+        "build": [("grace", "claude_code", "acme-security/console#1590", 63.00, 8, 19)],
     },
 ]
 
@@ -1285,14 +1430,21 @@ def _add_self_hosted_demo(conn, tenant_id) -> None:
         tenant_id,
         feature,
         "pr",
-        "acme/core#1566",
+        "acme-security/console#1566",
         "high",
         actor="grace",
         commits=8,
         files_changed=22,
     )
     _add_build_cost(
-        conn, tenant_id, feature, "grace", "claude_code", "acme/core#1566", 78.00, "high"
+        conn,
+        tenant_id,
+        feature,
+        "grace",
+        "claude_code",
+        "acme-security/console#1566",
+        78.00,
+        "high",
     )
 
     # Fine-tuning run -> one-time BUILD cost (separate from inference, invariant 2).
