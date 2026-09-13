@@ -54,8 +54,8 @@ export function DeveloperBreakdown({
         <div className="empty-state">
           <p className="empty-title">No build cost yet</p>
           <p className="muted">
-            Import a coding-tool spend CSV or connect a seat source on Connect sources to see spend by
-            developer.
+            Import a coding-tool spend CSV or connect a seat source on Connect sources to see spend
+            by developer.
           </p>
         </div>
       ) : (

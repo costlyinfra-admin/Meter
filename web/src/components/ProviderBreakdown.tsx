@@ -102,7 +102,8 @@ export function ProviderBreakdown({
         <div className="empty-state">
           <p className="empty-title">No cost yet</p>
           <p className="muted">
-            Connect your providers on Connect sources and run a sync to see spend by provider and tool.
+            Connect your providers on Connect sources and run a sync to see spend by provider and
+            tool.
           </p>
         </div>
       ) : (

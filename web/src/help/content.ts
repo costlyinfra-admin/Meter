@@ -245,7 +245,9 @@ export const CATEGORIES: Category[] = [
           p(
             "Providers report spend per workspace and API key. Meter cannot know which of those is production and which is a developer's test key — only you can, so classification is a decision you make, never a guess from a naming convention.",
           ),
-          p("Open a connected provider on [Connect sources](/cost-sources) and set each resource to:"),
+          p(
+            "Open a connected provider on [Connect sources](/cost-sources) and set each resource to:",
+          ),
           list(
             "**Production** — real customer traffic",
             "**Development / Test** — internal experimentation",
