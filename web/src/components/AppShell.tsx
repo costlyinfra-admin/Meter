@@ -6,7 +6,7 @@
  * entire customer UI runs in that tenant (context switched server-side) — no pages
  * are duplicated for the admin.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../auth/AuthContext";
@@ -38,15 +38,14 @@ interface NavItem {
 }
 
 /** The nav in sections, in the order the product is actually used: read the
- *  numbers, see where they come from, act on them, then set up and look things
- *  up. The first section has no heading — Overview is the front door of the
- *  product, not a member of a group. */
+ *  numbers, act on what they say, watch for what changes, then set up and look
+ *  things up. The first section has no heading — Overview is the front door of
+ *  the product, not a member of a group. */
 const NAV: { section?: string; items: NavItem[] }[] = [
   { items: [{ to: "/", label: "Overview", end: true, icon: "overview" }] },
   {
     section: "Analyze",
     items: [
-      { to: "/cost-sources", label: "Cost sources", end: false, icon: "sources" },
       { to: "/applications", label: "Applications", end: false, icon: "applications" },
       { to: "/products", label: "Products", end: false, icon: "products" },
       { to: "/features", label: "Features", end: false, icon: "features" },
@@ -63,18 +62,21 @@ const NAV: { section?: string; items: NavItem[] }[] = [
     ],
   },
   {
-    section: "Act",
+    section: "Monitor",
     items: [{ to: "/alerts", label: "Alerts", end: false, icon: "alerts" }],
   },
   {
-    section: "Set up",
+    // Connecting a provider is setup, not analysis: you do it once, and the
+    // screens above are where you go afterwards.
+    section: "Setup",
     items: [
+      { to: "/cost-sources", label: "Connect sources", end: false, icon: "sources" },
       { to: "/install-sdk", label: "Install SDK", end: false, icon: "sdk" },
       { to: "/settings", label: "Settings", end: false, icon: "settings" },
     ],
   },
   {
-    section: "Learn",
+    section: "Help",
     items: [{ to: "/help", label: "Knowledge base", end: false, icon: "help" }],
   },
 ];
@@ -190,6 +192,11 @@ function NavIcon({ name }: { name: IconName }) {
 
 export function AppShell() {
   const { user, logout, refresh } = useAuth();
+  // The nav scrolls with no scrollbar, so a fade at its bottom edge is the only
+  // sign the list continues. Applied ONLY while something really is below: no
+  // cue when everything fits, and none once you have reached the end.
+  const navRef = useRef<HTMLElement | null>(null);
+  const [navHasMore, setNavHasMore] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const [alertBadge, setAlertBadge] = useState(0);
@@ -235,11 +242,11 @@ export function AppShell() {
     return () => window.removeEventListener(REFRESH_ALERTS_EVENT, refreshBadge);
   }, [refreshBadge]);
 
-  // The Analyze section gains one entry when the module is on, and is the
+  // The Monitor section gains one entry when the module is on, and is the
   // untouched constant otherwise.
   const sections = reconciliation
     ? NAV.map((group) =>
-        group.section === "Analyze"
+        group.section === "Monitor"
           ? {
               ...group,
               items: [
@@ -256,6 +263,24 @@ export function AppShell() {
       )
     : NAV;
 
+  useEffect(() => {
+    const el = navRef.current;
+    if (!el) return;
+    const update = () => setNavHasMore(el.scrollHeight - el.clientHeight - el.scrollTop > 1);
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    // The case that started this: the window shortens, the nav's box shrinks,
+    // and what fitted a moment ago no longer does.
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+    // Re-measured whenever the list itself changes length: an admin sees one
+    // row a customer does not, and Reconciliation appears when it is switched on.
+  }, [user?.is_admin, user?.impersonating, reconciliation]);
+
   const exitImpersonation = async () => {
     await api.stopImpersonate();
     await refresh();
@@ -271,7 +296,7 @@ export function AppShell() {
             Meter
           </span>
         </div>
-        <nav className="sidebar-nav">
+        <nav className={navHasMore ? "sidebar-nav has-more" : "sidebar-nav"} ref={navRef}>
           {sections.map((group, i) => (
             <div key={group.section ?? i} className="nav-group">
               {group.section && <span className="nav-group-label">{group.section}</span>}

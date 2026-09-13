@@ -61,7 +61,7 @@ export const CATEGORIES: Category[] = [
           steps(
             "**Connect GitHub** on [Features](/features). Meter reads your merged pull requests to work out what features exist. Read-only, and a token is optional for public organisations.",
             "**Discover features.** Pick the repositories to analyse and run discovery. You get a list of proposed features, each with the pull requests behind it as evidence. Rename, split, merge or delete them until the list looks like your product.",
-            "**Connect a provider** on [Cost sources](/cost-sources) — Anthropic, OpenAI, or whichever you use. Meter reads its cost API. Read-only, using your own admin credentials, stored encrypted.",
+            "**Connect a provider** on [Connect sources](/cost-sources) — Anthropic, OpenAI, or whichever you use. Meter reads its cost API. Read-only, using your own admin credentials, stored encrypted.",
             "**Sync.** The first sync backfills twelve months so you have history immediately, not in a year.",
           ),
           p(
@@ -215,7 +215,7 @@ export const CATEGORIES: Category[] = [
 
   {
     slug: "cost-sources",
-    title: "Cost sources",
+    title: "Connect sources",
     blurb: "Connecting providers, and telling Meter what each key is for.",
     topics: [
       {
@@ -224,7 +224,7 @@ export const CATEGORIES: Category[] = [
         summary: "Read-only, your own admin credentials, encrypted at rest.",
         blocks: [
           p(
-            "On [Cost sources](/cost-sources), connect the providers you are billed by. Meter reads each provider's cost API — it never sends prompts, never makes model calls on your behalf, and never writes anything to your account.",
+            "On [Connect sources](/cost-sources), connect the providers you are billed by. Meter reads each provider's cost API — it never sends prompts, never makes model calls on your behalf, and never writes anything to your account.",
           ),
           p(
             "Credentials are encrypted before they are stored and are never returned by any API or shown in the UI again. Every table is isolated per tenant at the database level.",
@@ -245,7 +245,7 @@ export const CATEGORIES: Category[] = [
           p(
             "Providers report spend per workspace and API key. Meter cannot know which of those is production and which is a developer's test key — only you can, so classification is a decision you make, never a guess from a naming convention.",
           ),
-          p("Open a connected provider on [Cost sources](/cost-sources) and set each resource to:"),
+          p("Open a connected provider on [Connect sources](/cost-sources) and set each resource to:"),
           list(
             "**Production** — real customer traffic",
             "**Development / Test** — internal experimentation",
@@ -1097,7 +1097,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p("Two things reduce it:"),
           list(
             "**Install the [metering SDK](/install-sdk)** so calls carry a feature id. This is the big one.",
-            "**Classify your keys** on [Cost sources](/cost-sources) so spend at least separates production from development.",
+            "**Classify your keys** on [Connect sources](/cost-sources) so spend at least separates production from development.",
           ),
         ],
       },

@@ -478,9 +478,9 @@ select {
   overflow-y: auto;
   /* No permanent scrollbar: it would sit against the nav labels on every
      screen, including the many where nothing overflows. Scrolling still works
-     by wheel, trackpad, keyboard and touch, and a row cut by the bottom edge is
-     what says the list continues. (.tabs-scroll keeps its thin bar — a
-     horizontal row of tabs has no equivalent hint.) */
+     by wheel, trackpad, keyboard and touch, and the fade below says the list
+     continues. (.tabs-scroll keeps its thin bar — a horizontal row of tabs has
+     no equivalent hint.) */
   scrollbar-width: none;
   /* A flick inside the nav must not start scrolling the page behind it. */
   overscroll-behavior: contain;
@@ -488,6 +488,18 @@ select {
 
 .sidebar-nav::-webkit-scrollbar {
   display: none;
+}
+
+/* The only sign that the list continues, with no scrollbar to be one. A mask
+   rather than an overlaid gradient, so it works against whatever the sidebar's
+   background is in either theme. `has-more` comes from AppShell and is on only
+   while something really is below the fold: a mask cannot read scroll position,
+   so without it the fade would dim the last row once you reached the end, and
+   dim nothing at all on the screens where the list already fits. */
+@supports (mask-image: linear-gradient(black, black)) {
+  .sidebar-nav.has-more {
+    mask-image: linear-gradient(to bottom, black calc(100% - 22px), transparent 100%);
+  }
 }
 
 /* Sections of the nav. The gap above each heading is what does the grouping —

@@ -1,5 +1,5 @@
 /**
- * Cost sources — connect and sync everything that feeds per-feature cost.
+ * Connect sources — connect and sync everything that feeds per-feature cost.
  * Inference (provider cost APIs + self-hosted pools), infrastructure (the cloud
  * bill) and build (coding-tool spend) live here, reusing the same action panels
  * as the rest of the app.
@@ -76,7 +76,7 @@ export function CostSourcesPage() {
   return (
     <div className="content">
       <div className="dash-head">
-        <h1>Cost sources</h1>
+        <h1>Connect sources</h1>
       </div>
       {error && (
         <p className="error" role="alert">

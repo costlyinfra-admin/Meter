@@ -18,6 +18,18 @@ configure({ asyncUtilTimeout: 5000 });
 // components defensive about a gap that only exists in tests.
 Element.prototype.scrollIntoView = Element.prototype.scrollIntoView ?? (() => {});
 
+// Same gap, same treatment: no layout means no ResizeObserver, and the sidebar
+// uses one to know whether its nav has more below the fold. A stub that never
+// fires is the honest shape of it — jsdom has no viewport to resize, so there is
+// no callback for it to deliver.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+
 // The jsdom build here exposes `localStorage` as a bare object with none of the
 // Storage methods on it (`sessionStorage` is real; this one is not). Anything
 // that remembers a preference needs a working one, so install a minimal

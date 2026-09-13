@@ -2,7 +2,7 @@
  * Settings — administrative organization settings only.
  *
  * Deliberately NOT a place to connect sources or manage app functionality:
- * providers live in Cost sources, feature discovery in Features, and the
+ * providers live in Connect sources, feature discovery in Features, and the
  * signed-in identity / Sign out live in the global navigation. This page is just
  * the organization profile, its budget, and privacy preferences, stored at the
  * tenant level.

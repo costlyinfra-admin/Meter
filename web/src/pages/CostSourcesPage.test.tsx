@@ -86,7 +86,7 @@ describe("CostSourcesPage", () => {
 
   it("splits sources into tabs; Inference is the default", async () => {
     renderPage();
-    expect(await screen.findByRole("heading", { name: "Cost sources" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Connect sources" })).toBeInTheDocument();
     // Four tabs, Inference active by default with its connector list shown.
     expect(screen.getByRole("tab", { name: "Inference cost" })).toHaveAttribute(
       "aria-selected",

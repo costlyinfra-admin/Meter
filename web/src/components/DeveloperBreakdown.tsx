@@ -54,7 +54,7 @@ export function DeveloperBreakdown({
         <div className="empty-state">
           <p className="empty-title">No build cost yet</p>
           <p className="muted">
-            Import a coding-tool spend CSV or connect a seat source on Cost sources to see spend by
+            Import a coding-tool spend CSV or connect a seat source on Connect sources to see spend by
             developer.
           </p>
         </div>
@@ -292,7 +292,7 @@ function ActivityGap({
         <p className="empty-title">No pull-request evidence yet</p>
         <p className="muted">
           This table is built from the merged PRs behind each build-cost attribution. Connect GitHub
-          on <Link to="/cost-sources">Cost sources</Link>, then run discovery on{" "}
+          on <Link to="/cost-sources">Connect sources</Link>, then run discovery on{" "}
           <Link to="/features">Features</Link>.
         </p>
       </div>
@@ -311,7 +311,7 @@ function ActivityGap({
           <p className="muted activity-gap-note">
             The last attempt failed
             {coverage.last_run_at ? ` on ${shortDay(coverage.last_run_at)}` : ""}. Check the GitHub
-            connection on <Link to="/cost-sources">Cost sources</Link>.
+            connection on <Link to="/cost-sources">Connect sources</Link>.
           </p>
         )}
       </div>

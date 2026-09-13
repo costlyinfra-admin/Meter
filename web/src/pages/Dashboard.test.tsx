@@ -967,7 +967,7 @@ describe("Dashboard (Overview)", () => {
     const first = renderDashboard();
     fireEvent.click(await screen.findByRole("tab", { name: "By Developer" }));
     expect(await screen.findByText("No pull-request evidence yet")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Cost sources" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Connect sources" })).toHaveAttribute(
       "href",
       "/cost-sources",
     );

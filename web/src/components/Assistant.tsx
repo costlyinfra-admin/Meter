@@ -117,7 +117,7 @@ function pageLabel(pathname: string): string {
   const first = pathname.split("/").filter(Boolean)[0];
   const labels: Record<string, string> = {
     optimize: "Recommendations",
-    "cost-sources": "Cost sources",
+    "cost-sources": "Connect sources",
     features: "Features",
     "install-sdk": "Install SDK",
     alerts: "Alerts",

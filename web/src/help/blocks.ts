@@ -3,7 +3,7 @@
  *
  * Content is data (see content.ts), not markup or markdown, for three reasons:
  * it needs no parser dependency, it is type-checked like the rest of the app, and
- * a topic can link straight into the product — "open [Cost sources](/cost-sources)"
+ * a topic can link straight into the product — "open [Connect sources](/cost-sources)"
  * is a real router link, not a dead string.
  *
  * Rendering lives in render.tsx; this file is data and helpers only, so content

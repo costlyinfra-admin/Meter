@@ -371,7 +371,7 @@ export interface ConnectorActionResult {
   finished_at: string;
 }
 
-/** One infrastructure (cloud) provider on the Cost sources tab. */
+/** One infrastructure (cloud) provider on the Connect sources tab. */
 export interface InfraProvider {
   type: string;
   name: string;

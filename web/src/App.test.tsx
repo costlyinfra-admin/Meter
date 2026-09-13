@@ -92,6 +92,6 @@ describe("App routing", () => {
     renderApp();
     // The Overview page + the sidebar nav both render (proves the shell).
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Cost sources" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect sources" })).toBeInTheDocument();
   });
 });

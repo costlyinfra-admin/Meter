@@ -1,10 +1,11 @@
 /**
  * The shape of the sidebar.
  *
- * Optimize is two destinations now, and the thing that breaks silently is the
- * active state: "/optimize" is a prefix of "/optimize/prompts", so without an
- * explicit `end` both rows light up at once and the nav stops telling the
- * reader where they are.
+ * Two things here break quietly rather than loudly. The active state:
+ * "/optimize" is a prefix of "/optimize/prompts", so without an explicit `end`
+ * both rows light up at once and the nav stops telling the reader where they
+ * are. And the grouping: Reconciliation is inserted at runtime into a section
+ * found BY NAME, so renaming a section silently drops it out of the nav.
  */
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -61,6 +62,60 @@ beforeEach(() => {
 });
 
 describe("Sidebar nav", () => {
+  it("is grouped the way the product is used", async () => {
+    renderAt("/optimize");
+    await screen.findByRole("link", { name: "Recommendations" });
+
+    const groups = [...document.querySelectorAll(".nav-group")].map((g) => ({
+      section: g.querySelector(".nav-group-label")?.textContent ?? null,
+      items: [...g.querySelectorAll("a")].map((a) => a.textContent?.trim()),
+    }));
+
+    // Written in sentence case and rendered uppercase by CSS.
+    expect(groups).toEqual([
+      { section: null, items: ["Overview"] },
+      { section: "Analyze", items: ["Applications", "Products", "Features", "Traces"] },
+      { section: "Optimize", items: ["Recommendations", "Prompts"] },
+      { section: "Monitor", items: ["Alerts"] },
+      { section: "Setup", items: ["Connect sources", "Install SDK", "Settings"] },
+      { section: "Help", items: ["Knowledge base"] },
+    ]);
+  });
+
+  it("puts connecting a provider under Setup, because you do it once", async () => {
+    renderAt("/optimize");
+    const link = await screen.findByRole("link", { name: "Connect sources" });
+    // The label changed; the route did not, so no bookmark or link breaks.
+    expect(link).toHaveAttribute("href", "/cost-sources");
+    const group = link.closest(".nav-group") as HTMLElement;
+    expect(within(group).getByText("Setup")).toBeInTheDocument();
+  });
+
+  it("puts Reconciliation under Monitor once the module is on", async () => {
+    vi.mocked(api.reconSettings).mockResolvedValue({
+      available: true,
+      enabled: true,
+      tolerance_abs: 1,
+      tolerance_pct: 0.5,
+    });
+    renderAt("/optimize");
+
+    // Inserted at runtime into the section named "Monitor". If that section is
+    // ever renamed without updating the insertion, the item vanishes and only
+    // a test like this one notices.
+    const recon = await screen.findByRole("link", { name: "Reconciliation" });
+    expect(recon).toHaveAttribute("href", "/reconciliation");
+    const group = recon.closest(".nav-group") as HTMLElement;
+    expect(within(group).getByText("Monitor")).toBeInTheDocument();
+    expect(within(group).getByRole("link", { name: "Alerts" })).toBeInTheDocument();
+  });
+
+  it("leaves Reconciliation out while the module is off", async () => {
+    renderAt("/optimize");
+    await screen.findByRole("link", { name: "Recommendations" });
+    expect(screen.queryByRole("link", { name: "Reconciliation" })).not.toBeInTheDocument();
+  });
+
   it("offers Recommendations and Prompts together under Optimize", async () => {
     renderAt("/optimize");
     const rec = await screen.findByRole("link", { name: "Recommendations" });
