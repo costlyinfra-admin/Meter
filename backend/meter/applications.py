@@ -1,4 +1,4 @@
-"""AI applications: the product surface a workflow belongs to.
+"""AI applications: the instrumented service or agent a workflow belongs to.
 
 An application is what a customer would name in a sentence — "the support
 agent", "document review". It sits above features so the drill-down reads
@@ -28,7 +28,7 @@ MAX_SLUG = 64
 MAX_NAME = 120
 
 #: How many applications one tenant may auto-create from ingest. Generous for
-#: any real product surface and low enough that a misconfigured client looping
+#: any real set of instrumented services and low enough that a misconfigured client looping
 #: over random slugs fills a bounded amount of the table rather than the disk.
 MAX_APPLICATIONS_PER_TENANT = 100
 

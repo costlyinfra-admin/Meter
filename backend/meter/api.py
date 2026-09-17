@@ -2418,7 +2418,7 @@ def create_app() -> FastAPI:
 
     @app.put("/api/features/{feature_id}/category")
     def set_feature_category(feature_id: str, body: CategoryRequest, user: CurrentUser) -> dict:
-        """Tag a feature with its product surface (or clear the tag)."""
+        """Tag a feature with its type (or clear the tag)."""
         try:
             return features.set_category(user["tenant_id"], feature_id, body.category)
         except features.FeatureNotFound as exc:

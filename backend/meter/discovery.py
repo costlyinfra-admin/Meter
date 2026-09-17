@@ -444,7 +444,7 @@ CATEGORY_LABELS = {
 
 
 def _category(prs: list) -> Optional[str]:
-    """Best guess at a feature's product surface, or None when nothing matches.
+    """Best guess at a feature's type, or None when nothing matches.
 
     None is a real answer: "the PR titles don't say" is more useful than a
     confident wrong tag, because the user is the one who will correct it.

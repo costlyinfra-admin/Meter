@@ -4,7 +4,7 @@
  * Runs discovery against a GitHub org, then lets the user curate the proposals:
  * rename, delete, split (one proposal is really two), merge (two are one), and
  * add a feature manually. Each proposal shows its PR/branch evidence, a
- * discovery-confidence badge, and the product surface it belongs to (which
+ * discovery-confidence badge, and the type it belongs to (which
  * discovery guesses from the PRs and the user can correct here).
  */
 import { useEffect, useState } from "react";

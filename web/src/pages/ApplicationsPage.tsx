@@ -1,6 +1,7 @@
 /**
- * Applications — the product surface above features, and the economics of the
- * workflows each one runs.
+ * Applications — the instrumented services and agents above features, and the
+ * economics of the workflows each one runs. NOT the customer's products, which
+ * group features and carry build cost too.
  *
  * Deliberately built from the same parts as the feature views, because it
  * answers the same question one level up. The list is the Overview's by-feature

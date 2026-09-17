@@ -89,6 +89,22 @@ export const CATEGORIES: Category[] = [
           ),
         ],
       },
+      {
+        slug: "ask-meter",
+        title: "Ask Meter",
+        summary: "The assistant answers from your own data and this handbook, and nothing else.",
+        blocks: [
+          p(
+            "The assistant is not a general chatbot. It answers from two sources: this handbook, for how Meter works, and a read-only snapshot of your own account, for what is actually happening in it.",
+          ),
+          p(
+            "Numbers in an answer come from that snapshot, never from the model's memory. A plausible invented figure is the worst thing an assistant on a cost tool could produce.",
+          ),
+          note(
+            "The snapshot carries nothing that is not already on a screen — no prompt or response text, no customer identifiers, no credentials — and it is read under the same tenant isolation as every other query.",
+          ),
+        ],
+      },
     ],
   },
 
@@ -276,6 +292,44 @@ export const CATEGORIES: Category[] = [
           ),
         ],
       },
+      {
+        slug: "infrastructure",
+        title: "Infrastructure (cloud) cost",
+        summary: "The cloud your product runs on, read in full from AWS, Azure, GCP or Vercel.",
+        blocks: [
+          p(
+            "Model bills and coding-tool spend do not cover the cloud a product actually runs on. Connect a cloud account and Meter reads its cost API in full, keeping every line item's own service name and dimensions verbatim.",
+          ),
+          p(
+            "**Nothing is dropped.** A service Meter has never heard of is still infrastructure, stored with its raw name so it can be reclassified later without re-fetching the bill.",
+          ),
+          p(
+            "**Nothing is counted twice.** Amazon Bedrock spend already arrives through the Bedrock inference connector, which stays its authoritative path. Bedrock line items are recorded here but not counted, and every total filters on that.",
+          ),
+          note(
+            "Infrastructure cost currently lives on its own tab and is **not yet folded into feature cost or the Overview's totals**. Where a feature is assigned, it comes from a cost-allocation tag you activated or a rule you wrote — a service name on its own never implies a feature.",
+          ),
+        ],
+      },
+      {
+        slug: "build-cost-sources",
+        title: "Where build cost comes from",
+        summary: "A seat roster, a CSV export, or entered by hand.",
+        blocks: [
+          p(
+            "**Seat sources.** Connect an identity provider and map an app roster to a priced coding tool and plan. A sync prices each seat and feeds the same pull-request allocator discovery uses, so seats land on features without a spreadsheet.",
+          ),
+          p(
+            "**A CSV.** A Cursor-for-Teams seat export, or any CSV with a developer and an amount. One file can backfill several months at once.",
+          ),
+          p(
+            "**By hand.** Spend with no export at all can be entered directly, and a later sync will not erase what you typed.",
+          ),
+          note(
+            "A seat whose identity cannot be matched to a known pull-request author is still counted — it lands in Unattributed rather than being dropped, or guessed onto a feature it may not belong to.",
+          ),
+        ],
+      },
     ],
   },
 
@@ -296,7 +350,7 @@ export const CATEGORIES: Category[] = [
             "Those pull requests are clustered into proposed features. Each proposal carries the pull requests behind it, so you can always see why Meter thinks a feature exists.",
           ),
           p(
-            "Discovery is **manual**: it runs when you run it. Nothing rediscovers your features on a schedule behind your back.",
+            "Discovery runs when you run it. You can also switch on a **nightly** run from the Features screen — it is off until you do — and choose how far back each one looks.",
           ),
           note(
             "Re-running discovery reuses existing features where it can, rather than deleting and recreating them, so build cost stays attributed and your renames survive.",
@@ -363,6 +417,56 @@ export const CATEGORIES: Category[] = [
     ],
   },
 
+  {
+    slug: "products",
+    title: "Products",
+    blurb: "Grouping features into the things you actually sell.",
+    topics: [
+      {
+        slug: "what-a-product-is",
+        title: "What a product is",
+        summary: "A grouping above features, so you can see what each thing you sell costs.",
+        blocks: [
+          p(
+            "A **product** is a thing you sell. One GitHub organization often holds several, and features live inside them: a product's cost is the cost of its features, with build and run kept apart as they are everywhere else.",
+          ),
+          p(
+            "A feature belongs to the product that owns the repositories its pull requests came from. Discovery records those repositories as evidence, so a product badge can always be traced back to the work behind it.",
+          ),
+          p(
+            "Your choice always wins. Assign a feature to a product by hand and no discovery run — and no re-application of the repository mapping — will overwrite it. That is the same rule a feature's Type follows.",
+          ),
+          note(
+            "A feature whose pull requests span repositories in two different products stays **Unassigned** rather than being guessed into one of them. A majority vote over pull-request counts would be a number you could not check.",
+          ),
+          p(
+            "An [application](/help/dashboards/applications) is not a product. An application is an instrumented service, named by your SDK; a product is your own grouping, and it covers build cost too.",
+          ),
+        ],
+      },
+      {
+        slug: "mapping-repositories",
+        title: "Mapping repositories to products",
+        summary: "Tick which repositories each product is built in; Meter assigns the features.",
+        blocks: [
+          steps(
+            "Open [Products](/products) and add a product for each thing you sell.",
+            "Tick the repositories it is built in. A repository belongs to one product.",
+            "Re-apply the mapping. Every feature whose evidence points at those repositories is assigned.",
+          ),
+          p(
+            "Mapping twenty repositories by hand is the slow way, so Meter proposes products from repository names — `sentinel-api`, `sentinel-web` and `sentinel-ingest` become a suggested **Sentinel**. Nothing is created until you accept a suggestion.",
+          ),
+          p(
+            'For a repository that several products genuinely share, make a product for it — "Platform", "Shared" — rather than splitting its cost by a percentage nobody could defend.',
+          ),
+          note(
+            "Features spanning two products are listed on the Products page for you to decide. That list is the only part of the mapping that needs a person.",
+          ),
+        ],
+      },
+    ],
+  },
   {
     slug: "sdk",
     title: "The metering SDK",
@@ -587,12 +691,76 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
         ],
       },
+      {
+        slug: "by-product",
+        title: "By Product",
+        summary: "What each thing you sell cost to build and to run, and how that moved.",
+        blocks: [
+          p(
+            "One row per product, with build cost and inference cost in separate columns, the features it holds and the repositories behind it. Above the table, a stacked bar per month shows one kind of money at a time — the toggle says which, because a segment combining the two would be a blended figure this product never shows.",
+          ),
+          p(
+            "Two rows sit beneath the products and they are not the same thing. **Unassigned** is spend on features that belong to no product yet: map a repository and it moves. **Unattributed** is spend Meter cannot tie to any feature at all.",
+          ),
+          note(
+            "Part of Unattributed is the gap between a provider's bill and what your SDK metered. It has no row to move, so it can never belong to a product however complete your mapping becomes.",
+          ),
+        ],
+      },
+      {
+        slug: "traces",
+        title: "Traces",
+        summary: "One agent run, step by step, and what each step cost.",
+        blocks: [
+          p(
+            "A monthly total answers what a feature cost. A **trace** answers why one run cost what it did: the steps it took, in order, each with its model, tokens, latency and price.",
+          ),
+          p(
+            "Traces arrive from the metering SDK or from OpenTelemetry. Each finished model step is priced with the same price book the monthly totals use, so a trace and a total are two views of one number rather than two numbers that can drift.",
+          ),
+          note(
+            "Prompt and response text never arrives. A field that would carry content is refused loudly rather than dropped quietly, so instrumenting content capture tells you it was refused instead of leaving you believing it worked.",
+          ),
+        ],
+      },
+      {
+        slug: "applications",
+        title: "Applications",
+        summary: "The instrumented service or agent a run belongs to.",
+        blocks: [
+          p(
+            'An **application** is what your SDK calls itself — "support-agent", "document-review". It appears the first time an instrumented workflow reports a run, named by the slug you set in its environment, so instrumenting a service is one line rather than a setup step.',
+          ),
+          p(
+            "It reads like the feature views one level up: spend, runs, cost per run, error rate, and which features each application touched.",
+          ),
+          note(
+            "An application is not a [product](/help/products/what-a-product-is). It covers only instrumented spend — no build cost, and no provider spend that arrived without the SDK — so the two answer different questions.",
+          ),
+        ],
+      },
+      {
+        slug: "budget-and-forecast",
+        title: "Budget and forecast",
+        summary: "Set a budget; Meter projects the open month from the spend already observed.",
+        blocks: [
+          p(
+            "Set a monthly or annual budget in [Settings](/settings). There is no budget until you set one, and Meter never invents a default — a missing budget is a real answer the Overview will show you.",
+          ),
+          p(
+            "The Overview then forecasts the open month from the daily spend so far. A month that is over is never projected: it reports its final figure and says so.",
+          ),
+          p(
+            "A window spanning several months gets its budget prorated by calendar days, and the panel shows how it arrived there. A number nobody can explain is not much use to a CFO.",
+          ),
+        ],
+      },
     ],
   },
 
   {
     slug: "optimize",
-    title: "Optimization Copilot",
+    title: "Optimize",
     blurb: "Where the money is going that it does not need to.",
     topics: [
       {
@@ -651,6 +819,44 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
           p(
             "This is the part most cost tools skip. An estimate that is never checked against the invoice is a guess with a dollar sign on it.",
+          ),
+        ],
+      },
+      {
+        slug: "prompts",
+        title: "Prompts",
+        summary: "The prompts your product runs, what they cost, and how they get here.",
+        blocks: [
+          p(
+            "Meter can only improve a prompt it has seen, and this is the one place it stores prompt text at all. Collection is **off** until someone in your organization turns it on deliberately — see [Prompt optimization and your prompts](/help/trust/prompt-optimization) for what that consent covers.",
+          ),
+          p(
+            "With it on, the SDK sends the prompt template and a small number of short samples — never every call. Samples are encrypted, kept for 30 days, and the calls and cost shown on this screen come from metering rather than from the samples, so a handful of samples never stands in for your traffic.",
+          ),
+          p(
+            "Opening a prompt's text is an act, and Meter records who did it and when. The screen shows **Hidden** until you ask for it.",
+          ),
+          note(
+            "Withdrawing consent destroys the key those samples were encrypted with, which makes them unreadable rather than merely deleted.",
+          ),
+        ],
+      },
+      {
+        slug: "testing-a-rewrite",
+        title: "Testing a rewrite",
+        summary: "A cheaper prompt is a suggestion until it has been replayed against real inputs.",
+        blocks: [
+          p(
+            "Meter proposes a shorter prompt with a reason for every change. Until it has been tested it carries no dollar figure and says it is untested, because a saving nobody has measured is a guess.",
+          ),
+          p(
+            "Testing replays real captured inputs through both the current prompt and the rewrite on your own model, then compares the answers: deterministic checks first, then a model asked to judge each pair **both ways round**, so a judge that contradicts itself scores a tie rather than a win.",
+          ),
+          p(
+            "The decision rule belongs to Meter, not to the judge. A rewrite is recommended only when nothing came back broken and it is not worse on balance — and the saving you are shown is per call, scaled by your metered traffic.",
+          ),
+          note(
+            "Replaying makes real model calls, so it needs a key that can make them; the read-only cost-API key cannot. A monthly cap bounds what testing can spend, and the screen shows the estimate and what is left before anything is charged.",
           ),
         ],
       },
@@ -919,7 +1125,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             ],
           ),
           note(
-            "Scope a run-level alert to an **AI application** to alert per product surface. Provider and model scopes are not offered here, because a single run can call several providers and belongs wholly to none of them.",
+            "Scope a run-level alert to an **AI application** to alert per instrumented service. Provider and model scopes are not offered here, because a single run can call several providers and belongs wholly to none of them.",
           ),
           p(
             "These reuse everything else about alerts — the same channels, cooldowns, incidents and recovery notifications.",

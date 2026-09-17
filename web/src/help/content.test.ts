@@ -11,7 +11,10 @@ import { search } from "./search";
 const ROUTES = new Set([
   "/",
   "/optimize",
+  "/optimize/prompts",
   "/products",
+  "/applications",
+  "/traces",
   "/cost-sources",
   "/features",
   "/install-sdk",
