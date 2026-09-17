@@ -277,7 +277,13 @@ describe("Dashboard (Overview)", () => {
     const potential = (await screen.findByRole("heading", { name: "Potential savings" })).closest(
       "article",
     )!;
-    expect(await within(potential).findByText("$1,840")).toBeInTheDocument();
+    // Asserted on the card's own text rather than by querying for the figure:
+    // this card has three states — the number, "Calculating…" while the Optimize
+    // request is in flight, and "Unavailable" when it failed — and a bare
+    // findByText reports only that an element was missing, which says nothing
+    // about WHICH state was on screen. This has failed twice in CI and never
+    // here; when it happens again the message names the state.
+    await waitFor(() => expect(potential.textContent).toContain("$1,840"));
     const realized = screen.getByRole("heading", { name: "Savings realized" }).closest("article")!;
     expect(within(realized).getByText("$300")).toBeInTheDocument();
     expect(within(realized).getByText(/\$3,600 annualized/)).toBeInTheDocument();
