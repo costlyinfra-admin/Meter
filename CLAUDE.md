@@ -12,11 +12,12 @@ Standing instructions for building Meter. Read these before any work.
 ## What Meter is
 A SaaS that disaggregates a company's blended AI bill into **per-feature cost** — what each feature cost to **build** (AI coding tools) and to **run** (inference). Buyer is a **CTO/CFO** (a business-decision tool, not a developer tool). First vertical: cybersecurity. Clean-slate product — **no relation to any prior fork, scanner, or codebase.**
 
-## The two source-of-truth docs
+## The source-of-truth docs
 - `docs/meter-design-doc.md` — canonical spec (intent, data model, attribution, screens). **The design doc wins on intent.**
-- `docs/build-plan.md` — ordered milestones (M0–M8) with acceptance criteria. **Work one milestone at a time, in order; stop at each boundary for review.**
+- `docs/build-plan.md` — the original milestones M0–M8, **all of which are complete**, each annotated with what is actually true today and where the build deviated. Read it for history and for its *Known gaps* list; it is no longer the backlog.
+- `docs/optimization-opportunities-spec.md` and `docs/prompt-optimization-spec.md` — **where the live backlog is.** Start here for what to build next.
 
-If either is wrong or underspecified, flag it and propose an update — don't silently guess.
+If any of these is wrong or underspecified, flag it and propose an update — don't silently guess.
 
 ## Non-negotiable invariants
 1. **Connector path is the must-ship core** and must stand alone. The metering hook (M7) is a precision tier — it must never be required for onboarding or first value.
@@ -32,7 +33,9 @@ If either is wrong or underspecified, flag it and propose an update — don't si
 - Prefer clarity over cleverness; this codebase is maintained by a non-developer founder working through Claude.
 
 ## Out of scope for v1 (do not build)
-Product-analytics usage connectors (Slice 2), Stripe/revenue & quantitative ROI (Slice 3), trends & anomaly alerts (Slice 4). See design doc §11.
+Product-analytics usage connectors (Slice 2) and Stripe/revenue & quantitative ROI (Slice 3). See design doc §11.
+
+Slice 4 (trends & anomaly alerts) **was** on this list and shipped anyway, in August 2026 — trends are on the Overview and alerting is a full subsystem with rules, incidents and delivery. Saying otherwise here was misleading anyone who read it, so it has been removed rather than left as a rule nobody follows.
 
 ## Tone of collaboration
 The founder is non-technical. Explain decisions briefly in plain language, surface trade-offs, and ask before expanding scope. Milestone-by-milestone with review checkpoints is the default working rhythm.
