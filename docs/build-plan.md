@@ -74,9 +74,9 @@ Work **one milestone at a time, in order.** Do not start a milestone until the p
 ## M6 — The three screens
 **Build:** (a) **Features dashboard** — table with build cost, monthly inference cost, active users, cost/user, "Worth it?" indicator, per-row confidence badge, and the Unattributed row. (b) **Feature drill-down** — three headline numbers, build cost by developer, inference trend over time, evidence trail, connector-vs-hook indicator. (c) Finish wiring the onboarding wizard end to end. `feature_usage` can be manual/CSV for now.
 **Acceptance:** A seeded/real tenant renders all three screens; clicking a number opens its evidence trail (the actual signals behind it); build and inference are never shown as one blended figure.
-**Status:** ⚠️ Complete with one honest gap. (a) and (b) shipped and have grown well past three screens — the app now has Overview, Applications, Products, Features, Traces, Recommendations, Prompts, Alerts, Reconciliation, Connect sources, Install SDK, Settings and a knowledge base. (c) was overtaken: the wizard it refers to was deleted in `4a198ae` (see M2).
+**Status:** ✅ Complete. (a) and (b) shipped and have grown well past three screens — the app now has Overview, Applications, Products, Features, Traces, Recommendations, Prompts, Alerts, Reconciliation, Connect sources, Install SDK, Settings and a knowledge base. (c) was overtaken: the wizard it refers to was deleted in `4a198ae` (see M2).
 
-**The gap:** `feature_usage` was never wired up. The table, the service (`features.set_usage`), the route (`PUT /api/features/{id}/usage`) and the client method (`api.setUsage`) all exist, but **no screen calls it** — so Active users, Cost per user and "Worth it?" are populated only by the demo seed and are permanently blank for a real tenant. The plan said "manual/CSV for now"; neither was built. Either build the entry path or stop rendering three columns that can never fill.
+`feature_usage` was the one part of this milestone that never landed: the table, the service and the route existed for months while no screen called any of them, so Active users, Cost per user and "Worth it?" were populated only by the demo seed and were permanently blank for a real tenant. The plan's "manual/CSV for now" was built on 2026-09-18 — a per-feature field on a feature's own page (`ActiveUsersField`) and a paste-a-month CSV import on the Features screen (`UsageImport` → `POST /api/features/usage/import`). Product-analytics connectors are still Slice 2; until then this is how the number arrives.
 
 > **Connector path complete here. This is shippable to the design partner. M7 adds precision.**
 
@@ -116,8 +116,6 @@ product ends at M8, and so the specs above have something to hang from.
 Small, specific, and true as of 2026-09-18. Each is a candidate for the next
 piece of work rather than a defect to be hidden.
 
-- **`feature_usage` has no entry path** (see M6). Three columns can never fill
-  for a real tenant.
 - **Infrastructure cost is in no total.** `infra_cost` is ingested, classified
   and deduped against Bedrock, but it surfaces only on Connect sources — it
   reaches neither the Overview totals nor per-feature attribution. Folding it in
@@ -143,7 +141,7 @@ Report generator jumped 40% this month"), so listing it as forbidden was
 misleading anyone reading this file. `CLAUDE.md` has been corrected to match.
 
 - **Slice 2 — usage-analytics connectors.** Still deferred, and the reason
-  `feature_usage` sits empty. Design doc §11.
+  active users has to be typed or pasted rather than synced. Design doc §11.
 - **Slice 3 — Stripe/revenue and quantitative ROI.** Still deferred. Until it
   lands, "Worth it?" is cost-per-user and is labelled directional.
 - **Slice 4 — trends & anomaly alerts.** ✅ Shipped, from 2026-08-17.

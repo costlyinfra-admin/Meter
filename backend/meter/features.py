@@ -7,7 +7,9 @@ through the app role, so RLS guarantees a tenant only ever touches its own featu
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
 from typing import Optional
 
 import psycopg
@@ -15,6 +17,10 @@ import psycopg
 from . import dashboard, discovery, products
 from .db import app_dsn, connect, tenant_tx
 from .providers import month_start
+
+
+class UsageImportError(Exception):
+    """A usage CSV that cannot be read, named by the row that broke it."""
 
 
 class FeatureNotFound(Exception):
@@ -287,6 +293,133 @@ def set_usage(
             (tenant_id, feature_id, start, active_users, events),
         )
         return _feature(conn, feature_id)
+
+
+def parse_usage_csv(text: str, default_period: Optional[dt.date] = None) -> list[dict]:
+    """Parse a per-feature usage export.
+
+        feature,active_users[,events][,period]
+
+    `feature` is a feature name or its id; names are matched case-insensitively
+    because the person exporting from an analytics tool is typing what they see
+    on the Features screen, not a uuid. Header names are matched the same
+    flexible way the build-cost import matches them.
+
+    Rows are validated here and resolved to features by the caller, so a bad
+    file is rejected whole rather than half-applied.
+    """
+    reader = csv.DictReader(io.StringIO(text.strip()))
+    if reader.fieldnames is None:
+        raise UsageImportError("CSV has no header row.")
+    fields = {name.strip().lower(): name for name in reader.fieldnames}
+
+    def pick(row, *names):
+        for n in names:
+            if n in fields and row[fields[n]] not in (None, ""):
+                return row[fields[n]].strip()
+        return None
+
+    def count(raw: str, label: str, i: int) -> int:
+        try:
+            value = int(raw.replace(",", ""))
+        except ValueError as exc:
+            raise UsageImportError(f"Row {i}: invalid {label} '{raw}'.") from exc
+        if value < 0:
+            raise UsageImportError(f"Row {i}: {label} cannot be negative, got '{raw}'.")
+        return value
+
+    rows: list[dict] = []
+    for i, row in enumerate(reader, start=2):  # row 1 is the header
+        if not any((value or "").strip() for value in row.values()):
+            continue  # a trailing blank line is not an error
+        ref = pick(row, "feature", "feature_name", "name", "feature_id", "id")
+        if not ref:
+            raise UsageImportError(f"Row {i}: missing feature.")
+        users_raw = pick(row, "active_users", "users", "active", "mau")
+        if users_raw is None:
+            raise UsageImportError(f"Row {i}: missing active_users.")
+        events_raw = pick(row, "events", "event_count", "requests")
+        period_raw = pick(row, "period", "month")
+        if period_raw:
+            try:
+                period = dt.date.fromisoformat(f"{period_raw[:7]}-01")
+            except ValueError as exc:
+                raise UsageImportError(
+                    f"Row {i}: invalid period '{period_raw}', expected YYYY-MM."
+                ) from exc
+        else:
+            period = month_start(default_period or dt.date.today())
+        rows.append(
+            {
+                "feature": ref,
+                "active_users": count(users_raw, "active_users", i),
+                "events": count(events_raw, "events", i) if events_raw is not None else None,
+                "period": period,
+                "row": i,
+            }
+        )
+    if not rows:
+        raise UsageImportError("CSV has no rows.")
+    return rows
+
+
+def import_usage(tenant_id: str, text: str, period: Optional[dt.date] = None) -> dict:
+    """Load a month of per-feature usage from CSV.
+
+    All or nothing: every row is resolved to a feature before anything is
+    written, so a typo in the last row does not leave half a month loaded and
+    the other half stale. A name that matches no feature is an error rather than
+    a skip — silently dropping a row would show a blank column that the person
+    believes they just filled.
+    """
+    rows = parse_usage_csv(text, default_period=period)
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        by_name: dict = {}
+        by_id: dict = {}
+        for fid, name in conn.execute("SELECT id, name FROM feature").fetchall():
+            by_id[str(fid)] = str(fid)
+            # Two features sharing a name is legal; a name that is ambiguous
+            # cannot be used to address one of them, so it addresses neither.
+            key = name.strip().lower()
+            by_name[key] = None if key in by_name else str(fid)
+
+        resolved = []
+        for entry in rows:
+            ref = entry["feature"]
+            feature_id = by_id.get(ref)
+            if feature_id is None:
+                key = ref.strip().lower()
+                if key in by_name and by_name[key] is None:
+                    raise UsageImportError(
+                        f"Row {entry['row']}: more than one feature is called '{ref}'; "
+                        "use the feature id instead."
+                    )
+                feature_id = by_name.get(key)
+            if feature_id is None:
+                raise UsageImportError(f"Row {entry['row']}: no feature called '{ref}'.")
+            resolved.append((feature_id, entry))
+
+        periods = set()
+        for feature_id, entry in resolved:
+            conn.execute(
+                "DELETE FROM feature_usage WHERE feature_id = %s AND period = %s",
+                (feature_id, entry["period"]),
+            )
+            conn.execute(
+                """
+                INSERT INTO feature_usage
+                    (tenant_id, feature_id, period, active_users, events, source)
+                VALUES (%s, %s, %s, %s, %s, 'csv')
+                """,
+                (tenant_id, feature_id, entry["period"], entry["active_users"], entry["events"]),
+            )
+            periods.add(entry["period"])
+
+    return {
+        "imported": len(resolved),
+        "features": len({fid for fid, _ in resolved}),
+        "periods": sorted(p.isoformat() for p in periods),
+    }
 
 
 def confirm_features(tenant_id: str, feature_ids: Optional[list[str]] = None) -> list[dict]:

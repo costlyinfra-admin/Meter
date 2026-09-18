@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, type ConnectorStatus } from "../../api";
 import { ConnectorRow } from "../../components/ConnectorRow";
 import { ReviewStep } from "./ReviewStep";
+import { UsageImport } from "../../components/UsageImport";
 
 export function FeaturesStep() {
   const [connectors, setConnectors] = useState<ConnectorStatus[] | null>(null);
@@ -57,6 +58,8 @@ export function FeaturesStep() {
       )}
 
       <ReviewStep />
+
+      <UsageImport />
     </div>
   );
 }

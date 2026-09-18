@@ -1924,6 +1924,12 @@ export const api = {
       body: JSON.stringify({ active_users: activeUsers, period }),
     }),
 
+  importUsage: (csv: string, period?: string) =>
+    request<{ imported: number; features: number; periods: string[] }>("/features/usage/import", {
+      method: "POST",
+      body: JSON.stringify({ csv, period }),
+    }),
+
   ingestInference: (provider: string, period?: string, months?: number) =>
     request<{
       total: number;

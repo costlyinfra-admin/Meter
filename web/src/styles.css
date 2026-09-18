@@ -2869,6 +2869,69 @@ button.method-head:hover .method-title {
   margin: 0.4rem 0 0.5rem;
 }
 
+/* ---------------------------------------------------------------------------
+   Active users — the one number in the product that a person types.
+   Sits in the feature's meta line beside the badges and the pickers, and reads
+   as part of that line rather than as a form dropped into it.
+   --------------------------------------------------------------------------- */
+.active-users-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.active-users-label {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.active-users-input {
+  width: 7rem;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+  font-size: 0.86rem;
+}
+
+/* Only visible once there is something to edit, so it must not shout. */
+.active-users-edit {
+  font-size: 0.8rem;
+}
+
+.active-users-error {
+  font-size: 0.8rem;
+}
+
+/* ---- pasting a month of adoption in, on the Features screen ---- */
+.usage-import {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.usage-import h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.usage-import textarea {
+  width: 100%;
+  margin-top: 0.6rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+
+.usage-import .inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 .detail-section {
   background: var(--card);
   border: 1px solid var(--line);

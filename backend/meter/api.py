@@ -525,6 +525,11 @@ class BuildImportRequest(BaseModel):
     period: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}$")
 
 
+class UsageImportRequest(BaseModel):
+    csv: str = Field(min_length=1, max_length=5_000_000)
+    period: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+
+
 class UsageRequest(BaseModel):
     active_users: int = Field(ge=0)
     events: Optional[int] = Field(default=None, ge=0)
@@ -2302,6 +2307,18 @@ def create_app() -> FastAPI:
         s = _parse_period(start) if start else None
         e = _parse_period(end) if end else None
         return dashboard.spend_by_customer(user["tenant_id"], s, e, range)
+
+    @app.post("/api/features/usage/import")
+    def import_feature_usage(body: UsageImportRequest, user: CurrentUser) -> dict:
+        """A month of per-feature adoption, from whatever the customer's
+        analytics tool exports. Until Slice 2 brings product-analytics
+        connectors, this and the per-feature form are the only ways in."""
+        try:
+            return features.import_usage(
+                user["tenant_id"], body.csv, _parse_period(body.period) if body.period else None
+            )
+        except features.UsageImportError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @app.put("/api/features/{feature_id}/usage")
     def set_feature_usage(feature_id: str, body: UsageRequest, user: CurrentUser) -> dict:

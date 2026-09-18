@@ -19,6 +19,7 @@ import {
   type RangeKind,
   type ReviewRange,
 } from "../api";
+import { ActiveUsersField } from "../components/ActiveUsersField";
 import { CategoryBadge, ConfidenceBadge, ProductBadge } from "../components/badges";
 import { CategoryPicker } from "../components/CategoryPicker";
 import { ProductPicker } from "../components/ProductPicker";
@@ -145,11 +146,17 @@ export function FeatureDetail() {
                 await load();
               }}
             />
-            {detail.headline.active_users != null && (
-              <span className="muted">
-                {num(detail.headline.active_users)} active users this period
-              </span>
-            )}
+            {/* Typed in, not connected: see ActiveUsersField. Rendered whether
+                or not a figure exists, because "nobody has told us yet" is the
+                state that needed a way out of it. */}
+            <ActiveUsersField
+              value={detail.headline.active_users}
+              month={detail.end.slice(0, 7)}
+              onSave={async (activeUsers) => {
+                await api.setUsage(detail.feature_id, activeUsers, detail.end.slice(0, 7));
+                await load();
+              }}
+            />
             {detail.headline.avg_latency_ms != null && (
               <span className="muted" title="Average latency of metered (SDK) calls">
                 {num(detail.headline.avg_latency_ms)} ms avg latency
