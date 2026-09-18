@@ -65,6 +65,21 @@ const request = (over = {}) => ({
   ...over,
 });
 
+/**
+ * Await a flush with the event loop held open — see the note on the same helper
+ * in meter.test.mjs. The SDK unrefs its timers on purpose, so nothing keeps the
+ * loop alive while a test awaits delivery, and the runner cancels the test on
+ * whichever Node version does not hold a reference of its own.
+ */
+const flush = async (meter, timeoutMs) => {
+  const keepAlive = setTimeout(() => {}, timeoutMs ?? 3000);
+  try {
+    return await (timeoutMs === undefined ? meter.flush() : meter.flush(timeoutMs));
+  } finally {
+    clearTimeout(keepAlive);
+  }
+};
+
 async function warmed(s = server(), extra = {}, client = anthropic()) {
   const m = meter(s, extra);
   const wrapped = m.wrap(client, {
@@ -74,7 +89,7 @@ async function warmed(s = server(), extra = {}, client = anthropic()) {
     promptVersion: "v7",
   });
   await wrapped.messages.create(request());
-  await m.flush(); // the first call only asks whether capture is open
+  await flush(m); // the first call only asks whether capture is open
   return { s, m, wrapped };
 }
 
@@ -84,7 +99,7 @@ test("capture is off by default", async () => {
   const client = m.wrap(anthropic(), { provider: "anthropic", featureId: "f-1", promptId: "p", promptVersion: "v1" });
   await client.messages.create(request());
   await client.messages.create(request());
-  await m.flush();
+  await flush(m);
   assert.equal(m.captureEnabled, false);
   assert.deepEqual([s.checks.length, s.samples.length], [0, 0]);
   assert.ok(s.events().length > 0);
@@ -94,7 +109,7 @@ test("the first call only asks, and a closed answer sends nothing", async () => 
   const { s, m, wrapped } = await warmed(server({ open: false }));
   assert.equal(s.checks.length, 1);
   for (let i = 0; i < 3; i += 1) await wrapped.messages.create(request());
-  await m.flush();
+  await flush(m);
   assert.equal(s.attempts, 0);
   assert.equal(s.checks.length, 1);
 });
@@ -102,7 +117,7 @@ test("the first call only asks, and a closed answer sends nothing", async () => 
 test("a sample carries the text and the prompt identity", async () => {
   const { s, m, wrapped } = await warmed();
   await wrapped.messages.create(request());
-  await m.flush();
+  await flush(m);
   assert.equal(s.samples.length, 1);
   const [sample] = s.samples;
   assert.ok(sample.template.startsWith("You classify security alerts."));
@@ -138,7 +153,7 @@ test("tool calls, tool results and images are never read", async () => {
       ],
     }),
   );
-  await m.flush();
+  await flush(m);
   const blob = JSON.stringify(s.samples);
   assert.ok(!blob.includes("TOOL-SECRET") && !blob.includes("IMAGE-SECRET"));
   assert.deepEqual(s.samples[0].input, [
@@ -171,9 +186,9 @@ test("OpenAI system and developer text is the template; tool messages are skippe
     max_completion_tokens: 300,
   };
   await client.chat.completions.create(call);
-  await m.flush();
+  await flush(m);
   await client.chat.completions.create(call);
-  await m.flush();
+  await flush(m);
   const [sample] = s.samples;
   assert.equal(sample.template, "You classify alerts.\n\nAnswer with one word.");
   assert.deepEqual(sample.input, [{ role: "user", text: "Alert text" }]);
@@ -184,7 +199,7 @@ test("OpenAI system and developer text is the template; tool messages are skippe
 test("metering events still never carry prompt text", async () => {
   const { s, m, wrapped } = await warmed();
   await wrapped.messages.create(request());
-  await m.flush();
+  await flush(m);
   assert.equal(s.samples.length, 1);
   assert.ok(!JSON.stringify(s.batches).includes(SECRET));
   const done = s.events().filter((e) => e.event_type === "span.completed").at(-1);
@@ -198,7 +213,7 @@ test("a failing redactor sends nothing", async () => {
     },
   });
   await wrapped.messages.create(request());
-  await m.flush();
+  await flush(m);
   assert.equal(s.attempts, 0);
   assert.equal(m.captureDropped, 1);
 });
@@ -206,7 +221,7 @@ test("a failing redactor sends nothing", async () => {
 test("an oversized sample is dropped, not truncated", async () => {
   const { s, m, wrapped } = await warmed();
   await wrapped.messages.create(request({ system: "x".repeat(64 * 1024 + 1) }));
-  await m.flush();
+  await flush(m);
   assert.equal(s.attempts, 0);
   assert.equal(m.captureDropped, 1);
 });
@@ -214,16 +229,16 @@ test("an oversized sample is dropped, not truncated", async () => {
 test("a refusal closes capture for the feature", async () => {
   const { s, m, wrapped } = await warmed(server({ sampleStatus: 403, reason: "feature_not_enabled" }));
   await wrapped.messages.create(request());
-  await m.flush();
+  await flush(m);
   for (let i = 0; i < 3; i += 1) await wrapped.messages.create(request());
-  await m.flush();
+  await flush(m);
   assert.equal(s.attempts, 1);
 });
 
 test("a broken capture endpoint never touches metering or the caller", async () => {
   const { s, m, wrapped } = await warmed(server({ captureDown: true }));
   const reply = await wrapped.messages.create(request());
-  await m.flush();
+  await flush(m);
   assert.equal(reply.content[0].text, "billing");
   assert.equal(m.captureDropped, 1);
   assert.equal(m.dropped, 0);

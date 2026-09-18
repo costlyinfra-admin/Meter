@@ -50,12 +50,37 @@ class Anthropic {
   }
 }
 
+/**
+ * Await a flush with the event loop held open.
+ *
+ * The SDK unrefs every timer it owns, deliberately — a metering hook must never
+ * keep a host process alive, and a test in this file asserts exactly that. The
+ * consequence is that while a test awaits a flush, nothing keeps the loop
+ * running: not the abort deadline, not the retry backoff, not flush's own
+ * timeout. Whether the runner holds a reference of its own varies by Node
+ * version, which is why these pass locally and are cancelled in CI with
+ * "Promise resolution is still pending but the event loop has already
+ * resolved". Holding one here makes these tests observe the SDK rather than the
+ * runner.
+ *
+ * This existed before (8c14721) and was lost when the suite was rewritten for
+ * agent runs; the same failure came back with it.
+ */
+const flush = async (meter, timeoutMs) => {
+  const keepAlive = setTimeout(() => {}, timeoutMs ?? 3000);
+  try {
+    return await (timeoutMs === undefined ? meter.flush() : meter.flush(timeoutMs));
+  } finally {
+    clearTimeout(keepAlive);
+  }
+};
+
 // --- the simple case ------------------------------------------------------
 test("a wrapped call produces a complete one-span trace", async () => {
   const t = capture();
   const m = meter(t);
   await m.wrap(new Anthropic(), { featureId: "answer-generation" }).messages.create({});
-  await m.flush();
+  await flush(m);
 
   assert.deepEqual(
     t.events().map((e) => e.event_type),
@@ -86,7 +111,7 @@ test("a wrapped call that throws is recorded and re-thrown", async () => {
     throw new Error("upstream 500: SECRET-DETAIL");
   };
   await assert.rejects(() => m.wrap(client).messages.create({}), /upstream 500/);
-  await m.flush();
+  await flush(m);
 
   const kinds = t.events().map((e) => e.event_type);
   assert.deepEqual(kinds.slice(-2), ["span.failed", "trace.failed"]);
@@ -99,7 +124,7 @@ test("a method off the instrumented path is passed straight through", async () =
   const client = new Anthropic();
   client.countTokens = async () => 42;
   assert.equal(await meter(t).wrap(client).countTokens(), 42);
-  await meter(t).flush();
+  await flush(meter(t));
   assert.equal(t.events().length, 0);
 });
 
@@ -112,7 +137,7 @@ test("an agent run records its steps in order", async () => {
     await run.tool("retrieve-documents", async () => ["doc"]);
     return run.llm("generate-answer", async () => response());
   });
-  await m.flush();
+  await flush(m);
 
   const kinds = t.events().map((e) => e.event_type);
   assert.equal(kinds[0], "trace.started");
@@ -149,7 +174,7 @@ test("a failing step fails its span and the run, and re-throws", async () => {
       ),
     /boom/,
   );
-  await m.flush();
+  await flush(m);
   assert.equal(t.of("span.failed").length, 1);
   assert.equal(t.of("trace.failed").length, 1);
   assert.equal(t.of("trace.completed").length, 0);
@@ -160,7 +185,7 @@ test("a short run sends no heartbeat at all", async () => {
   const t = capture();
   const m = meter(t, { heartbeatMs: 1000 });
   await m.agent("quick", {}, async () => null);
-  await m.flush();
+  await flush(m);
   assert.equal(t.of("trace.heartbeat").length, 0);
   assert.deepEqual(
     t.events().map((e) => e.event_type),
@@ -172,12 +197,12 @@ test("a long run heartbeats, and stops the moment it ends", async () => {
   const t = capture();
   const m = meter(t, { heartbeatMs: 1000 });
   await m.agent("slow", {}, async () => new Promise((r) => setTimeout(r, 1200)));
-  await m.flush();
+  await flush(m);
   const beats = t.of("trace.heartbeat").length;
   assert.ok(beats >= 1, "it beat while working");
 
   await new Promise((r) => setTimeout(r, 1400));
-  await m.flush();
+  await flush(m);
   // A completed run must never keep claiming to be alive.
   assert.equal(t.of("trace.heartbeat").length, beats);
 });
@@ -213,7 +238,7 @@ test("resuming continues the same trace in another worker", async () => {
     await run.tool("enqueue", async () => null);
   });
   await m.resume(context, async (run) => run.tool("process-document", async () => "done"));
-  await m.flush();
+  await flush(m);
 
   // Both "processes" wrote to one trace, which is the whole point.
   assert.equal(new Set(t.events().map((e) => e.trace_id)).size, 1);
@@ -227,7 +252,7 @@ test("resumed work hangs off the step that queued it", async () => {
     context = { ...run.exportContext(), parent_span_id: "queueing-step" };
   });
   await m.resume(context, async (run) => run.tool("process", async () => null));
-  await m.flush();
+  await flush(m);
 
   const child = t.of("span.completed").find((e) => e.operation_name === "process");
   assert.equal(child.parent_span_id, "queueing-step");
@@ -255,7 +280,7 @@ test("no prompt or response content is ever serialized", async () => {
   await m.agent("resolve", {}, async (run) =>
     run.tool("search", async () => ["MY-SECRET-DOCUMENT"]),
   );
-  await m.flush();
+  await flush(m);
 
   const wire = JSON.stringify(t.batches);
   for (const secret of ["MY-SECRET-PROMPT", "MY-SECRET-DOCUMENT"]) {
@@ -273,7 +298,7 @@ test("prompt identity travels without the prompt", async () => {
       promptHash: "abc123",
     }),
   );
-  await m.flush();
+  await flush(m);
   const done = t.of("span.completed")[0];
   assert.equal(done.prompt_id, "answer-ticket");
   assert.equal(done.prompt_version, "5.0");
@@ -288,7 +313,7 @@ test("every field sent is one the server allows", async () => {
       response({ cache_read_input_tokens: 800, cache_creation_input_tokens: 200 }),
     ),
   );
-  await m.flush();
+  await flush(m);
 
   const allowed = new Set([
     "event_type", "event_id", "trace_id", "span_id", "parent_span_id", "span_kind",
@@ -341,7 +366,7 @@ test("an unfamiliar response still records the step", async () => {
   const t = capture();
   const m = meter(t);
   await m.agent("x", {}, async (run) => run.llm("call", async () => ({ weird: true })));
-  await m.flush();
+  await flush(m);
   // Timing and status survive even when tokens cannot be read.
   const done = t.of("span.completed")[0];
   assert.equal(done.operation_name, "call");
@@ -354,7 +379,7 @@ test("latency is measured without the caller doing anything", async () => {
   await m.agent("x", {}, async (run) =>
     run.tool("slow", () => new Promise((r) => setTimeout(r, 40))),
   );
-  await m.flush();
+  await flush(m);
   assert.ok(t.of("span.completed")[0].latency_ms >= 30);
 });
 
@@ -364,7 +389,7 @@ test("unconfigured is a silent no-op", async () => {
   assert.equal(m.enabled, false);
   const out = await m.agent("resolve", {}, async (run) => run.tool("work", async () => 42));
   assert.equal(out, 42);
-  assert.equal(await m.flush(), true);
+  assert.equal(await flush(m), true);
 });
 
 test("a broken endpoint never reaches the caller", async () => {
@@ -374,7 +399,7 @@ test("a broken endpoint never reaches the caller", async () => {
   );
   const out = await m.agent("resolve", {}, async (run) => run.tool("work", async () => "value"));
   assert.equal(out, "value");
-  await m.flush();
+  await flush(m);
   assert.ok(m.dropped > 0, "degradation is visible, not silent");
 });
 
@@ -382,7 +407,7 @@ test("a retry reuses one batch id so the server can dedupe", async () => {
   const t = capture({ fail: 1 });
   const m = meter(t, { retryBackoffMs: [0] });
   await m.agent("resolve", {}, async (run) => run.llm("answer", async () => response()));
-  await m.flush();
+  await flush(m);
   assert.ok(t.calls >= 2);
   // Identical id across attempts is what makes an ambiguous timeout safe.
   assert.equal(new Set(t.batches.map((b) => b.batch_id)).size, 1);
@@ -392,7 +417,7 @@ test("a rejected batch is dropped rather than hammered", async () => {
   const t = capture({ fail: 99, status: 400 });
   const m = meter(t, { retryBackoffMs: [0] });
   await m.agent("resolve", {}, async () => null);
-  await m.flush();
+  await flush(m);
   // A 400 fails identically forever; retrying only hurts the endpoint.
   assert.equal(t.calls, 1);
   assert.ok(m.dropped > 0);
@@ -440,7 +465,7 @@ test("environment and release ride on every event", async () => {
   const t = capture();
   const m = meter(t, { environment: "staging", releaseVersion: "2026.9.1" });
   await m.agent("resolve", {}, async (run) => run.tool("x", async () => null));
-  await m.flush();
+  await flush(m);
   assert.ok(t.events().every((e) => e.environment === "staging"));
   assert.ok(t.events().every((e) => e.release_version === "2026.9.1"));
 });
