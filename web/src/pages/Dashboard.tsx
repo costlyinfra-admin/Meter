@@ -147,13 +147,19 @@ export function Dashboard() {
   // fetched on its own so a slow or failing calculation there can never delay
   // or break the Overview — the cards say "calculating" and the page is fine.
   useEffect(() => {
+    // Nothing to ask until the Overview's own data lands: calling without a
+    // period returns the server's default month, which is a saving for a period
+    // the reader did not choose. It was then thrown away and refetched the
+    // moment the real range arrived, so the cards filled, blanked back to
+    // "Calculating…" and filled again.
+    if (!data?.end) return;
     let live = true;
     setSavings(null);
     setSavingsFailed(false);
     (async () => {
       try {
         // The endpoint takes a month (YYYY-MM); data.end is a full date.
-        const overview = await api.copilotOverview(data?.end?.slice(0, 7));
+        const overview = await api.copilotOverview(data.end.slice(0, 7));
         if (!live) return;
         setSavings({
           // Measured and modelled are both real opportunities; directional ones

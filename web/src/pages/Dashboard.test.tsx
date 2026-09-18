@@ -277,16 +277,33 @@ describe("Dashboard (Overview)", () => {
     const potential = (await screen.findByRole("heading", { name: "Potential savings" })).closest(
       "article",
     )!;
-    // Asserted on the card's own text rather than by querying for the figure:
-    // this card has three states — the number, "Calculating…" while the Optimize
-    // request is in flight, and "Unavailable" when it failed — and a bare
-    // findByText reports only that an element was missing, which says nothing
-    // about WHICH state was on screen. This has failed twice in CI and never
-    // here; when it happens again the message names the state.
-    await waitFor(() => expect(potential.textContent).toContain("$1,840"));
+    // Both cards come from one response, so they must be asserted together:
+    // separately, a snapshot taken between two renders can catch one filled and
+    // the other still "Calculating…", which is exactly how CI failed. Asserting
+    // on the cards' text also names the state they were in when it does fail.
     const realized = screen.getByRole("heading", { name: "Savings realized" }).closest("article")!;
-    expect(within(realized).getByText("$300")).toBeInTheDocument();
-    expect(within(realized).getByText(/\$3,600 annualized/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(potential.textContent).toContain("$1,840");
+      expect(realized.textContent).toContain("$300");
+      expect(realized.textContent).toContain("$3,600 annualized");
+    });
+  });
+
+  it("does not ask the Optimize engine until it knows the period", async () => {
+    // Held pending: this is the state the guard exists for. Asking now would
+    // fetch the server's default month — a saving for a period nobody chose,
+    // shown briefly and then thrown away when the real range arrived.
+    vi.mocked(api.dashboard).mockImplementation(() => new Promise(() => {}));
+    renderDashboard();
+
+    await waitFor(() => expect(api.dashboard).toHaveBeenCalled());
+    expect(api.copilotOverview).not.toHaveBeenCalled();
+  });
+
+  it("asks for the period actually on screen", async () => {
+    renderDashboard();
+    await screen.findByText("Key insights");
+    await waitFor(() => expect(api.copilotOverview).toHaveBeenCalledWith("2026-05"));
   });
 
   it("keeps the Overview standing when Optimize fails", async () => {
