@@ -47,6 +47,7 @@ from . import (
     entra,
     features,
     hook,
+    human_effort,
     inference,
     infrastructure,
     okta,
@@ -523,6 +524,13 @@ class BuildImportRequest(BaseModel):
     csv: str = Field(min_length=1, max_length=5_000_000)
     tool: Optional[str] = Field(default=None, max_length=20)
     period: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+
+
+class EffortImportRequest(BaseModel):
+    """A timesheet export, pasted or uploaded. Same shape as the other imports:
+    CSV text in JSON, no multipart anywhere in this application."""
+
+    csv: str = Field(min_length=1, max_length=5_000_000)
 
 
 class UsageImportRequest(BaseModel):
@@ -2307,6 +2315,24 @@ def create_app() -> FastAPI:
         s = _parse_period(start) if start else None
         e = _parse_period(end) if end else None
         return dashboard.spend_by_customer(user["tenant_id"], s, e, range)
+
+    # ---- Human effort (the people half of delivery cost) ----------------
+    @app.post("/api/human-effort/import")
+    def import_human_effort(body: EffortImportRequest, user: CurrentUser) -> dict:
+        try:
+            return human_effort.import_csv(user["tenant_id"], body.csv)
+        except human_effort.DuplicateImport as exc:
+            # Not an error in the file — the file is fine, it has simply been
+            # loaded already. 409 so the UI can say that rather than "invalid".
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except human_effort.EffortImportError as exc:
+            # Every failure here is something about the file the customer can
+            # fix, named by row, so it is a 400 carrying the reason verbatim.
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get("/api/human-effort")
+    def list_human_effort(user: CurrentUser, limit: int = Query(default=50, ge=1, le=500)) -> dict:
+        return {"entries": human_effort.recent(user["tenant_id"], limit)}
 
     @app.post("/api/features/usage/import")
     def import_feature_usage(body: UsageImportRequest, user: CurrentUser) -> dict:

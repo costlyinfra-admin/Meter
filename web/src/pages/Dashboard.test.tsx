@@ -1140,6 +1140,9 @@ describe("Dashboard (Overview)", () => {
           prev_amount: 400,
           delta_pct: 50,
           months_active: 1,
+          human_hours: null,
+          human_cost: null,
+          total_delivery_cost: 600,
         },
         {
           customer_id: "globex",
@@ -1150,17 +1153,27 @@ describe("Dashboard (Overview)", () => {
           prev_amount: null,
           delta_pct: null,
           months_active: 1,
+          human_hours: null,
+          human_cost: null,
+          total_delivery_cost: 150,
         },
       ],
       trend: [{ period: "2026-05-01", amount: 750 }],
       inference_total: 5000,
       coverage_pct: 15,
+      human_hours: null,
+      human_cost: null,
+      total_delivery_cost: 750,
+      human_effort_present: false,
+      human_effort_customer_count: 0,
+      human_effort_ever: false,
+      human_effort_trend: [],
     });
     renderDashboard();
     await screen.findByText("Key insights");
 
     fireEvent.click(screen.getByRole("tab", { name: "By Customer" }));
-    expect(await screen.findByText("Inference cost by customer")).toBeInTheDocument();
+    expect(await screen.findByText("Customer economics")).toBeInTheDocument();
 
     // Every customer is listed in the table (the bars above show only the top few).
     const table = screen.getByRole("table");
@@ -1186,6 +1199,13 @@ describe("Dashboard (Overview)", () => {
       trend: [],
       inference_total: 5000,
       coverage_pct: 0,
+      human_hours: null,
+      human_cost: null,
+      total_delivery_cost: 0,
+      human_effort_present: false,
+      human_effort_customer_count: 0,
+      human_effort_ever: false,
+      human_effort_trend: [],
     });
     renderDashboard();
     await screen.findByText("Key insights");

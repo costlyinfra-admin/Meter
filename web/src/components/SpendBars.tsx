@@ -19,11 +19,16 @@ export type Bar = {
 export function SpendBars({
   rows,
   verbatim = false,
+  format = money,
 }: {
   rows: Bar[];
   /** Labels are identifiers the customer chose (a customer id, not a provider
    *  name), so render them exactly as sent rather than title-casing them. */
   verbatim?: boolean;
+  /** How to render an amount. Defaults to money, which is what every caller but
+   *  one wants; the Customer economics tab can rank by HOURS, and printing
+   *  "$40" for forty hours would be a different claim entirely. */
+  format?: (value: number) => string;
 }) {
   return (
     <ul className="provider-bars">
@@ -35,7 +40,7 @@ export function SpendBars({
               {r.meta && <span className="provider-bar-meta"> · {r.meta}</span>}
             </span>
             <span className="provider-bar-amt">
-              {money(r.amount)} · {r.pct.toFixed(0)}%
+              {format(r.amount)} · {r.pct.toFixed(0)}%
             </span>
           </div>
           <div className="provider-bar-track">

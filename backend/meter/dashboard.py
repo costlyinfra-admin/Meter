@@ -207,6 +207,10 @@ def resolve_window(
         return _resolve_range(conn, range_token, start, end)
 
 
+#: Money is rounded once, at the edge, to the cent the UI renders.
+_CENTS = Decimal("0.01")
+
+
 def _month_count(start: dt.date, end: dt.date) -> int:
     return (end.year - start.year) * 12 + (end.month - start.month) + 1
 
@@ -1283,27 +1287,98 @@ def spend_by_customer(
         feats, unattributed = _inference_rollup(conn, start, end)
         inference_total = sum(f["amount"] for f in feats.values()) + unattributed
 
+        # --- human effort (0057) -------------------------------------------
+        # A THIRD cost category, read alongside metered inference and never
+        # mixed into it: `total`, `inference_total` and `coverage_pct` above are
+        # untouched and still mean exactly what they meant. Labour is summed in
+        # Decimal, against the rate stored on each row, so a rate change never
+        # reprices history and no binary float rounds a payroll figure.
+        effort_rows = conn.execute(
+            """
+            SELECT customer_id,
+                   SUM(hours),
+                   SUM(hours * loaded_hourly_rate)
+            FROM human_effort
+            WHERE work_date >= %s AND work_date < %s
+            GROUP BY customer_id
+            """,
+            (start, next_month(end)),
+        ).fetchall()
+        effort_trend_rows = conn.execute(
+            """
+            SELECT date_trunc('month', work_date)::date AS period,
+                   SUM(hours * loaded_hourly_rate)
+            FROM human_effort
+            WHERE work_date >= %s AND work_date < %s
+            GROUP BY period ORDER BY period
+            """,
+            (start, next_month(end)),
+        ).fetchall()
+        # "Has this tenant ever provided effort data?" is a different question
+        # from "did they provide any for THIS period", and the screen has to
+        # tell a customer with no records apart from a product with no feature.
+        effort_ever = bool(conn.execute("SELECT 1 FROM human_effort LIMIT 1").fetchone())
+
+    effort = {cid: {"hours": Decimal(h), "cost": Decimal(c)} for cid, h, c in effort_rows}
+    effort_present = bool(effort_rows)
+
     total = sum(float(a) for _c, a, _r, _m in rows) or 0.0
+    metered = {cid: (a, r, m) for cid, a, r, m in rows}
+
+    # The rows are the UNION of the two sources. A customer somebody logged
+    # hours against but whose calls are not instrumented still belongs on this
+    # screen — with a null AI cost rather than a zero, because "not measured"
+    # and "measured as nothing" are different answers and the second one would
+    # be a lie about a customer who may be the most expensive of all.
     customers = []
-    for cid, amount, requests, months_active in rows:
-        amount = float(amount)
-        requests = int(requests) if requests is not None else 0
+    for cid in list(metered) + [c for c in effort if c not in metered]:
+        row = metered.get(cid)
+        amount = float(row[0]) if row else None
+        requests = int(row[1]) if row and row[1] is not None else 0
+        months_active = int(row[2]) if row else 0
         was = prev.get(cid)
+        mine = effort.get(cid)
+        # Three distinguishable states, and only the third is a number:
+        #   no effort data at all for the period  -> None  ("Not provided")
+        #   effort data exists, none for this one -> None, with the tenant-level
+        #                                            flag saying data was given
+        #   this customer has rows                -> the sum
+        human_cost = float(mine["cost"].quantize(_CENTS)) if mine else None
+        human_hours = float(mine["hours"]) if mine else None
+        # The customer-attributed delivery cost: metered AI + people. Never the
+        # provider bill, never build cost. Present only where at least one half
+        # is known, so an untagged, un-logged customer does not gain a total.
+        if amount is None and human_cost is None:
+            delivery = None
+        else:
+            delivery = round((amount or 0.0) + (human_cost or 0.0), 2)
         customers.append(
             {
                 "customer_id": cid,
+                # None where this customer has no metered calls at all: the
+                # share, cost-per-request and delta below are all about metered
+                # spend and stay null with it.
                 "amount": amount,
-                "pct": (amount / total * 100.0) if total else 0.0,
+                "pct": (amount / total * 100.0) if (amount and total) else 0.0,
                 "requests": requests or None,
                 # Unit economics: what one metered call from this customer costs.
-                "cost_per_request": (amount / requests) if requests else None,
+                "cost_per_request": (amount / requests) if (amount and requests) else None,
                 # Spend over the equal-length window before this one. None means
                 # the customer is new to this window — not a 0% change.
                 "prev_amount": was,
-                "delta_pct": ((amount - was) / was * 100.0) if was else None,
-                "months_active": int(months_active),
+                "delta_pct": ((amount - was) / was * 100.0) if (amount and was) else None,
+                "months_active": months_active,
+                "human_hours": human_hours,
+                "human_cost": human_cost,
+                "total_delivery_cost": delivery,
             }
         )
+    # Keep the existing ordering promise (metered spend, descending) and put
+    # effort-only customers after it rather than letting a null sort anywhere.
+    customers.sort(key=lambda c: (c["amount"] is None, -(c["amount"] or 0.0)))
+
+    human_hours_total = sum((e["hours"] for e in effort.values()), Decimal("0"))
+    human_cost_total = sum((e["cost"] for e in effort.values()), Decimal("0"))
     return {
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -1314,6 +1389,27 @@ def spend_by_customer(
         # Metered spend as a share of the real inference bill for this window.
         "inference_total": inference_total,
         "coverage_pct": (total / inference_total * 100.0) if inference_total else 0.0,
+        # --- human effort. New keys only; nothing above changed meaning. -----
+        # null, not 0, when no effort was provided for this window: the screen
+        # renders "Not provided" from it, and a zero would claim nobody worked.
+        "human_hours": float(human_hours_total) if effort_present else None,
+        "human_cost": float(human_cost_total.quantize(_CENTS)) if effort_present else None,
+        # Customer-attributed delivery cost: metered AI + people, for the
+        # customers on this screen. NOT the company's AI bill — `inference_total`
+        # above is the authoritative figure and is usually larger.
+        "total_delivery_cost": round(total + float(human_cost_total), 2),
+        "human_effort_present": effort_present,
+        # How many of the customers listed here have effort rows this period —
+        # the numerator of the completeness line. The denominator is the union
+        # above, which is what the screen actually shows.
+        "human_effort_customer_count": len(effort),
+        # Set when the tenant has effort data SOMEWHERE but none in this window,
+        # so the screen can say "none in this period" rather than "never given".
+        "human_effort_ever": effort_ever,
+        "human_effort_trend": [
+            {"period": p.isoformat(), "amount": float(Decimal(a).quantize(_CENTS))}
+            for p, a in effort_trend_rows
+        ],
     }
 
 

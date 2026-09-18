@@ -1213,6 +1213,7 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
 
     # 4) Per-customer metered spend (what the SDK adds on top of the connectors).
     _add_customer_demo(conn, tenant_id)
+    _add_human_effort_demo(conn, tenant_id)
 
     # 5) Ordinary (non-AI) features: build cost, no model calls.
     non_ai = _add_non_ai_demo(conn, tenant_id)
@@ -1273,6 +1274,114 @@ def _add_customer_demo(conn, tenant_id) -> None:
                 """,
                 (tenant_id, customer, period, amount, int(amount * calls_per_dollar)),
             )
+
+
+#: DEMO ONLY. Who did human work for which customer, so "Customer economics"
+#: shows the shapes the feature exists to reveal rather than one flat pattern:
+#:
+#:   globex-retail       — high AI cost, almost no people. Self-serve, healthy.
+#:   soylent-logistics   — the opposite, and the point of the whole feature: the
+#:                         SMALLEST metered bill on the screen and the largest
+#:                         labour bill behind it, mostly rework. Reads as a cheap
+#:                         customer until the hours appear.
+#:   northwind-financial — balanced: real AI spend and real engineering.
+#:   vertex-health       — steady support on a mid-sized account.
+#:   initech-legal       — deliberately ABSENT. Somebody has to render as "Not
+#:                         provided", or the screen never demonstrates the
+#:                         difference between no data and no effort.
+#:   meridian-shipping   — effort only: nobody instrumented their calls, so AI
+#:                         cost is unknown while the labour is not.
+#:
+#: (customer, [(person, activity, hours/month, loaded rate)])
+_DEMO_EFFORT = [
+    ("globex-retail", [("Priya", "support", 2.0, 95)]),
+    (
+        "soylent-logistics",
+        [
+            ("Aman", "rework", 26.0, 110),
+            ("Bo", "support", 14.0, 95),
+            ("Chen", "development", 9.0, 130),
+        ],
+    ),
+    (
+        "northwind-financial",
+        [("Aman", "development", 12.0, 110), ("Dara", "review", 4.0, 140)],
+    ),
+    ("vertex-health", [("Alessio", "support", 8.0, 125), ("Priya", "rework", 3.0, 95)]),
+    ("meridian-shipping", [("Dara", "development", 11.0, 140), ("Bo", "support", 5.0, 95)]),
+]
+
+#: Which weekday-ish day of the month each row lands on. Fixed, not random: the
+#: demo has to look the same every time it is seeded.
+_EFFORT_DAYS = (4, 11, 18, 25)
+
+
+def _add_human_effort_demo(conn, tenant_id) -> None:
+    """The people half of delivery cost, for the demo's existing customers.
+
+    Written directly, the same way `_add_customer_demo` writes metered spend: in
+    production these rows come from a CSV the tenant exports from their own time
+    tracking, and there is nothing to fetch.
+
+    Deliberately NOT seeded for every customer, and deliberately not proportional
+    to AI spend. A demo where labour tracks the model bill would suggest the two
+    are the same measurement, which is the belief this feature exists to correct.
+    """
+    periods = _months_ending(DEFAULT_PERIOD, 6)
+    batch = "00000000-0000-4000-8000-0000000000ef"
+    conn.execute(
+        """
+        INSERT INTO human_effort_import (id, tenant_id, checksum, row_count)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (batch, tenant_id, "de" * 32, 0),
+    )
+    rows = 0
+    for customer, people in _DEMO_EFFORT:
+        for period in periods:
+            for i, (person, activity, hours, rate) in enumerate(people):
+                # A month's hours spread over a few days, so the daily grain the
+                # table stores is real rather than one lump per month.
+                per_day = round(hours / len(_EFFORT_DAYS), 2)
+                if per_day <= 0:
+                    continue
+                for day in _EFFORT_DAYS:
+                    # Seasonality, so the trend has some shape to it — the same
+                    # curve the metered spend already follows.
+                    scaled = round(per_day * _SEASON[period.month - 1], 2)
+                    if scaled <= 0:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO human_effort
+                            (tenant_id, work_date, customer_id, person_label, activity_type,
+                             hours, loaded_hourly_rate, source, note, import_batch_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'csv', %s, %s)
+                        """,
+                        (
+                            tenant_id,
+                            period.replace(day=day),
+                            customer,
+                            person,
+                            activity,
+                            scaled,
+                            rate,
+                            _EFFORT_NOTES[activity] if i == 0 else None,
+                            batch,
+                        ),
+                    )
+                    rows += 1
+    conn.execute("UPDATE human_effort_import SET row_count = %s WHERE id = %s", (rows, batch))
+
+
+#: A short, plausible reason per activity, so the imported-rows list is readable.
+_EFFORT_NOTES = {
+    "development": "Customer workflow changes",
+    "support": "Deployment and escalation support",
+    "review": "Solution review",
+    "rework": "Reprocessing after failed runs",
+    "other": "Account work",
+}
 
 
 #: Demo engineering activity for the "By Developer" tab's productivity section.

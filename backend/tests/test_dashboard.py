@@ -811,12 +811,14 @@ def test_demo_seed_fills_the_by_customer_tab(tenant_id, app_env):
     # Metered spend stays a believable SUBSET of the bill, as the tab claims.
     assert 0 < data["coverage_pct"] < 100
     assert data["total"] < data["inference_total"]
-    assert round(sum(c["pct"] for c in data["customers"]), 2) == 100.0
+    assert round(sum(c["pct"] for c in data["customers"]), 2) == 100.0  # of metered spend
 
     # The table is worth looking at: the rows differ from each other.
     assert any(c["delta_pct"] is None for c in data["customers"])  # a new customer
     assert any((c["delta_pct"] or 0) < 0 for c in data["customers"])  # one shrinking
-    per_call = [c["cost_per_request"] for c in data["customers"]]
+    # Metered customers only: the demo also seeds an effort-only customer, whose
+    # AI cost is null rather than zero because nobody instrumented its calls.
+    per_call = [c["cost_per_request"] for c in data["customers"] if c["cost_per_request"]]
     assert max(per_call) > min(per_call) * 10  # unit economics actually vary
 
     # And a trend to draw: 12 months of history for the longest-running customers.

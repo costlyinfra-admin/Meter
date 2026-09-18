@@ -1,23 +1,56 @@
 /**
- * Overview "By Customer" tab — which of the tenant's own customers consumed the
- * inference spend, over the Overview's selected review period.
+ * Overview "By Customer" tab — what it costs to serve each of the tenant's own
+ * customers, in machines and in people.
  *
- * This is the one breakdown provider bills cannot produce: a bill says what was
- * spent, never on whose behalf. It is populated only from SDK-metered calls that
- * carry `metadata.customer_id`, so it is a SUBSET of the authoritative inference
- * bill — the coverage line says how big a subset, and the empty state explains
- * what to install when there is none. Build cost has no customer, so it never
- * appears here (invariant 2).
+ * Two different kinds of number share this screen, and the whole design is
+ * about not letting them blur:
+ *
+ *   **Metered AI cost** comes only from SDK-metered calls carrying
+ *   `metadata.customer_id`. A provider bill says what was spent, never on whose
+ *   behalf, so this is a SUBSET of the authoritative inference bill — the
+ *   coverage line says how big a subset, every time.
+ *
+ *   **Human cost** is hours the tenant uploaded, priced at the loaded rate they
+ *   supplied. Meter neither estimates hours nor holds a rate table.
+ *
+ * Their sum is labelled *customer-attributed delivery cost* and is never called
+ * the AI bill: it covers only the customers on this screen and only their
+ * metered calls. Build cost is not here at all — it is what the team spent
+ * MAKING a feature, it has no customer, and invariant 2 keeps it separate.
+ *
+ * Missing human data renders as "Not provided", never as $0 — "nobody logged
+ * hours" and "nobody worked" are different facts, and the second one would be a
+ * lie about the customer this feature is most useful for.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type CustomerSpend, type ReviewRange } from "../api";
 import { compact, money, num, unitMoney } from "../format";
+import { DeliveryCostTrend } from "./DeliveryCostTrend";
+import { HumanEffortImport } from "./HumanEffortImport";
 import { SpendBars } from "./SpendBars";
-import { TrendChart } from "./TrendChart";
 
 /** Top slice shown as bars; the rest stay in the table below. */
 const TOP_N = 8;
+
+type Customer = CustomerSpend["customers"][number];
+type Metric = "delivery" | "ai" | "human_cost" | "human_hours";
+
+const METRICS: { key: Metric; label: string; of: (c: Customer) => number | null }[] = [
+  { key: "delivery", label: "Delivery cost", of: (c) => c.total_delivery_cost },
+  { key: "ai", label: "AI cost", of: (c) => c.amount },
+  { key: "human_cost", label: "Human cost", of: (c) => c.human_cost },
+  { key: "human_hours", label: "Human hours", of: (c) => c.human_hours },
+];
+
+/** Nothing recorded — said in words, because 0 would be a different claim. */
+function NotProvided({ title }: { title?: string }) {
+  return (
+    <span className="muted not-provided" title={title}>
+      Not provided
+    </span>
+  );
+}
 
 export function CustomerBreakdown({
   range,
@@ -29,6 +62,8 @@ export function CustomerBreakdown({
 }) {
   const [data, setData] = useState<CustomerSpend | null>(null);
   const [failed, setFailed] = useState(false);
+  const [reload, setReload] = useState(0);
+  const [metric, setMetric] = useState<Metric | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -41,17 +76,33 @@ export function CustomerBreakdown({
     return () => {
       active = false;
     };
-  }, [range, refreshKey]);
+  }, [range, refreshKey, reload]);
+
+  // Delivery cost is the point of the screen when there is effort to include;
+  // without it, ranking by "delivery" would just be AI cost under a name that
+  // promises more than it shows.
+  const effective: Metric = metric ?? (data?.human_effort_present ? "delivery" : "ai");
+  const chosen = METRICS.find((m) => m.key === effective) ?? METRICS[1];
+
+  const ranked = useMemo(() => {
+    if (!data) return [];
+    return [...data.customers]
+      .filter((c) => (chosen.of(c) ?? 0) > 0)
+      .sort((a, b) => (chosen.of(b) ?? 0) - (chosen.of(a) ?? 0));
+  }, [data, chosen]);
+
+  const rankedTotal = ranked.reduce((sum, c) => sum + (chosen.of(c) ?? 0), 0);
 
   return (
     <>
       <div className="section-head breakdown-head">
         <div>
-          <h2>Inference cost by customer</h2>
+          <h2>Customer economics</h2>
           <span className="section-sub muted">
-            Who consumed the spend — run cost only, from metered calls tagged with a customer.
+            Understand the metered AI and human effort used to serve each customer.
           </span>
         </div>
+        <HumanEffortImport onImported={() => setReload((n) => n + 1)} />
       </div>
 
       {failed ? (
@@ -62,32 +113,62 @@ export function CustomerBreakdown({
         <NoCustomerData />
       ) : (
         <>
+          <Summary data={data} />
+
           <section className="detail-section">
             <div className="inference-body">
               <div className="inference-col">
-                <span className="chart-title">Metered spend · trend</span>
-                <TrendChart trend={data.trend} />
+                <span className="chart-title">Delivery cost · trend</span>
+                <DeliveryCostTrend
+                  ai={data.trend}
+                  human={data.human_effort_trend}
+                  effortPresent={data.human_effort_present}
+                />
               </div>
               <div className="inference-col">
-                <span className="chart-title">
-                  Top customers · {money(data.total)} metered
-                  {data.customers.length > TOP_N && ` of ${data.customers.length} customers`}
-                </span>
-                {/* Same reason as the table below: these bar labels are the
-                    customers' own identifiers. Masked here rather than inside
-                    SpendBars, which also draws providers and tools — those are
-                    vendor names and carry nothing private. */}
-                <div data-dd-privacy="mask">
-                  <SpendBars
-                    verbatim
-                    rows={data.customers.slice(0, TOP_N).map((c) => ({
-                      label: c.customer_id,
-                      amount: c.amount,
-                      pct: c.pct,
-                      meta: c.requests ? `${compact(c.requests)} calls` : undefined,
-                    }))}
-                  />
+                <div className="chart-title top-customers-head">
+                  <span>Top customers</span>
+                  <label className="metric-pick">
+                    <span className="sr-only">Rank customers by</span>
+                    <select
+                      aria-label="Rank customers by"
+                      value={effective}
+                      onChange={(e) => setMetric(e.target.value as Metric)}
+                    >
+                      {METRICS.map((m) => (
+                        <option key={m.key} value={m.key}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
+                {ranked.length === 0 ? (
+                  <p className="muted">No {chosen.label.toLowerCase()} recorded this period.</p>
+                ) : (
+                  /* Same reason as the table below: these bar labels are the
+                     customers' own identifiers. Masked here rather than inside
+                     SpendBars, which also draws providers and tools — those are
+                     vendor names and carry nothing private. */
+                  <div data-dd-privacy="mask">
+                    <SpendBars
+                      verbatim
+                      rows={ranked.slice(0, TOP_N).map((c) => {
+                        const value = chosen.of(c) ?? 0;
+                        return {
+                          label: c.customer_id,
+                          amount: value,
+                          pct: rankedTotal ? (value / rankedTotal) * 100 : 0,
+                          meta: c.requests ? `${compact(c.requests)} calls` : undefined,
+                        };
+                      })}
+                      // Hours are not dollars; say so rather than drawing "$40".
+                      format={
+                        effective === "human_hours" ? (v) => `${num(Math.round(v))} hrs` : undefined
+                      }
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -97,14 +178,16 @@ export function CustomerBreakdown({
             <p className="section-sub muted">
               <Coverage data={data} />
             </p>
-            <table className="features-table">
+            <table className="features-table customer-table">
               <thead>
                 <tr>
                   <th>Customer</th>
-                  <th className="num">Inference cost</th>
-                  <th className="num">Share</th>
+                  <th className="num">Metered AI cost</th>
                   <th className="num">Requests</th>
                   <th className="num">Cost / request</th>
+                  <th className="num">Human hours</th>
+                  <th className="num">Human cost</th>
+                  <th className="num">Delivery cost</th>
                   <th className="num">vs prior period</th>
                 </tr>
               </thead>
@@ -117,11 +200,29 @@ export function CustomerBreakdown({
                         left to the "mask user input" default, which only covers
                         form fields. */}
                     <td data-dd-privacy="mask">{c.customer_id}</td>
-                    <td className="num">{money(c.amount)}</td>
-                    <td className="num">{c.pct.toFixed(c.pct >= 10 ? 0 : 1)}%</td>
-                    <td className="num">{num(c.requests)}</td>
+                    <td className="num">
+                      {c.amount === null ? (
+                        <NotProvided title="No metered calls carry this customer's id" />
+                      ) : (
+                        money(c.amount)
+                      )}
+                    </td>
+                    <td className="num">{c.requests === null ? "—" : num(c.requests)}</td>
                     <td className="num" title="Metered spend divided by metered calls">
                       {unitMoney(c.cost_per_request)}
+                    </td>
+                    <td className="num">
+                      {c.human_hours === null ? <NotProvided /> : num(c.human_hours)}
+                    </td>
+                    <td className="num">
+                      {c.human_cost === null ? <NotProvided /> : money(c.human_cost)}
+                    </td>
+                    <td className="num">
+                      {c.total_delivery_cost === null ? (
+                        <NotProvided />
+                      ) : (
+                        money(c.total_delivery_cost)
+                      )}
                     </td>
                     <td className="num">
                       <CustomerDelta customer={c} />
@@ -137,22 +238,88 @@ export function CustomerBreakdown({
   );
 }
 
+/** The four figures the screen is for, before any chart. */
+function Summary({ data }: { data: CustomerSpend }) {
+  return (
+    <section className="kpi-row customer-summary" aria-label="Customer economics summary">
+      <article className="kpi-card">
+        <h3 className="kpi-label">Metered AI cost</h3>
+        <div className="kpi-main">
+          <span className="kpi-value">{money(data.total)}</span>
+        </div>
+        <span className="muted kpi-note">from calls tagged with a customer</span>
+      </article>
+      <article className="kpi-card">
+        <h3 className="kpi-label">Human effort</h3>
+        <div className="kpi-main">
+          <span className="kpi-value">
+            {data.human_hours === null ? <NotProvided /> : `${num(Math.round(data.human_hours))}`}
+            {data.human_hours !== null && <span className="kpi-unit"> hrs</span>}
+          </span>
+        </div>
+        <span className="muted kpi-note">
+          {data.human_hours === null ? "no timesheet data for this period" : "hours uploaded"}
+        </span>
+      </article>
+      <article className="kpi-card">
+        <h3 className="kpi-label">Human cost</h3>
+        <div className="kpi-main">
+          <span className="kpi-value">
+            {data.human_cost === null ? <NotProvided /> : money(data.human_cost)}
+          </span>
+        </div>
+        <span className="muted kpi-note">at the loaded rates you supplied</span>
+      </article>
+      <article className="kpi-card">
+        <h3 className="kpi-label">Customer-attributed delivery cost</h3>
+        <div className="kpi-main">
+          <span className="kpi-value">{money(data.total_delivery_cost)}</span>
+        </div>
+        <span
+          className="muted kpi-note"
+          title="Metered AI plus human effort for these customers. Not your total AI bill."
+        >
+          metered AI + people · not the full bill
+        </span>
+      </article>
+    </section>
+  );
+}
+
 /** Metered spend is a subset of the bill — say by how much, every time. */
 function Coverage({ data }: { data: CustomerSpend }) {
-  if (data.inference_total <= 0) {
-    return <>Every metered call in this window carries a customer.</>;
-  }
+  const withEffort = data.human_effort_customer_count;
+  const listed = data.customers.length;
   return (
     <>
-      Tagged calls account for {data.coverage_pct.toFixed(data.coverage_pct >= 10 ? 0 : 1)}% of the{" "}
-      {money(data.inference_total)} inference bill this period ({money(data.total)}). The rest ran
-      without a <code>customer_id</code>, so it isn't attributed to anyone here.
+      {data.inference_total <= 0 ? (
+        <>Every metered call in this window carries a customer. </>
+      ) : (
+        <>
+          Tagged calls account for {data.coverage_pct.toFixed(data.coverage_pct >= 10 ? 0 : 1)}% of
+          the {money(data.inference_total)} inference bill this period ({money(data.total)}). The
+          rest ran without a <code>customer_id</code>, so it isn't attributed to anyone here.{" "}
+        </>
+      )}
+      {/* The denominator is the customers LISTED here — the union of metered and
+          effort-logged — not every customer the company has, which Meter has no
+          way to know. */}
+      {withEffort > 0 ? (
+        <>
+          Human-effort data was provided for {withEffort} of {listed} customer
+          {listed === 1 ? "" : "s"} shown in this period.
+        </>
+      ) : data.human_effort_ever ? (
+        <>No human effort was recorded in this period, though earlier periods have it.</>
+      ) : (
+        <>No human effort has been uploaded yet, so delivery cost is metered AI only.</>
+      )}
     </>
   );
 }
 
 /** Change vs the equal-length window before. New customers aren't a 0% change. */
-function CustomerDelta({ customer }: { customer: CustomerSpend["customers"][number] }) {
+function CustomerDelta({ customer }: { customer: Customer }) {
   if (customer.delta_pct === null || customer.prev_amount === null) {
     return <span className="muted">new</span>;
   }

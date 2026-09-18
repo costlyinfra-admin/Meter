@@ -63,6 +63,26 @@ This split is core and comes directly from the customer:
 
 Build cost is **one-time-ish** (concentrated during development, with a long tail of maintenance). Inference cost is **recurring monthly**. We always show them separately — never blended — because they answer different questions ("was the build efficient?" vs. "is this feature expensive to keep alive?").
 
+### 4.1 Human effort (a third category, added 2026-09-18)
+
+A third kind of cost, stored and shown on its own: **the hours a person spent serving a named customer**, priced at a loaded hourly rate.
+
+| Category | What it is | Source of truth |
+|---|---|---|
+| **Human effort** | Development, support, review or rework done *for a customer*. | A CSV the company exports from wherever it already tracks time |
+
+**Why it exists.** The model bill hides something the build/inference split does not: a customer that is cheap to run can be expensive to keep. One that costs $700 a month in metered calls and 150 hours of rework is the least profitable account in the book, and until this existed the product showed only the $700.
+
+**What Meter does and does not do.** It stores hours and the loaded hourly rate supplied alongside them, and multiplies. It does **not** estimate hours, infer them from commits or tickets, or hold a rate table of its own — all three would turn a stated fact into a guess about somebody's salary. `hours × loaded_hourly_rate` is the whole calculation, and the rate is stored per row so a later change never reprices history.
+
+**How it relates to the other two.**
+
+- It is **not build cost.** Build cost is what the team spent *making* a feature; it has no customer and is never attributed to one. Nothing in `human_effort` reaches `build_cost`, and §4's separation is unchanged.
+- It is **not inference.** It never touches `inference_cost`, the reconciliation against the provider bill, or the Unattributed bucket.
+- It attributes to a **customer**, with an optional feature. Effort that maps to no feature is still counted for its customer rather than dropped.
+
+**Customer-attributed delivery cost** = metered customer inference + human cost, for the customers on the By Customer screen. It is labelled as such everywhere it appears and is **not the company's AI bill**: the authoritative inference total is larger, because most calls carry no `customer_id`. Build cost and general infrastructure are not in it.
+
 ## 5. Core concept: the feature as spine
 
 ```
@@ -166,6 +186,11 @@ A linear three-step flow:
 3. **Confirm & go live.** The user confirms the feature list and lands on the dashboard with real connector-based numbers. The optional hook is offered here as the precision upgrade (with copy-paste SDK snippets) — install now or later; it never blocks going live.
 
 The promise is "from signup to first real numbers in under 10 minutes," and onboarding is where the customer decides if the product is real.
+
+### 9.2b By Customer — customer economics
+The one breakdown a provider bill cannot produce: a bill records what was spent, never on whose behalf. Populated from SDK-metered calls carrying `metadata.customer_id`, so it is a **subset** of the authoritative inference bill and says how big a subset every time it is shown.
+
+Alongside metered AI cost it shows **human effort** (§4.1) — hours and their cost — and their sum as *customer-attributed delivery cost*. Customers are the union of those with metered spend and those with logged effort, so a customer whose calls are not instrumented still appears, with a null AI cost rather than a zero. Missing effort renders as "Not provided": "nobody logged hours" and "nobody worked" are different facts, and only one of them is a number.
 
 ### 9.3 Feature drill-down
 Everything for one feature on one page: the three headline numbers up top, **build cost by developer** (with which coding tool each used) on the left, **inference cost trend over time** on the right, and the **evidence trail** at the bottom so any number can be defended. Surfaces per-developer-seat detail on the build side, and shows whether each inference figure is connector-derived or hook-metered.

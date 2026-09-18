@@ -21,7 +21,7 @@ If any of these is wrong or underspecified, flag it and propose an update — do
 
 ## Non-negotiable invariants
 1. **Connector path is the must-ship core** and must stand alone. The metering hook (M7) is a precision tier — it must never be required for onboarding or first value.
-2. **Never blend build cost and inference cost.** They are always shown and stored separately.
+2. **Never blend build cost and inference cost.** They are always shown and stored separately. This is absolute and is not softened by the clause that follows. *Human effort* (design doc §4.1) is a third category, stored on its own: it may be added to **metered customer inference** to give a clearly labelled *customer-attributed delivery cost*, which is never presented as the provider bill and never includes build cost.
 3. **Every cost row carries a `confidence` value**, and every number must be explainable via its evidence trail (the `feature_signal` rows behind it). No black-box numbers.
 4. **`feature_id` is the spine.** Build cost, inference cost, and usage all attribute to a feature, or land in the **Unattributed bucket** — never silently dropped.
 5. **Reconcile, don't trust blindly.** Provider cost APIs are authoritative on dollars; hook-metered cost is reconciled against them, and any delta goes to Unattributed.

@@ -2870,6 +2870,132 @@ button.method-head:hover .method-title {
 }
 
 /* ---------------------------------------------------------------------------
+   Customer economics — metered AI cost and human effort on one screen.
+   The two categories are drawn in different colours everywhere they appear, and
+   "Not provided" is styled as absence rather than as a small number.
+   --------------------------------------------------------------------------- */
+.customer-summary {
+  margin-bottom: 1rem;
+}
+
+.customer-summary .kpi-label {
+  font-size: 0.72rem;
+}
+
+.not-provided {
+  font-style: italic;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* The delivery-cost trend: the same bars as .trend-chart, split in two. */
+.delivery-bar {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 100%;
+  max-width: 46px;
+  border-radius: 6px 6px 0 0;
+  overflow: hidden;
+}
+
+.delivery-seg {
+  width: 100%;
+}
+
+/* Lime is this app's data colour and AI cost is the series that was already
+   here, so it keeps it; human cost takes the ramp's teal. */
+.delivery-seg-ai {
+  background: var(--chart-1);
+}
+
+.delivery-seg-human {
+  background: var(--chart-2);
+}
+
+.delivery-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.delivery-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.delivery-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.top-customers-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.metric-pick select {
+  padding: 0.1rem 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+  font-size: 0.75rem;
+}
+
+/* Four money columns plus hours is a wide table; let it scroll inside its own
+   panel on a narrow screen rather than pushing the page sideways. */
+.customer-table {
+  min-width: 46rem;
+}
+
+.detail-section:has(.customer-table) {
+  overflow-x: auto;
+}
+
+/* ---- adding human effort ---- */
+.effort-open {
+  white-space: nowrap;
+}
+
+.effort-import {
+  margin: 0 0 1rem;
+  padding: 1rem 1.15rem 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.effort-import h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.effort-example {
+  margin: 0.6rem 0 0.2rem;
+  padding: 0.6rem 0.75rem;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.effort-pick {
+  margin-top: 0.75rem;
+}
+
+/* ---------------------------------------------------------------------------
    Active users — the one number in the product that a person types.
    Sits in the feature's meta line beside the badges and the pickers, and reads
    as part of that line rather than as a form dropped into it.

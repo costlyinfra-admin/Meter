@@ -1192,7 +1192,9 @@ export interface CustomerSpend {
   total: number;
   customers: {
     customer_id: string;
-    amount: number;
+    /** null when this customer has no metered calls at all — it is not zero,
+     *  which would claim we measured their AI cost and found none. */
+    amount: number | null;
     pct: number;
     requests: number | null;
     cost_per_request: number | null;
@@ -1200,11 +1202,40 @@ export interface CustomerSpend {
     prev_amount: number | null;
     delta_pct: number | null;
     months_active: number;
+    /** null = no human effort recorded for this customer this period. Never 0. */
+    human_hours: number | null;
+    human_cost: number | null;
+    /** Metered AI + people, for this customer. null when neither half is known. */
+    total_delivery_cost: number | null;
   }[];
   trend: { period: string; amount: number }[];
   /** The whole inference bill for the window, so `total` reads as a subset. */
   inference_total: number;
   coverage_pct: number;
+  /** null when no human effort was provided for this window. */
+  human_hours: number | null;
+  human_cost: number | null;
+  /** Metered AI + people across the customers listed here. NOT the AI bill:
+   *  `inference_total` is the authoritative figure and is usually larger. */
+  total_delivery_cost: number;
+  human_effort_present: boolean;
+  /** How many of the listed customers have effort rows in this period. */
+  human_effort_customer_count: number;
+  /** Effort exists somewhere for this tenant, even if not in this window — so
+   *  "none this period" can be told apart from "never provided". */
+  human_effort_ever: boolean;
+  human_effort_trend: { period: string; amount: number }[];
+}
+
+/** What an effort CSV import loaded. */
+export interface EffortImportResult {
+  imported: number;
+  batch_id: string;
+  customers: number;
+  hours: number;
+  cost: number;
+  first_date: string;
+  last_date: string;
 }
 
 export interface ProviderSpend {
@@ -1868,6 +1899,12 @@ export const api = {
 
   customerSpend: (range?: ReviewRange) =>
     request<CustomerSpend>(`/dashboard/customers${rangeQuery(range)}`),
+
+  importHumanEffort: (csv: string) =>
+    request<EffortImportResult>("/human-effort/import", {
+      method: "POST",
+      body: JSON.stringify({ csv }),
+    }),
 
   productSpend: (range?: ReviewRange) =>
     request<ProductSpend>(`/dashboard/products${rangeQuery(range)}`),
