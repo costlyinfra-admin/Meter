@@ -228,7 +228,7 @@ def _uncomposed_answer(passages: list[dict], facts: Optional[dict]) -> dict:
         "answer": (
             "I can't answer that one right now — the assistant's answering model "
             "isn't reachable. Your data is unaffected. Try [Traces](/traces) or "
-            "[Cost sources](/cost-sources), or contact support."
+            "[Connect sources](/cost-sources), or contact support."
         ),
         "sources": [],
         "answered": False,

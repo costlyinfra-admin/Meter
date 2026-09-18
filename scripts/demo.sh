@@ -28,7 +28,7 @@ cleanup() {
   pg_ctl -D "$TMPD/data" stop >/dev/null 2>&1 || true
   rm -rf "$TMPD"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 echo "▶ Starting throwaway Postgres…"
 initdb -D "$TMPD/data" >/dev/null
@@ -50,13 +50,13 @@ echo "▶ Migrating + seeding the Acme Security demo tenant…"
 make db-seed
 
 echo "▶ Starting API on http://localhost:8000 …"
-( cd backend && .venv/bin/python -m uvicorn --factory meter.api:create_app --port 8000 --log-level warning ) &
+( cd backend && exec .venv/bin/python -m uvicorn --factory meter.api:create_app --port 8000 --log-level warning ) &
 UVPID=$!
 
 echo ""
 echo "  ┌────────────────────────────────────────────────────────┐"
-echo "  │  Open http://localhost:5173                             │"
-echo "  │  Login:  demo@acme.com  /  meter-demo               │"
+echo "  │  Open http://localhost:5173                            │"
+echo "  │  Login:  demo@costlyinfra.com  /  meter-demo           │"
 echo "  └────────────────────────────────────────────────────────┘"
 echo ""
 echo "▶ Starting web on http://localhost:5173  (Ctrl-C to stop everything)…"

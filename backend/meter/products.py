@@ -243,6 +243,21 @@ def reassign_from_repos(tenant_id: str) -> dict:
         return {"assigned": assigned, "unassigned": unassigned, "spanning": spanning}
 
 
+def spanning_ids(conn: psycopg.Connection) -> set:
+    """Feature ids whose repositories belong to more than one product.
+
+    The rule `product_for` applies, exposed for a caller already inside a tenant
+    transaction: the Overview's product rollup needs the count without opening a
+    second connection.
+    """
+    mapping = repo_map(conn)
+    out = set()
+    for fid, repos in _feature_repos(conn).items():
+        if len({mapping[r] for r in repos if r in mapping}) > 1:
+            out.add(fid)
+    return out
+
+
 def spanning_features(tenant_id: str) -> list[dict]:
     """Features whose repositories belong to more than one product.
 

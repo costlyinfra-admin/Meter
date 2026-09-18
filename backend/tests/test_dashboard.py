@@ -1286,3 +1286,33 @@ def test_overview_rows_carry_their_product(seeded, app_env):
     assert rows["AI threat triage"]["product_name"] == SEEDED_PRODUCT
     assert rows["AI threat triage"]["product_source"] == "discovery"
     assert rows["SOC copilot"]["product_name"] is None  # its repo is not mapped
+
+
+def test_unassigned_says_how_many_features_span_two_products(seeded, app_env):
+    """The count that tells a reader to go and decide, rather than map another repo.
+
+    It was hard-coded to 0 when the By Product tab shipped, so the sentence the
+    UI renders from it could never appear.
+    """
+    from meter import features as features_mod
+
+    # Build the condition rather than relying on the seed's shape: give an
+    # unassigned feature evidence in two repositories owned by different
+    # products. Nothing can decide that but a person, which is the point.
+    soc = next(
+        f for f in dashboard.dashboard(seeded, PERIOD)["features"] if f["product_name"] is None
+    )
+    features_mod.add_signal(seeded, soc["feature_id"], "repo", "acme-security/platform")
+    features_mod.add_signal(seeded, soc["feature_id"], "repo", "acme-security/reporting")
+
+    rolled = dashboard.spend_by_product(seeded, PERIOD)
+    assert rolled["unassigned"]["spanning_count"] >= 1
+    # And it is a subset of the unassigned features, never a separate population.
+    assert rolled["unassigned"]["spanning_count"] <= rolled["unassigned"]["feature_count"]
+
+
+def test_a_feature_in_one_product_is_never_counted_as_spanning(seeded, app_env):
+    rolled = dashboard.spend_by_product(seeded, PERIOD)
+    # Seeded state: every mapped repo belongs to exactly one product.
+    assert rolled["unassigned"]["spanning_count"] == 0
+    assert rolled["unassigned"]["feature_count"] > 0

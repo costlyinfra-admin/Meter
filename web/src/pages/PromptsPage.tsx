@@ -735,7 +735,32 @@ function EvaluationPanel({ templateId, onDecided }: { templateId: string; onDeci
       {keys.length > 0 && (
         <p className="settings-hint muted">
           Replay keys:{" "}
-          {keys.map((k) => `${k.provider} ${k.has_key ? "added" : "not added"}`).join(", ")}.
+          {keys.map((k, i) => (
+            <span key={k.provider}>
+              {i > 0 && ", "}
+              {k.provider} {k.has_key ? "added" : "not added"}
+              {k.has_key && (
+                <>
+                  {" "}
+                  <button
+                    className="link"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void act("removekey", () => api.removeEvalKey(k.provider)).then((r) => {
+                        if (r) {
+                          setKeys(r.keys);
+                          void load();
+                        }
+                      })
+                    }
+                  >
+                    {busy === "removekey" ? "Removing…" : "Remove"}
+                  </button>
+                </>
+              )}
+            </span>
+          ))}
+          . A removed key is gone from Meter; testing needs a new one.
         </p>
       )}
     </section>

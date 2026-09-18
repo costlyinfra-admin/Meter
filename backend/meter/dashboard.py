@@ -16,7 +16,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Optional
 
-from . import optimize, pricing
+from . import optimize, pricing, products
 from .build import developer_label
 from .db import app_dsn, connect, tenant_tx
 from .providers import month_start, next_month
@@ -1362,6 +1362,11 @@ def spend_by_product(
         build = _rollup(conn, "build_cost", start, end)
         inference, inference_unattributed = _inference_rollup(conn, start, end)
 
+        # Which unassigned features are unassigned BECAUSE their repositories
+        # straddle two products. That is the one fact that tells a reader to go
+        # to Products and decide, rather than to map another repository.
+        spanning = products.spanning_ids(conn)
+
         # The per-month series, computed with the SAME two functions as the
         # totals above, called one month at a time. A month's reconciliation is
         # then that month's real one, and the chart can never disagree with the
@@ -1410,6 +1415,8 @@ def spend_by_product(
             unassigned["build_cost"] += b["amount"]
             unassigned["inference_cost"] += i["amount"]
             unassigned["feature_count"] += 1
+            if fid in spanning:
+                unassigned["spanning_count"] += 1
             continue
         target["build_cost"] += b["amount"]
         target["inference_cost"] += i["amount"]

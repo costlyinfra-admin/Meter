@@ -278,7 +278,7 @@ def _signal(raw) -> Optional[dict]:
     if not fingerprint:
         return None  # unusable without one; not worth failing the batch over
     out = {"kind": kind, "fingerprint": fingerprint}
-    for field in ("count", "tokens_in", "tokens_out", "cached_tokens", "prefix_tokens"):
+    for field in ("count", "tokens_in", "tokens_out", "cached_count", "prefix_tokens"):
         value = _count(raw.get(field), f"signal.{field}")
         if value is not None:
             out[field] = value

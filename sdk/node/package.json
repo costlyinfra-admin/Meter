@@ -5,7 +5,7 @@
   "type": "module",
   "main": "index.mjs",
   "exports": "./index.mjs",
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test"
   },

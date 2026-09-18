@@ -20,6 +20,7 @@ vi.mock("../api", async (importActual) => {
       productSuggestions: vi.fn(),
       spanningFeatures: vi.fn(),
       createProduct: vi.fn(),
+      renameProduct: vi.fn(),
       deleteProduct: vi.fn(),
       setProductRepos: vi.fn(),
       reassignProducts: vi.fn(),
@@ -145,6 +146,28 @@ describe("Products", () => {
     const row = screen.getByRole("link", { name: "Shared auth" }).closest("tr")!;
     expect(row.textContent).toContain("Beacon or Sentinel");
     expect(screen.getByText(/a guess here would be a number you could not check/)).toBeVisible();
+  });
+
+  it("renames a product in place, so a typo is not a delete-and-recreate", async () => {
+    vi.mocked(api.renameProduct).mockResolvedValue({ ...SENTINEL, name: "Sentinel Platform" });
+    renderPage();
+    await screen.findByRole("heading", { name: /Sentinel/ });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("Rename Sentinel"), {
+      target: { value: "Sentinel Platform" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.renameProduct).toHaveBeenCalledWith("p1", "Sentinel Platform"));
+  });
+
+  it("will not save a rename that changes nothing", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: /Sentinel/ });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    // The field opens pre-filled; saving it unchanged would be a pointless write.
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
   it("warns that deleting a product keeps its features", async () => {

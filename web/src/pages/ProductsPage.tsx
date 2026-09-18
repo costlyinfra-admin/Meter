@@ -149,6 +149,9 @@ export function ProductsPage() {
                   setApplied(result.reassigned);
                 })
               }
+              onRename={(name) =>
+                run(`rename-${product.id}`, () => api.renameProduct(product.id, name))
+              }
               onDelete={() => run(`del-${product.id}`, () => api.deleteProduct(product.id))}
             />
           ))
@@ -239,16 +242,20 @@ function ProductCard({
   candidates,
   busy,
   onRepos,
+  onRename,
   onDelete,
 }: {
   product: Product;
   candidates: string[];
   busy: string | null;
   onRepos: (repos: string[]) => Promise<void>;
+  onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
 }) {
   const [chosen, setChosen] = useState<string[]>(product.repos);
   const [confirming, setConfirming] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(product.name);
 
   useEffect(() => setChosen(product.repos), [product.repos]);
 
@@ -262,7 +269,26 @@ function ProductCard({
     <div className="detail-card">
       <div className="section-head">
         <div>
-          <h3>{product.name}</h3>
+          {renaming ? (
+            <span className="confirm-row">
+              <input
+                aria-label={`Rename ${product.name}`}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <button
+                disabled={!draft.trim() || draft.trim() === product.name || busy !== null}
+                onClick={() => void onRename(draft.trim()).then(() => setRenaming(false))}
+              >
+                Save
+              </button>
+              <button className="secondary" onClick={() => setRenaming(false)}>
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <h3>{product.name}</h3>
+          )}
           <span className="section-sub muted">
             {product.feature_count} feature{product.feature_count === 1 ? "" : "s"} ·{" "}
             {product.repos.length} repositor{product.repos.length === 1 ? "y" : "ies"}
@@ -279,13 +305,25 @@ function ProductCard({
             </button>
           </span>
         ) : (
-          <button
-            className="secondary"
-            onClick={() => setConfirming(true)}
-            disabled={busy !== null}
-          >
-            Delete
-          </button>
+          <span className="confirm-row">
+            <button
+              className="secondary"
+              disabled={busy !== null || renaming}
+              onClick={() => {
+                setDraft(product.name);
+                setRenaming(true);
+              }}
+            >
+              Rename
+            </button>
+            <button
+              className="secondary"
+              onClick={() => setConfirming(true)}
+              disabled={busy !== null}
+            >
+              Delete
+            </button>
+          </span>
         )}
       </div>
 
