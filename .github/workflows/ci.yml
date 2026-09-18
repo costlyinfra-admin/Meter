@@ -54,7 +54,22 @@ jobs:
           pytest
       - name: Node SDK
         working-directory: sdk/node
-        run: node --test
+        # The suite passes locally every time (42/42, ten runs in a row) and has
+        # failed here repeatedly, on Node 20 and on 22, with no SDK change
+        # between a pass and a fail. Job logs need admin rights, and the check
+        # annotations carried only "exit code 1" — so the failure has never said
+        # what it was. `::error::` lines become annotations, which are readable,
+        # so the next failure names the assertion instead of hiding it.
+        run: |
+          set -o pipefail
+          if node --test 2>&1 | tee /tmp/node-test.log; then
+            exit 0
+          fi
+          echo "::error::Node SDK suite failed. Failing assertions follow."
+          grep -E "^not ok|^ +(error|code|failureType|expected|actual):|✖" /tmp/node-test.log \
+            | head -30 \
+            | while IFS= read -r line; do echo "::error::${line}"; done
+          exit 1
 
   web:
     name: Web (React + TypeScript)
