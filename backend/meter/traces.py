@@ -282,6 +282,10 @@ def _signal(raw) -> Optional[dict]:
         value = _count(raw.get(field), f"signal.{field}")
         if value is not None:
             out[field] = value
+    # Whether prefix_tokens is the provider's own count or the SDK's character
+    # estimate. Anything but an explicit true is an estimate: a claim of
+    # measurement has to be made, never inferred from a missing field.
+    out["prefix_measured"] = raw.get("prefix_measured") is True
     return out
 
 

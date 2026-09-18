@@ -34,9 +34,9 @@
  * bounded queue that sheds oldest-first, and `meter.dropped` says if it did.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
-export const VERSION = "2.1.0";
+export const VERSION = "2.2.0";
 
 const FLUSH_INTERVAL_MS = 2000;
 const BATCH_SIZE = 50;
@@ -63,6 +63,16 @@ const CAPTURE_INFLIGHT_MAX = 100;
  *  re-checks every time. */
 const CAPTURE_OPEN_TTL_MS = 5 * 60 * 1000;
 /** The call shapes whose text can be told apart from tool calls reliably. */
+// -- optimize mode --------------------------------------------------------
+/** How much of a request counts as its cacheable static head when the
+ *  provider's own static blocks are not separable. */
+const PREFIX_CHARS = 2000;
+/** Prefix counters are aggregates; they leave on a timer, not per call. */
+const OPTIMIZE_FLUSH_INTERVAL_MS = 60_000;
+/** Bounds. A fingerprint map that grows with traffic is a leak, not a feature. */
+const DUP_CAPACITY = 5000;
+const PREFIX_CAPACITY = 512;
+
 const CAPTURE_PATHS = [
   ["anthropic", "messages.create"],
   ["openai", "chat.completions.create"],
@@ -387,6 +397,69 @@ export class Meter {
     /** Samples chosen but not delivered: refused, too large, redacted away or
      *  failed. Calls simply not sampled are not counted. */
     this.captureDropped = 0;
+
+    // Optimize mode: measure the SHAPE of traffic — salted-hash fingerprints
+    // and counts, never prompt text — so the duplicate-call and uncached-prefix
+    // findings are measured rather than rules of thumb. Off by default.
+    this._salt = options.salt ?? null;
+    this._saltState = this._salt ? "ready" : "cold";
+    this._optimizer = options.optimize
+      ? new Optimizer(this, {
+          prefixChars: options.prefixChars ?? PREFIX_CHARS,
+          flushIntervalMs: options.optimizeFlushIntervalMs ?? OPTIMIZE_FLUSH_INTERVAL_MS,
+        })
+      : null;
+  }
+
+  get optimizeEnabled() {
+    return this._optimizer !== null;
+  }
+
+  _saltUrl() {
+    if (!this.ingestUrl) return null;
+    const base = this.ingestUrl.replace(/\/+$/, "");
+    return base.endsWith("/events") ? `${base.slice(0, -"/events".length)}/salt` : `${base}/salt`;
+  }
+
+  /**
+   * The tenant's fingerprint salt, or null until it arrives.
+   *
+   * Fetched once, and never awaited on the caller's path — returning null for
+   * the first few calls costs a handful of aggregate signals and costs the
+   * caller nothing. A failed fetch disables signals for good rather than
+   * retrying: without a salt the only alternative is an unsalted hash, and that
+   * must never be emitted.
+   */
+  salt() {
+    if (this._saltState === "ready") return this._salt;
+    if (this._saltState === "cold") {
+      this._saltState = "fetching";
+      this._fetchSalt().catch(() => {
+        this._saltState = "failed";
+      });
+    }
+    return null;
+  }
+
+  async _fetchSalt() {
+    if (!this.enabled) {
+      this._saltState = "failed";
+      return;
+    }
+    try {
+      const resp = await this._fetch(this._saltUrl(), {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.token}` },
+      });
+      const value = resp?.ok ? (await resp.json())?.salt : null;
+      if (!value) throw new Error("no salt");
+      this._salt = value;
+      this._saltState = "ready";
+    } catch {
+      // Fail safe, and quietly: a customer's application must never learn that
+      // Meter could not reach Meter.
+      this._saltState = "failed";
+    }
   }
 
   get enabled() {
@@ -489,6 +562,22 @@ export class Meter {
     try {
       usage = usageOf(resp);
       if (!usage.provider) usage.provider = provider;
+      // Optimize mode, when it is on: fold this call's shape into the collector
+      // and attach the duplicate signal, if this request repeats, to the span
+      // the call was already sending. A hash and a serialize against an LLM
+      // call's latency; the network stays where it was.
+      let signal = null;
+      let summaries = [];
+      if (this._optimizer) {
+        signal = this._optimizer.onCall(
+          usage.provider,
+          usage.model,
+          args[0],
+          usage,
+          ctx.featureId ?? null,
+        );
+        summaries = this._optimizer.dueSummaries();
+      }
       this._send([
         this._event("span.completed", traceId, {
           span_id: spanId,
@@ -499,12 +588,14 @@ export class Meter {
           application: ctx.application,
           prompt_id: ctx.promptId,
           prompt_version: ctx.promptVersion,
+          signal,
           ...usage,
         }),
         this._event("trace.completed", traceId, {
           operation_name: operation,
           application: ctx.application,
         }),
+        ...summaries,
       ]);
     } catch {
       /* ignore */
@@ -836,6 +927,17 @@ export class Meter {
   /** Send what is queued now. Worth awaiting before a short-lived process exits. */
   async flush() {
     if (!this.enabled) return true;
+    // Counters that have been accumulating but have not reached their interval
+    // belong in this flush: a process that does not outlive the interval — a
+    // script, a batch job, one serverless invocation — would otherwise take
+    // every prefix counter it gathered to the grave.
+    if (this._optimizer) {
+      try {
+        this._send(this._optimizer.dueSummaries(true));
+      } catch {
+        /* a lost summary is never worth failing a flush over */
+      }
+    }
     try {
       while (this._queue.length) await this._drain();
       await (this._inflight ?? Promise.resolve());
@@ -852,6 +954,194 @@ export class Meter {
 // Consented prompt capture: reading a call's text, and nothing else
 // ---------------------------------------------------------------------------
 /** The capture endpoint beside a standard ingest URL, or null. */
+// ---------------------------------------------------------------------------
+// Optimize mode — measured optimization signals
+// ---------------------------------------------------------------------------
+// Traffic SHAPE only: salted-hash fingerprints and counts. No prompt text, no
+// response text, no tool arguments — nothing here reads a request's content
+// except to hash it, salted with a secret the database does not contain.
+function sha(...parts) {
+  return createHash("sha256").update(parts.join("\u001f"), "utf8").digest("hex");
+}
+
+/** A stable string for the parts of a request that make two calls identical. */
+function normalizeRequest(request) {
+  if (!request || typeof request !== "object") return "";
+  const payload = request.messages ?? request.input ?? request.contents;
+  // Not a call shape this knows how to compare. "" rather than "null", which is
+  // what a serializer gives and which every unreadable call would then share.
+  if (payload === undefined || payload === null) return "";
+  try {
+    return stableJson(payload);
+  } catch {
+    return String(payload);
+  }
+}
+
+/** JSON with object keys in a fixed order, so two equal requests hash equal. */
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * The cacheable static head of a request, and an estimate of its size.
+ *
+ * Prefers the explicitly static blocks — the system prompt and the tool
+ * definitions — and otherwise falls back to the leading slice of the request.
+ * The token count is characters over four, which is an estimate and is reported
+ * as one: the provider's own figure replaces it wherever the provider gives one.
+ */
+function staticPrefix(request, prefixChars) {
+  let staticPart = "";
+  if (request && typeof request === "object") {
+    const { system, tools } = request;
+    if (system !== undefined || tools !== undefined) {
+      try {
+        staticPart = stableJson([system ?? null, tools ?? null]);
+      } catch {
+        staticPart = `${system}${tools}`;
+      }
+    }
+  }
+  if (!staticPart) staticPart = normalizeRequest(request).slice(0, prefixChars);
+  return [staticPart, Math.max(0, Math.floor(staticPart.length / 4))];
+}
+
+/**
+ * Bounded signal collection for one meter.
+ *
+ * Both structures have a hard ceiling, because a map keyed by request shape
+ * grows with traffic: the duplicate set is an LRU (a Map, whose iteration order
+ * is insertion order) and the prefix map flushes at capacity as well as on its
+ * timer.
+ */
+class Optimizer {
+  constructor(meter, options = {}) {
+    this._m = meter;
+    this._prefixChars = options.prefixChars ?? PREFIX_CHARS;
+    this._flushIntervalMs = options.flushIntervalMs ?? OPTIMIZE_FLUSH_INTERVAL_MS;
+    this._dupCapacity = options.dupCapacity ?? DUP_CAPACITY;
+    this._prefixCapacity = options.prefixCapacity ?? PREFIX_CAPACITY;
+    this._seen = new Map();
+    this._prefixes = new Map();
+    this._lastFlush = Date.now();
+  }
+
+  /**
+   * Fold one call in; return a 'duplicate' signal if this request repeats.
+   *
+   * Two fields of `usage` matter: a cache READ says this call was already
+   * served from cache and must not be counted as a caching opportunity, and a
+   * cache WRITE is the provider's own measurement of the static prefix — the
+   * only place a real token count for it can come from.
+   */
+  onCall(provider, model, request, usage = {}, featureId = null) {
+    const salt = this._m.salt();
+    if (!salt) return null; // never emit an unsalted hash
+    const body = normalizeRequest(request);
+    // A call shape this cannot read — no messages, no input, no contents. Every
+    // such call would hash identically and the second one would be reported as
+    // an avoidable repeat of the first, which is a finding about this code
+    // rather than about the customer's traffic.
+    if (!body) return null;
+    const modelName = model ?? "";
+    const requestFp = sha(salt, provider, modelName, body);
+    const [staticPart, estimated] = staticPrefix(request, this._prefixChars);
+    const prefixFp = sha(salt, provider, modelName, staticPart);
+    // A prefix belongs to the feature whose call it came from, not to the
+    // meter's default: `wrap({ featureId })` may name a different one.
+    const feature = featureId ?? this._m.featureId ?? null;
+    const key = `${prefixFp}\u001f${feature ?? ""}`;
+    const measured = int(usage.cache_write_tokens);
+    const cacheRead = int(usage.cache_read_tokens);
+
+    const duplicate = this._seen.has(requestFp);
+    if (duplicate) this._seen.delete(requestFp); // re-insert = most recently used
+    this._seen.set(requestFp, true);
+    while (this._seen.size > this._dupCapacity) {
+      this._seen.delete(this._seen.keys().next().value);
+    }
+
+    let entry = this._prefixes.get(key);
+    if (!entry) {
+      entry = {
+        provider,
+        model: modelName,
+        fingerprint: prefixFp,
+        featureId: feature,
+        count: 0,
+        cached: 0,
+        tin: 0,
+        tout: 0,
+        estimated: 0,
+        measured: 0,
+      };
+      this._prefixes.set(key, entry);
+    }
+    entry.count += 1;
+    entry.tin += int(usage.tokens_in);
+    entry.tout += int(usage.tokens_out);
+    entry.estimated = Math.max(entry.estimated, estimated);
+    if (measured) entry.measured = Math.max(entry.measured, measured);
+    if (cacheRead) entry.cached += 1;
+
+    return duplicate ? { kind: "duplicate", fingerprint: requestFp, count: 1 } : null;
+  }
+
+  /**
+   * Prefix counters as spans, when the timer elapses or the map fills up.
+   *
+   * Each summary is a completed span of its own. The server does not cost it —
+   * the calls it summarises were each metered when they happened — it only
+   * folds the counts into the tenant's signal store.
+   */
+  dueSummaries(force = false) {
+    const now = Date.now();
+    const due =
+      force ||
+      now - this._lastFlush >= this._flushIntervalMs ||
+      this._prefixes.size >= this._prefixCapacity;
+    if (!due) return [];
+    this._lastFlush = now;
+    const items = this._prefixes;
+    this._prefixes = new Map();
+
+    const events = [];
+    for (const entry of items.values()) {
+      // The provider's own count when it gave one, characters over four when it
+      // did not — and the flag says which, so the server never presents an
+      // estimate as a measurement.
+      const measured = entry.measured > 0;
+      events.push(
+        this._m._event("span.completed", newId(), {
+          span_id: newId(),
+          span_kind: "llm",
+          operation_name: "optimize.prefix",
+          provider: entry.provider,
+          model: entry.model || null,
+          feature_id: entry.featureId,
+          signal: {
+            kind: "prefix",
+            fingerprint: entry.fingerprint,
+            count: entry.count,
+            cached_count: entry.cached,
+            tokens_in: entry.tin,
+            tokens_out: entry.tout,
+            prefix_tokens: measured ? entry.measured : entry.estimated,
+            prefix_measured: measured,
+          },
+        }),
+      );
+    }
+    return events;
+  }
+}
+
 function captureUrlFrom(ingestUrl) {
   if (!ingestUrl) return null;
   const base = String(ingestUrl).replace(/\/+$/, "");

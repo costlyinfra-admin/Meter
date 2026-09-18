@@ -23,7 +23,9 @@ def _dup_event(feature_id, fingerprint, tokens_in):
     }
 
 
-def _prefix_event(feature_id, fingerprint, count, prefix_tokens, cached_count, tokens_in):
+def _prefix_event(
+    feature_id, fingerprint, count, prefix_tokens, cached_count, tokens_in, measured=False
+):
     return {
         "provider": "anthropic",
         "model": "claude-sonnet-4-6",
@@ -37,6 +39,7 @@ def _prefix_event(feature_id, fingerprint, count, prefix_tokens, cached_count, t
             "cached_count": cached_count,
             "tokens_in": tokens_in,
             "tokens_out": 0,
+            "prefix_measured": measured,
         },
     }
 
@@ -99,11 +102,53 @@ def test_prefix_caching_savings_match_the_price_book(tenant_id):
 
     # 1,000 calls * 4,000 tokens * $3/M * (1 - 0.10 cache-read) = $10.80.
     assert prefix["projected_monthly_savings"] == 10.8
-    assert prefix["confidence"] == "high"
     assert "4,000-token static prefix" in prefix["evidence"]
     assert "1,000 uncached calls" in prefix["evidence"]
+    # The provider reported no prefix size here, so 4,000 is the SDK's
+    # characters-over-four estimate. Priced, but not called a measurement.
+    assert prefix["confidence"] == "med"
+    assert "estimated from request length" in prefix["evidence"]
     # No calls were cached yet.
     assert result["cache_utilization"] == 0.0
+
+
+def test_a_prefix_the_provider_measured_is_reported_as_measured(tenant_id):
+    """Anthropic's cache_creation_input_tokens is a real token count.
+
+    Same dollars, different claim: with the provider's own figure behind the
+    token count there is nothing estimated left in the arithmetic, and the
+    finding can say so.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, measured=True)],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["projected_monthly_savings"] == 10.8
+    assert prefix["confidence"] == "high"
+    assert "measured by the provider" in prefix["evidence"]
+    assert prefix["trail"][0]["prefix_measured"] is True
+
+
+def test_one_estimated_prefix_keeps_the_whole_finding_off_measured(tenant_id):
+    """A finding is only as measured as its least measured input."""
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-real", 1000, 4000, 0, 4_000_000, measured=True),
+            _prefix_event(triage["id"], "fp-guess", 1000, 4000, 0, 4_000_000, measured=False),
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["confidence"] == "med"
 
 
 def test_prefix_below_threshold_is_not_flagged(tenant_id):

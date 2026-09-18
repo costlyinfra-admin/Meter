@@ -481,3 +481,33 @@ test("the version the SDK reports is the version the package ships", () => {
   const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8"));
   assert.equal(VERSION, pkg.version);
 });
+
+test("every name the README tells people to import actually exists", async () => {
+  // The README taught `import { wrap } from "costlyinfra-meter"` for a release
+  // in which no `wrap` was exported: the headline example in the install guide
+  // threw on line two. Nothing checked, because nothing ran the README.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const readme = readFileSync(join(here, "..", "..", "README.md"), "utf8");
+  const exported = new Set(Object.keys(await import("../index.mjs")));
+
+  const named = [...readme.matchAll(/import\s*\{([^}]+)\}\s*from\s*"costlyinfra-meter"/g)]
+    .flatMap((m) => m[1].split(",").map((name) => name.trim()))
+    .filter(Boolean);
+
+  assert.ok(named.length > 0, "the README stopped showing any import at all");
+  for (const name of named) {
+    assert.ok(exported.has(name), `README imports { ${name} }, which is not exported`);
+  }
+});
+
+test("optimize mode is documented as the option the SDK actually takes", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const readme = readFileSync(join(here, "..", "..", "README.md"), "utf8");
+  const snippet = readme.slice(readme.indexOf("## Optimize mode"));
+  const shown = snippet.slice(0, snippet.indexOf("## Config"));
+
+  // A constructor signature the SDK has never had is worse than no example.
+  assert.ok(shown.includes("new Meter({ application:"), "the Node example is not a v2 Meter");
+  assert.ok(!/new Meter\("/.test(shown), "the Node example still passes a positional argument");
+  assert.ok(shown.includes("optimize: true"));
+});

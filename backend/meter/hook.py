@@ -292,7 +292,15 @@ def accumulate_signal(
         return  # a signal with no fingerprint is unusable; drop it
     key = (feature_id, provider, model, period, kind, str(fingerprint))
     entry = signal_acc.setdefault(
-        key, {"call_count": 0, "tin": 0, "tout": 0, "cached": 0, "prefix_tokens": None}
+        key,
+        {
+            "call_count": 0,
+            "tin": 0,
+            "tout": 0,
+            "cached": 0,
+            "prefix_tokens": None,
+            "prefix_measured": False,
+        },
     )
     if kind == "duplicate":
         # count = number of avoidable repeats this event represents (default 1).
@@ -308,6 +316,9 @@ def accumulate_signal(
         if ptok is not None:
             prev = entry["prefix_tokens"] or 0
             entry["prefix_tokens"] = max(prev, int(ptok))
+        # One measured report is enough to stop calling the batch an estimate.
+        if sig.get("prefix_measured"):
+            entry["prefix_measured"] = True
 
 
 def upsert_signal(
@@ -331,8 +342,16 @@ def upsert_signal(
                 tokens_in = tokens_in + %s,
                 tokens_out = tokens_out + %s,
                 cached_count = cached_count + %s,
-                prefix_tokens = CASE WHEN %s IS NULL THEN prefix_tokens
-                                     ELSE GREATEST(COALESCE(prefix_tokens, 0), %s) END,
+                -- Cast, because a duplicate signal carries no prefix size and
+                -- Postgres cannot infer a type for an untyped NULL parameter
+                -- compared against NULL. Without it, the SECOND batch carrying
+                -- any duplicate fingerprint fails the whole ingest request --
+                -- taking that batch's traces and cost down with it.
+                prefix_tokens = CASE WHEN %s::bigint IS NULL THEN prefix_tokens
+                                     ELSE GREATEST(COALESCE(prefix_tokens, 0), %s::bigint) END,
+                -- Latches on: once the provider has reported a real prefix size
+                -- for this fingerprint, later estimates do not un-measure it.
+                prefix_measured = prefix_measured OR %s::boolean,
                 updated_at = now()
             WHERE id = %s
             """,
@@ -343,6 +362,7 @@ def upsert_signal(
                 entry["cached"],
                 entry["prefix_tokens"],
                 entry["prefix_tokens"],
+                entry.get("prefix_measured", False),
                 existing[0],
             ),
         )
@@ -351,8 +371,9 @@ def upsert_signal(
             """
             INSERT INTO usage_signal
                 (tenant_id, feature_id, provider, model, period, signal_kind, fingerprint,
-                 call_count, prefix_tokens, tokens_in, tokens_out, cached_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
+                 prefix_measured)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 tenant_id,
@@ -367,6 +388,7 @@ def upsert_signal(
                 entry["tin"],
                 entry["tout"],
                 entry["cached"],
+                entry.get("prefix_measured", False),
             ),
         )
 

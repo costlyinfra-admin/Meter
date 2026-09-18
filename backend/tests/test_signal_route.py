@@ -177,3 +177,96 @@ def test_the_measured_lever_fires_on_a_signal_that_arrived_this_way(client):
     assert "duplicate_calls" in levers, "a real signal produced no duplicate-call finding"
     assert levers["duplicate_calls"]["savings_type"] == "measured"
     assert levers["duplicate_calls"]["projected_monthly_savings"] > 0
+
+
+def test_the_same_duplicate_fingerprint_can_arrive_in_more_than_one_batch(client):
+    """The second batch used to fail the whole request.
+
+    `upsert_signal`'s UPDATE compares an untyped parameter against NULL, and a
+    duplicate signal carries no prefix size — so the first batch INSERTed fine
+    and every later one raised `could not determine data type of parameter $5`,
+    a 500 that took the batch's traces and cost down with it. Nothing caught it
+    because no test had ever sent the same fingerprint twice, and no SDK had
+    sent a duplicate signal at all since the v2 rewrite.
+    """
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+
+    for i in range(3):
+        _post(
+            client,
+            token,
+            [
+                _span(
+                    f"t-{i}",
+                    f"s-{i}",
+                    {"kind": "duplicate", "fingerprint": "fp-same", "count": 1},
+                )
+            ],
+        )
+
+    rows = [r for r in _signals(tenant) if r[0] == "duplicate"]
+    assert len(rows) == 1, "one fingerprint, one row"
+    assert rows[0][2] == 3, "later batches were lost"
+
+
+def test_a_prefix_says_whether_its_token_count_was_measured(client):
+    """The flag the prompt-caching lever reads before calling itself measured."""
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+
+    base = {
+        "kind": "prefix",
+        "count": 10,
+        "cached_count": 0,
+        "prefix_tokens": 4000,
+        "tokens_in": 40_000,
+        "tokens_out": 100,
+    }
+    _post(client, token, [_span("t-e", "s-e", {**base, "fingerprint": "fp-est"})])
+    _post(
+        client,
+        token,
+        [_span("t-m", "s-m", {**base, "fingerprint": "fp-meas", "prefix_measured": True})],
+    )
+
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant):
+        flags = dict(
+            conn.execute(
+                "SELECT fingerprint, prefix_measured FROM usage_signal WHERE signal_kind = 'prefix'"
+            ).fetchall()
+        )
+    # Absent means estimated: a claim of measurement is made, never inferred.
+    assert flags == {"fp-est": False, "fp-meas": True}
+
+
+def test_a_tenant_with_traces_is_not_told_to_install_the_sdk(client):
+    """`has_sdk_telemetry` asks whether request telemetry arrives at all.
+
+    It used to ask only whether optimize-mode signals had arrived — the
+    narrowest possible way to have it. A customer with fully traced agent runs
+    and no optimize mode was shown "Install the SDK to unlock them", which they
+    had done.
+    """
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+
+    # A perfectly ordinary metered call. No signal anywhere.
+    _post(client, token, [_span("t-plain", "s-plain", None)])
+
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant):
+        assert conn.execute("SELECT count(*) FROM usage_signal").fetchone()[0] == 0
+
+    overview = optimize_measured.copilot_overview(tenant, PERIOD)
+    assert overview["has_sdk_telemetry"] is True
+    # ...but the measured levers still have nothing to work from, and the screen
+    # needs to be able to tell those two states apart.
+    assert overview["has_optimize_signals"] is False
+
+    _post(
+        client,
+        token,
+        [_span("t-sig", "s-sig", {"kind": "duplicate", "fingerprint": "fp-x", "count": 1})],
+    )
+    after = optimize_measured.copilot_overview(tenant, PERIOD)
+    assert (after["has_sdk_telemetry"], after["has_optimize_signals"]) == (True, True)

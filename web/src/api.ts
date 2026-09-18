@@ -1133,6 +1133,8 @@ export interface CopilotOverview {
   applied: (OptimizationAction & { feature_id: string; feature_name: string })[];
   // Billing-only path: kept out of every total above.
   has_sdk_telemetry: boolean;
+  /** Telemetry arrives, but not the salted signals the measured levers need. */
+  has_optimize_signals: boolean;
   has_billing_data: boolean;
   billing_opportunities: BillingOpportunity[];
 }

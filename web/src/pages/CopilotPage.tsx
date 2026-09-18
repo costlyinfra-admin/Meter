@@ -176,6 +176,20 @@ export function CopilotPage() {
                 to unlock them.
               </p>
             )}
+            {/* Telemetry is arriving; the two measured levers below it are not.
+                Telling this reader to install the SDK would be telling them to
+                do what they have done. */}
+            {data.has_sdk_telemetry && !data.has_optimize_signals && (
+              <p className="muted billing-sdk-note">
+                Duplicate calls and cacheable prefixes are measured from optimization signals, which
+                this SDK is not sending yet. Turn on optimize mode (&nbsp;<code>optimize=True</code>
+                &nbsp;) to unlock them —{" "}
+                <Link to="/install-sdk" className="link">
+                  how to enable it
+                </Link>
+                .
+              </p>
+            )}
           </section>
 
           <div className="copilot-cols">

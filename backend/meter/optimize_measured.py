@@ -258,12 +258,32 @@ def _duplicate_opportunity(rows: list) -> Optional[dict]:
 
 
 def _prefix_opportunity(rows: list) -> Optional[dict]:
-    """Rows: (provider, model, fingerprint, call_count, prefix_tokens, cached_count)."""
+    """Rows: (provider, model, fingerprint, call_count, prefix_tokens, cached_count,
+    prefix_measured).
+
+    The dollars here are `uncached calls x prefix tokens x input rate x the
+    cache discount`. Three of those four are counted exactly; the prefix size is
+    only exact when the provider reported it (Anthropic returns
+    `cache_creation_input_tokens` — the size of the prefix it actually cached).
+    Where it did not, the SDK's figure is characters over four, and this is an
+    estimate wearing a measurement's clothes unless it says so. So the
+    confidence follows the input: `high` only when every priced row carried a
+    real count, `med` otherwise, and the evidence names which.
+    """
     total_savings = Decimal("0")
     total_uncached = 0
     max_prefix = 0
+    estimated_calls = 0
     trail = []
-    for provider, model, fingerprint, call_count, prefix_tokens, cached_count in rows:
+    for (
+        provider,
+        model,
+        fingerprint,
+        call_count,
+        prefix_tokens,
+        cached_count,
+        prefix_measured,
+    ) in rows:
         mult = pricing.cache_read_mult(provider)
         if mult is None:  # provider has no priced cache discount -> don't claim one
             continue
@@ -276,6 +296,8 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         total_savings += saving
         total_uncached += cacheable
         max_prefix = max(max_prefix, p_tokens)
+        if not prefix_measured:
+            estimated_calls += cacheable
         trail.append(
             {
                 "fingerprint": _fp(fingerprint),
@@ -283,18 +305,27 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
                 "model": model,
                 "calls": int(call_count),
                 "prefix_tokens": p_tokens,
+                "prefix_measured": bool(prefix_measured),
                 "cached": int(cached_count),
             }
         )
     if float(total_savings) < _MIN_SAVINGS:
         return None
+    measured = estimated_calls == 0
+    basis = (
+        "measured by the provider's own cache-creation token count"
+        if measured
+        else "prefix size estimated from request length"
+    )
     return {
         "lever": "prompt_caching",
         "savings": round(float(total_savings), 2),
-        "confidence": "high",
+        # The call counts and the cache discount are exact either way; what
+        # moves this off "high" is pricing an estimated number of tokens.
+        "confidence": "high" if measured else "med",
         "evidence": (
             f"a {max_prefix:,}-token static prefix repeated across "
-            f"{total_uncached:,} uncached calls"
+            f"{total_uncached:,} uncached calls — {basis}"
         ),
         "fix": "Enable prompt caching (set cache_control on the static system block).",
         "trail": trail[:_MAX_TRAIL],
@@ -453,7 +484,8 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
     rows = conn.execute(
         """
         SELECT signal_kind, provider, model, fingerprint,
-               call_count, prefix_tokens, tokens_in, tokens_out, cached_count
+               call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
+               prefix_measured
         FROM usage_signal
         WHERE feature_id = %s AND period = %s
         """,
@@ -461,7 +493,7 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
     ).fetchall()
 
     dup_rows = [(r[1], r[2], r[3], r[4], r[6], r[7]) for r in rows if r[0] == "duplicate"]
-    pfx_rows = [(r[1], r[2], r[3], r[4], r[5], r[8]) for r in rows if r[0] == "prefix"]
+    pfx_rows = [(r[1], r[2], r[3], r[4], r[5], r[8], r[9]) for r in rows if r[0] == "prefix"]
 
     opportunities = [
         opp
@@ -648,9 +680,29 @@ def copilot_overview(tenant_id: str, period: Optional[dt.date] = None) -> dict:
         # Billing-only recommendations (no SDK required). Kept in their OWN key and
         # deliberately excluded from `totals` — they are spend to review, growth and
         # governance signals, never measured or modelled savings.
-        sdk_present = bool(
+        # Two different questions, and the screen was only ever asking one.
+        #
+        # "Does request telemetry arrive at all" decides whether to offer the
+        # SDK — and asking it of `usage_signal` alone is the narrowest possible
+        # way to have it: a customer with fully traced agent runs was being told
+        # to go and install what they had already installed.
+        #
+        # "Are optimize-mode signals arriving" decides whether the duplicate and
+        # prefix levers can fire. Someone with telemetry but no optimize mode
+        # needs a flag, not an install.
+        optimize_present = bool(
             conn.execute(
                 "SELECT 1 FROM usage_signal WHERE period = %s LIMIT 1", (start,)
+            ).fetchone()
+        )
+        sdk_present = optimize_present or bool(
+            conn.execute(
+                """
+                SELECT 1 WHERE EXISTS (SELECT 1 FROM inference_cost
+                                       WHERE period = %s AND source = 'hook')
+                            OR EXISTS (SELECT 1 FROM ai_trace)
+                """,
+                (start,),
             ).fetchone()
         )
         billing_present = bool(
@@ -682,6 +734,9 @@ def copilot_overview(tenant_id: str, period: Optional[dt.date] = None) -> dict:
         # Separate from every total above: these are spend-to-review, visibility,
         # concentration, growth and control gaps — never measured/modelled savings.
         "has_sdk_telemetry": sdk_present,
+        # Telemetry is arriving, but not the salted signals the duplicate-call
+        # and prompt-caching levers are computed from.
+        "has_optimize_signals": optimize_present,
         "has_billing_data": billing_present,
         "billing_opportunities": optimize_billing.billing_opportunities(tenant_id, start, start),
     }

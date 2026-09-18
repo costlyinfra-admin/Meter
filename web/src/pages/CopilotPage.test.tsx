@@ -75,6 +75,7 @@ const OVERVIEW: CopilotOverview = {
     },
   ],
   has_sdk_telemetry: true,
+  has_optimize_signals: true,
   has_billing_data: true,
   billing_opportunities: [],
 };
@@ -155,6 +156,7 @@ const NO_SDK: CopilotOverview = {
   by_lever: [],
   applied: [],
   has_sdk_telemetry: false,
+  has_optimize_signals: false,
   has_billing_data: true,
   billing_opportunities: [SPEND_TO_REVIEW],
 };
@@ -219,6 +221,37 @@ describe("CopilotPage — billing-only path (no SDK)", () => {
     );
   });
 
+  it("asks someone who already has the SDK for the flag, not for the SDK", async () => {
+    // Telemetry arrives; optimize-mode signals do not. Telling this reader to
+    // install the SDK would be telling them to do what they have done.
+    vi.mocked(api.copilotOverview).mockResolvedValue({
+      ...NO_SDK,
+      has_sdk_telemetry: true,
+      has_optimize_signals: false,
+    });
+    renderPage();
+    await screen.findByText("Top recommendations");
+
+    expect(screen.getByText(/optimize mode/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Install the SDK" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Request-, user- and feature-level optimizations/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says nothing about the SDK once the measured signals are arriving", async () => {
+    vi.mocked(api.copilotOverview).mockResolvedValue({
+      ...NO_SDK,
+      has_sdk_telemetry: true,
+      has_optimize_signals: true,
+    });
+    renderPage();
+    await screen.findByText("Top recommendations");
+
+    expect(screen.queryByText(/optimize mode/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Install the SDK" })).not.toBeInTheDocument();
+  });
+
   it("keeps the honest setup empty state with no SDK and no billing data", async () => {
     vi.mocked(api.copilotOverview).mockResolvedValue({
       ...NO_SDK,
@@ -236,6 +269,7 @@ describe("CopilotPage — billing-only path (no SDK)", () => {
     vi.mocked(api.copilotOverview).mockResolvedValue({
       ...OVERVIEW,
       has_sdk_telemetry: true,
+      has_optimize_signals: true,
       has_billing_data: true,
       billing_opportunities: [SPEND_TO_REVIEW],
     });

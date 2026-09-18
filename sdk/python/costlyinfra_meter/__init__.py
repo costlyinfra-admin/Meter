@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import atexit
 import datetime as dt
+import hashlib
 import json
 import os
 import random
@@ -49,12 +50,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 FLUSH_INTERVAL = 2.0
 BATCH_SIZE = 50
@@ -76,6 +77,16 @@ CAPTURE_MAX_PER_DAY = 50
 #: evaluated as a different prompt. Matches the server's limit.
 CAPTURE_MAX_BYTES = 64 * 1024
 CAPTURE_QUEUE_MAX = 100
+
+# -- optimize mode ---------------------------------------------------------
+#: How much of a request counts as its cacheable static head when the provider's
+#: own static blocks (system prompt, tool definitions) are not separable.
+PREFIX_CHARS = 2000
+#: Prefix counters are aggregates; they leave on a timer, not per call.
+OPTIMIZE_FLUSH_INTERVAL = 60.0
+#: Bounds. A fingerprint map that grows with traffic is a leak, not a feature.
+DUP_CAPACITY = 5000
+PREFIX_CAPACITY = 512
 #: How long the server's answer to "is capture open for this feature" is trusted.
 #: A withdrawal takes effect within this window at the latest, and on the very
 #: next sample, because the server re-checks consent every time.
@@ -139,6 +150,10 @@ class Meter:
         capture_url: Optional[str] = None,
         capture_sample_rate: float = CAPTURE_SAMPLE_RATE,
         redact: Optional[Callable[[dict], Optional[dict]]] = None,
+        optimize: bool = False,
+        prefix_chars: int = PREFIX_CHARS,
+        optimize_flush_interval: float = OPTIMIZE_FLUSH_INTERVAL,
+        salt: Optional[str] = None,
     ):
         self.application = application or os.environ.get("METER_APPLICATION") or "default"
         self.environment = environment or os.environ.get("METER_ENVIRONMENT") or "production"
@@ -190,6 +205,18 @@ class Meter:
         #: Samples chosen but not delivered: refused, too large, redacted away or
         #: failed. Calls simply not sampled are not counted.
         self.capture_dropped = 0
+
+        # Optimize mode: measure the SHAPE of traffic — salted-hash fingerprints
+        # and counts, never prompt text — so the duplicate-call and uncached-
+        # prefix findings are measured rather than rules of thumb. Off by
+        # default, bounded in memory, and never on the caller's thread.
+        self._salt = salt
+        self._salt_state = "ready" if salt else "cold"
+        self._optimizer = (
+            _Optimizer(self, prefix_chars=prefix_chars, flush_interval=optimize_flush_interval)
+            if optimize
+            else None
+        )
         _METERS.add(self)
 
     @property
@@ -295,6 +322,10 @@ class Meter:
     def _emit(self, event: dict) -> None:
         self._send([event])
 
+    def _emit_all(self, events: list) -> None:
+        if events:
+            self._send(events)
+
     # -- delivery ----------------------------------------------------------
     def _send(self, events: list) -> None:
         """Queue events. Returns immediately; never raises."""
@@ -385,6 +416,14 @@ class Meter:
         """Send what is queued now. True if it drained within `timeout`."""
         if not self.enabled:
             return True
+        # Counters that have been accumulating but have not reached their
+        # interval belong in this flush; atexit calls this, and after it there
+        # is no later flush for them to make.
+        if self._optimizer is not None:
+            try:
+                self._emit_all(self._optimizer.due_summaries(force=True))
+            except Exception:
+                pass  # a lost summary is never worth failing a flush over
         try:
             deadline = time.monotonic() + max(0.0, timeout)
             with self._cv:
@@ -600,6 +639,60 @@ class Meter:
                     dt.datetime.now(dt.timezone.utc).date()
                 )
             self.capture_dropped += 1
+
+    # -- optimize mode -----------------------------------------------------
+    @property
+    def optimize_enabled(self) -> bool:
+        return self._optimizer is not None
+
+    def _salt_url(self) -> Optional[str]:
+        """The salt endpoint beside this meter's ingest URL, or None."""
+        if not self.ingest_url:
+            return None
+        base = self.ingest_url.rstrip("/")
+        if base.endswith("/events"):
+            return base[: -len("/events")] + "/salt"
+        return base + "/salt"
+
+    def salt(self) -> Optional[str]:
+        """The tenant's fingerprint salt, or None until it arrives.
+
+        Fetched once, on a thread of its own. v1 fetched it inline on the first
+        wrapped call, which put an HTTP round trip in front of a customer's
+        request — the one thing optimize mode promises never to do. Returning
+        None until it lands costs a few early signals, which are aggregates, and
+        costs the caller nothing.
+
+        A failed fetch disables signals permanently rather than retrying: without
+        a salt the only alternative is an unsalted hash, and that must never be
+        emitted.
+        """
+        if self._salt_state == "ready":
+            return self._salt
+        if self._salt_state == "cold":
+            self._salt_state = "fetching"
+            if _spawn(self._fetch_salt) is None:
+                self._salt_state = "failed"
+        return None
+
+    def _fetch_salt(self) -> None:
+        if not self.enabled:
+            self._salt_state = "failed"
+            return
+        try:
+            url = self._salt_url()
+            status, body = self._request("GET", url, None)
+            if status != 200:
+                raise ValueError(status)
+            value = json.loads(body).get("salt")
+            if not value:
+                raise ValueError("no salt")
+            self._salt = value
+            self._salt_state = "ready"
+        except Exception:
+            # Fail safe, and quietly: optimize mode is an extra, and a customer's
+            # application must never learn that Meter could not reach Meter.
+            self._salt_state = "failed"
 
     def _request(self, method: str, url: str, body: Optional[bytes]) -> tuple:
         """One exchange on the capture channel -> (status, body). Never raises.
@@ -1070,13 +1163,26 @@ class _Wrapped:
             # completed call would report zero tokens for real spend.
             usage = _usage_of(resp) if _has_usage(resp) else {}
             usage.setdefault("provider", self._p)
+            # Optimize mode, when it is on: fold this call's shape into the
+            # collector and attach the duplicate signal, if this request repeats,
+            # to the span the call was already sending. A hash and a JSON dump
+            # against an LLM call's latency; the network stays where it was.
+            signal, summaries = None, []
+            if meter._optimizer is not None:
+                signal = meter._optimizer.on_call(
+                    usage.get("provider") or self._p, usage.get("model") or "", kwargs, usage,
+                    self._feature or meter.feature_id,
+                )
+                summaries = meter._optimizer.due_summaries()
             meter._send([
                 meter._event("span.completed", trace_id, span_id=span_id, span_kind="llm",
                              operation_name=operation, latency_ms=latency,
                              feature_id=self._feature, application=self._app,
-                             prompt_id=self._prompt, prompt_version=self._version, **usage),
+                             prompt_id=self._prompt, prompt_version=self._version,
+                             signal=signal, **usage),
                 meter._event("trace.completed", trace_id, operation_name=operation,
                              application=self._app),
+                *summaries,
             ])
         except Exception:
             pass  # metering must never raise into the caller
@@ -1099,6 +1205,195 @@ def wrap(client: Any, meter: Meter, *, feature_id: Optional[str] = None) -> Any:
 # ---------------------------------------------------------------------------
 # Process lifetime
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Optimize mode — measured optimization signals
+# ---------------------------------------------------------------------------
+# Traffic SHAPE only: salted-hash fingerprints and counts. No prompt text, no
+# response text, no tool arguments, no metadata — nothing here reads a message's
+# content except to hash it, and the hash is salted with a secret the database
+# does not contain.
+#
+# Two signals, both of which the server has always known how to store:
+#   'duplicate' — this exact request was seen before, so one of the two calls
+#                 was avoidable. Rides on the span the call already sends.
+#   'prefix'    — many calls share a large static head that is not being cached.
+#                 A bounded counter map, flushed on a timer as its own span.
+def _sha(*parts: str) -> str:
+    h = hashlib.sha256()
+    h.update("\x1f".join(parts).encode("utf-8"))
+    return h.hexdigest()
+
+
+def _normalize(request: dict) -> str:
+    """A stable string for the parts of a request that make two calls identical."""
+    if not isinstance(request, dict):
+        return ""
+    payload = request.get("messages")
+    if payload is None:
+        payload = request.get("input")  # OpenAI Responses API
+    if payload is None:
+        payload = request.get("contents")  # Google generate_content
+    if payload is None:
+        # Not a call shape this knows how to compare. "" rather than "null",
+        # which is what json.dumps would give and which every unreadable call
+        # would then share.
+        return ""
+    try:
+        return json.dumps(payload, sort_keys=True, default=str)
+    except Exception:
+        return str(payload)
+
+
+def _static_prefix(request: dict, prefix_chars: int) -> tuple:
+    """The cacheable static head of a request, and an estimate of its size.
+
+    Prefers the explicitly static blocks — the system prompt and the tool
+    definitions — and otherwise falls back to the leading slice of the request.
+    The token count is characters over four, which is an estimate and is
+    reported as one: `on_call` replaces it with the provider's own figure
+    wherever the provider reports it.
+    """
+    static = ""
+    if isinstance(request, dict):
+        system = request.get("system")
+        tools = request.get("tools")
+        if system is not None or tools is not None:
+            try:
+                static = json.dumps([system, tools], sort_keys=True, default=str)
+            except Exception:
+                static = f"{system}{tools}"
+    if not static:
+        static = _normalize(request)[:prefix_chars]
+    return static, max(0, len(static) // 4)
+
+
+class _Optimizer:
+    """Bounded, thread-safe signal collection for one meter.
+
+    Both structures have a hard ceiling, because a map keyed by request shape
+    grows with traffic: the duplicate set is an LRU and the prefix map flushes
+    at capacity as well as on its timer.
+    """
+
+    def __init__(
+        self,
+        meter: Meter,
+        *,
+        prefix_chars: int = PREFIX_CHARS,
+        flush_interval: float = OPTIMIZE_FLUSH_INTERVAL,
+        dup_capacity: int = DUP_CAPACITY,
+        prefix_capacity: int = PREFIX_CAPACITY,
+    ):
+        self._m = meter
+        self._prefix_chars = int(prefix_chars)
+        self._flush_interval = float(flush_interval)
+        self._dup_capacity = int(dup_capacity)
+        self._prefix_capacity = int(prefix_capacity)
+        self._seen: OrderedDict[str, None] = OrderedDict()
+        self._prefixes: dict = {}
+        self._last_flush = time.monotonic()
+        self._lock = threading.Lock()
+
+    def on_call(self, provider: str, model: str, request: dict, usage: dict,
+                feature_id: Optional[str] = None) -> Optional[dict]:
+        """Fold one call in; return a 'duplicate' signal if this request repeats.
+
+        `usage` is what the response reported. Two fields matter here: a cache
+        READ says this call was already served from cache and must not be
+        counted as a caching opportunity, and a cache WRITE is the provider's
+        own measurement of the static prefix — the only place a real token count
+        for it can come from.
+        """
+        salt = self._m.salt()
+        if not salt:
+            return None  # never emit an unsalted hash
+        body = _normalize(request)
+        if not body:
+            # A call shape this cannot read — no messages, no input, no contents.
+            # Every such call would hash identically and the second one would be
+            # reported as an avoidable repeat of the first, which is a finding
+            # about this code rather than about the customer's traffic.
+            return None
+        model = model or ""
+        request_fp = _sha(salt, provider, model, body)
+        static, estimated = _static_prefix(request, self._prefix_chars)
+        prefix_fp = _sha(salt, provider, model, static)
+        feature = feature_id or self._m.feature_id
+        measured = int(usage.get("cache_write_tokens") or 0)
+        cache_read = int(usage.get("cache_read_tokens") or 0)
+        with self._lock:
+            duplicate = request_fp in self._seen
+            if duplicate:
+                self._seen.move_to_end(request_fp)
+            else:
+                self._seen[request_fp] = None
+                while len(self._seen) > self._dup_capacity:
+                    self._seen.popitem(last=False)
+            entry = self._prefixes.setdefault(
+                (prefix_fp, feature),
+                {"provider": provider, "model": model, "feature_id": feature,
+                 "count": 0, "cached": 0, "tin": 0, "tout": 0,
+                 "estimated": 0, "measured": 0},
+            )
+            entry["count"] += 1
+            entry["tin"] += int(usage.get("tokens_in") or 0)
+            entry["tout"] += int(usage.get("tokens_out") or 0)
+            entry["estimated"] = max(entry["estimated"], estimated)
+            if measured:
+                entry["measured"] = max(entry["measured"], measured)
+            if cache_read:
+                entry["cached"] += 1
+        if duplicate:
+            return {"kind": "duplicate", "fingerprint": request_fp, "count": 1}
+        return None
+
+    def due_summaries(self, force: bool = False) -> list:
+        """Prefix counters as spans, when the timer elapses or the map fills up.
+
+        Each summary is a completed span of its own. The server does not cost it
+        — the calls it summarises were each metered when they happened — it only
+        folds the counts into the tenant's signal store.
+
+        `force` empties the map whatever the timer says, and `Meter.flush()`
+        passes it. Without that, a process that does not outlive the interval —
+        a script, a batch job, one serverless invocation — takes every prefix
+        counter it gathered to the grave, which is most of the traffic this
+        feature exists to measure.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if (not force
+                    and now - self._last_flush < self._flush_interval
+                    and len(self._prefixes) < self._prefix_capacity):
+                return []
+            self._last_flush = now
+            items, self._prefixes = self._prefixes, {}
+        events = []
+        for (fingerprint, _feature), entry in items.items():
+            # The provider's own count when it gave one, characters over four
+            # when it did not — and the flag says which, so the server never
+            # presents an estimate as a measurement.
+            measured = bool(entry["measured"])
+            events.append(
+                self._m._event(
+                    "span.completed", _new_id(), span_id=_new_id(), span_kind="llm",
+                    operation_name="optimize.prefix", provider=entry["provider"],
+                    model=entry["model"] or None, feature_id=entry["feature_id"],
+                    signal={
+                        "kind": "prefix",
+                        "fingerprint": fingerprint,
+                        "count": entry["count"],
+                        "cached_count": entry["cached"],
+                        "tokens_in": entry["tin"],
+                        "tokens_out": entry["tout"],
+                        "prefix_tokens": entry["measured"] if measured else entry["estimated"],
+                        "prefix_measured": measured,
+                    },
+                )
+            )
+        return events
+
+
 def _spawn(work) -> Optional[threading.Thread]:
     """A daemon worker, or None if threads are unavailable.
 
