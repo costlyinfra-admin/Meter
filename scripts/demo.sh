@@ -36,6 +36,19 @@ pg_ctl -D "$TMPD/data" -o "-k $TMPD -p 5544 -c listen_addresses=''" -l "$TMPD/lo
 createdb -h "$TMPD" -p 5544 meter
 
 export DATABASE_URL="host=$TMPD port=5544 dbname=meter"
+# The API connects as the non-privileged `meter_app` role — exactly as it does in
+# production — so the demo exercises the real Row-Level Security path.
+#
+# WHY THIS LINE MATTERS: DATABASE_URL above is the cluster owner (initdb makes us
+# a superuser), and RLS never applies to a superuser or to a table's owner. Without
+# DATABASE_APP_URL, app_dsn() falls back to DATABASE_URL and every tenant-isolation
+# policy is silently inert — a fresh tenant would see the seeded demo tenant's rows,
+# so the demo would give a false pass on invariant 6 (per-tenant isolation).
+#
+# The role needs no setup here: migration 0002 creates `meter_app` and each
+# migration grants it what it needs, all of which `make db-seed` applies below.
+# DATABASE_URL stays the owner connection used by migrations, seeding and auth.
+export DATABASE_APP_URL="host=$TMPD port=5544 dbname=meter user=meter_app"
 export APP_SECRET_KEY="demo-secret-change-me"
 # The demo account is an admin here so the internal Admin Portal is explorable in
 # the throwaway demo. In production, set METER_ADMIN_EMAILS to your own admins.
