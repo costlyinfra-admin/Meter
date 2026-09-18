@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AskAction, AskMeterBubble } from "./AskMeter";
@@ -182,16 +182,24 @@ describe("the contextual invitation", () => {
     expect(localStorage.getItem(DISMISSED_KEY)).toBeNull();
   });
 
-  it("is announced as a labelled region, with every prompt reachable", async () => {
+  it("is announced where it sits, without taking the cursor", async () => {
     show();
+    // Something the reader was already using, to see whether it survives.
+    const elsewhere = document.createElement("input");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+
     act(() => void publishOverviewContext(SUGGESTIONS));
     waitOutTheTimer();
 
     const region = screen.getByRole("region", { name: /worth investigating/i });
-    expect(region).toBeInTheDocument();
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByText(/worth investigating/i)),
-    );
+    expect(region).toHaveAttribute("aria-live", "polite");
+    // A card that appears on a timer must not drag focus out of what someone
+    // was doing — the interruption would be worse than the offer.
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+
+    // ...and every prompt is still reachable in the tab order.
     expect(screen.getAllByRole("button", { name: /explain|investigate|dismiss/i })).toHaveLength(3);
   });
 

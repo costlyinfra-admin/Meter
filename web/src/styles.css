@@ -111,6 +111,16 @@
   --shadow-sm: 0 1px 3px rgba(26, 28, 23, 0.07), 0 1px 2px rgba(26, 28, 23, 0.04);
   --shadow-md: 0 20px 25px -5px rgba(26, 28, 23, 0.05), 0 8px 10px -6px rgba(26, 28, 23, 0.05);
   --shadow-lg: 0 25px 50px -12px rgba(26, 28, 23, 0.12);
+  /* A small thing floating OVER the page needs a different shadow from a panel
+     sitting in it: --shadow-lg is wide and 12% opaque, which reads as a soft
+     lift under a full-width card and as almost nothing under a 320px popover on
+     a near-white ground. This is a hairline ring for the edge, a close contact
+     shadow, and a tighter cast — so the card has a definite boundary and
+     visibly sits above whatever it covers. */
+  --pop-ring: 0 0 0 1px rgba(26, 28, 23, 0.12);
+  --pop-shadow:
+    0 0 0 1px rgba(26, 28, 23, 0.12), 0 2px 6px -1px rgba(26, 28, 23, 0.1),
+    0 14px 32px -10px rgba(26, 28, 23, 0.32);
 
   --font:
     "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -242,6 +252,11 @@
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+  /* On a dark ground a black ring disappears; the edge has to be light. */
+  --pop-ring: 0 0 0 1px rgba(255, 255, 255, 0.14);
+  --pop-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.14), 0 2px 6px -1px rgba(0, 0, 0, 0.5),
+    0 14px 32px -10px rgba(0, 0, 0, 0.7);
 
   color-scheme: dark;
 }
@@ -4895,6 +4910,7 @@ button.method-head:hover .method-title {
 }
 
 .assist-x:hover {
+  background: none;
   opacity: 1;
 }
 
@@ -5187,7 +5203,7 @@ button.method-head:hover .method-title {
   border-radius: var(--radius-pill);
   background: var(--ink);
   color: var(--bg);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--pop-shadow);
   /* Two beats, then still. Enough to catch an eye that is elsewhere on the
      page; short enough that nobody has to wait for it to stop. */
   animation:
@@ -5195,6 +5211,13 @@ button.method-head:hover .method-title {
     ask-bubble-nudge 1.6s ease-in-out 1.2s 2;
 }
 
+/* THE TRAP, for anything below that is a button but does not look like one:
+   `button` has a near-black fill and `button:hover` repaints it
+   `--accent-hover`. Setting `background` on the base rule is not enough — the
+   hover rule must set it AGAIN, or the control turns black under the cursor
+   with its own dark text still on top. `button.link` does this; four rules here
+   did not, and shipped as unreadable black tiles. jsdom has no :hover and the
+   colour lives only in the cascade, so no test catches it: check by hovering. */
 .ask-bubble-open {
   display: flex;
   align-items: center;
@@ -5211,6 +5234,7 @@ button.method-head:hover .method-title {
 }
 
 .ask-bubble-open:hover {
+  background: none;
   color: var(--lime);
 }
 
@@ -5227,6 +5251,7 @@ button.method-head:hover .method-title {
 }
 
 .ask-bubble-close:hover {
+  background: none;
   opacity: 1;
 }
 
@@ -5234,16 +5259,24 @@ button.method-head:hover .method-title {
 .ask-bubble-expanded {
   width: min(320px, calc(100vw - 3rem));
   padding: 0.9rem 1rem 1rem;
-  border: 1px solid var(--line);
+  /* No border: the ring inside --pop-shadow draws the edge, so the tail below
+     can carry the same edge with one filter instead of a second triangle. */
   border-radius: var(--radius);
   background: var(--card);
   color: var(--ink);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--pop-shadow);
 }
 
 /* The expanded card is paper, not ink, so its tail has to match. */
 .ask-bubble-expanded::after {
   border-top-color: var(--card);
+  /* The card's edge continues onto the tail. A drop-shadow filter follows the
+     triangle's real outline, which a box-shadow cannot do. */
+  filter: drop-shadow(0 1px 0 rgba(26, 28, 23, 0.12)) drop-shadow(0 6px 8px rgba(26, 28, 23, 0.14));
+}
+
+:root[data-theme="dark"] .ask-bubble-expanded::after {
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.14)) drop-shadow(0 6px 8px rgba(0, 0, 0, 0.6));
 }
 
 .ask-bubble-head {
@@ -5277,17 +5310,6 @@ button.method-head:hover .method-title {
   line-height: 1.3;
 }
 
-/* It is focused when it appears, to announce itself. That is not a click, and
-   should not be drawn as one. */
-.ask-bubble-title:focus {
-  outline: none;
-}
-
-.ask-bubble-title:focus-visible {
-  outline: 2px solid var(--accent-ring);
-  outline-offset: 2px;
-}
-
 .ask-bubble-lead {
   margin: 0 0 0.75rem;
   color: var(--muted);
@@ -5318,8 +5340,15 @@ button.method-head:hover .method-title {
   transition: border-color 0.15s ease;
 }
 
+/* Lifting off the card, not inverting: the label has to stay readable. */
 .ask-bubble-prompt:hover {
   border-color: var(--ink);
+  background: var(--surface-alt);
+}
+
+.ask-bubble-expanded .ask-bubble-close:hover {
+  background: var(--surface-alt);
+  color: var(--ink);
 }
 
 .ask-bubble-prompt-label {
@@ -5366,6 +5395,7 @@ button.method-head:hover .method-title {
 
 .ask-action:hover {
   border-color: var(--line-strong);
+  background: var(--surface);
   color: var(--ink);
 }
 

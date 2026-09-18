@@ -17,7 +17,7 @@
  *   `AskAction` — a small "Ask Meter" beside a panel heading or a metric, for
  *   the reader who is already looking at the thing they want explained.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
   ASK_EVENT,
@@ -83,7 +83,6 @@ export function AskMeterBubble() {
   const [hidden, setHidden] = useState(() => hasDiscoveredChat() || wasDismissed());
   const [expanded, setExpanded] = useState(false);
   const [suggestions, setSuggestions] = useState<AskSuggestion[]>(overviewContext);
-  const headingRef = useRef<HTMLParagraphElement>(null);
   const onOverview = location.pathname === "/";
 
   // Whatever opens the chat — this bubble, an inline action, or the launcher
@@ -119,12 +118,6 @@ export function AskMeterBubble() {
     }, INVITE_AFTER_MS);
     return () => window.clearTimeout(timer);
   }, [hidden, expanded, onOverview, suggestions]);
-
-  // Moving focus would steal the cursor out of whatever the reader was doing;
-  // announcing it lets a screen reader reach the offer at its own pace.
-  useEffect(() => {
-    if (expanded) headingRef.current?.focus({ preventScroll: true });
-  }, [expanded]);
 
   const lead = useMemo(() => invitationLead(suggestions), [suggestions]);
 
@@ -166,6 +159,10 @@ export function AskMeterBubble() {
       className="ask-bubble ask-bubble-expanded"
       role="region"
       aria-labelledby="ask-bubble-heading"
+      // Announced where it sits, rather than by dragging the cursor here: this
+      // card appears on a timer, and taking focus off whatever someone was
+      // reading is a worse interruption than the one it is offering to help with.
+      aria-live="polite"
     >
       <div className="ask-bubble-head">
         <span className="ask-bubble-mark">
@@ -181,7 +178,7 @@ export function AskMeterBubble() {
           <CloseIcon />
         </button>
       </div>
-      <p className="ask-bubble-title" id="ask-bubble-heading" tabIndex={-1} ref={headingRef}>
+      <p className="ask-bubble-title" id="ask-bubble-heading">
         I found a few things worth investigating
       </p>
       <p className="ask-bubble-lead">{lead}</p>
