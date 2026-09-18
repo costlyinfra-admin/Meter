@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Assistant } from "./Assistant";
 import { ApiError } from "../api";
+import { ASK_EVENT, CHAT_OPENED_EVENT, DISCOVERED_KEY } from "../askMeter";
 
 const askAssistant = vi.fn();
 const assistantMeta = vi.fn();
@@ -326,5 +327,63 @@ describe("support assistant — how a reply arrives", () => {
     fireEvent.submit(screen.getByRole("button", { name: /send question/i }).closest("form")!);
 
     expect(await screen.findByText("All of it at once.")).toBeInTheDocument();
+  });
+});
+
+describe("opened from somewhere else on the page", () => {
+  it("opens and asks when a discovery prompt is handed to it", async () => {
+    askAssistant.mockResolvedValue({
+      answer: "The spike was a backfill.",
+      sources: [],
+      answered: true,
+    });
+    render(
+      <MemoryRouter>
+        <Assistant />
+      </MemoryRouter>,
+    );
+    // Closed to begin with: the bubble must not open the panel by itself.
+    expect(screen.queryByRole("dialog", { name: /support assistant/i })).not.toBeInTheDocument();
+
+    fireEvent(
+      window,
+      new CustomEvent(ASK_EVENT, {
+        detail: { question: "What caused the cost spike?", source: "invitation" },
+      }),
+    );
+
+    expect(await screen.findByRole("dialog", { name: /support assistant/i })).toBeInTheDocument();
+    // Submitted, not left sitting in the box — the panel's own chips submit too.
+    await waitFor(() =>
+      expect(askAssistant).toHaveBeenCalledWith(
+        expect.objectContaining({ question: "What caused the cost spike?" }),
+      ),
+    );
+    expect(await screen.findByText("The spike was a backfill.")).toBeInTheDocument();
+  });
+
+  it("opens without asking when no question comes with it", async () => {
+    render(
+      <MemoryRouter>
+        <Assistant />
+      </MemoryRouter>,
+    );
+    fireEvent(window, new CustomEvent(ASK_EVENT, { detail: { question: "", source: "bubble" } }));
+
+    expect(await screen.findByRole("dialog", { name: /support assistant/i })).toBeInTheDocument();
+    expect(askAssistant).not.toHaveBeenCalled();
+  });
+
+  it("tells the discovery bubble it has been found, and remembers that", async () => {
+    const found = vi.fn();
+    window.addEventListener(CHAT_OPENED_EVENT, found);
+    try {
+      localStorage.removeItem(DISCOVERED_KEY);
+      await open();
+      expect(found).toHaveBeenCalled();
+      expect(localStorage.getItem(DISCOVERED_KEY)).toBe("1");
+    } finally {
+      window.removeEventListener(CHAT_OPENED_EVENT, found);
+    }
   });
 });

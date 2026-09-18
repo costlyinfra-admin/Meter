@@ -12,6 +12,7 @@ import { api } from "../api";
 import { useAuth } from "../auth/AuthContext";
 import { ThemeToggle } from "./ThemeToggle";
 import { REFRESH_ALERTS_EVENT } from "../pages/Dashboard";
+import { AskMeterBubble } from "./AskMeter";
 import { Assistant } from "./Assistant";
 import { BrandMark } from "./BrandMark";
 
@@ -358,6 +359,9 @@ export function AppShell() {
         <Outlet />
       </main>
       <Assistant />
+      {/* Sits above the assistant's launcher and points at it. Renders nothing
+          once the chat has been found. */}
+      <AskMeterBubble />
     </div>
   );
 }

@@ -15,6 +15,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { api, ApiError } from "../api";
+import { ASK_EVENT, AskDetail, CHAT_OPENED_EVENT, markChatDiscovered } from "../askMeter";
+import { track } from "../observability/datadog";
 import { Inline } from "../help/render";
 import { retrieve } from "../help/retrieve";
 
@@ -269,6 +271,8 @@ export function Assistant() {
   const [composed, setComposed] = useState(true);
   const location = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
+  /** How this opening began, for analytics. Reset after each open is counted. */
+  const openedFrom = useRef("launcher");
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -294,6 +298,21 @@ export function Assistant() {
 
   useEffect(() => {
     if (open) inputRef.current?.focus();
+  }, [open]);
+
+  /**
+   * Opening the panel — by any route — retires the discovery bubble.
+   *
+   * Watching the state rather than wrapping the launcher's onClick keeps this
+   * true for the keyboard, for an inline "Ask Meter", and for anything added
+   * later, and leaves the launcher itself exactly as it was.
+   */
+  useEffect(() => {
+    if (!open) return;
+    markChatDiscovered();
+    track("assistant_opened", { source: openedFrom.current });
+    window.dispatchEvent(new Event(CHAT_OPENED_EVENT));
+    openedFrom.current = "launcher";
   }, [open]);
 
   const asked = useMemo(() => thread.some((m) => m.role === "user"), [thread]);
@@ -337,6 +356,9 @@ export function Assistant() {
         .map(({ role, content }) => ({ role, content }))
         .filter((turn) => turn.content !== GREETING);
       setThread((prior) => [...prior, { role: "user", content: text }]);
+      // Names and counts only. The question's text is the customer's content
+      // and never leaves for telemetry.
+      track("assistant_question", { source: openedFrom.current, length: text.length });
       setDraft("");
       setPending(true);
       try {
@@ -373,6 +395,32 @@ export function Assistant() {
     },
     [location.pathname, pending, thread],
   );
+
+  /**
+   * Open, and optionally ask, on behalf of something else on the page — the
+   * discovery bubble's suggestions and the inline "Ask Meter" actions.
+   *
+   * Through a window event rather than a prop, matching how the alerts badge is
+   * already signalled: a button beside a heading three components deep can ask
+   * a question without this panel's state being lifted out of it.
+   *
+   * The question is submitted rather than typed into the box, because the
+   * panel's own suggestion chips submit, and a prompt that lands in the input
+   * and waits reads as a failure to respond.
+   */
+  const askRef = useRef(ask);
+  askRef.current = ask;
+
+  useEffect(() => {
+    const onAsk = (event: Event) => {
+      const detail = (event as CustomEvent<AskDetail>).detail;
+      openedFrom.current = detail?.source ?? "external";
+      setOpen(true);
+      if (detail?.question) askRef.current(detail.question);
+    };
+    window.addEventListener(ASK_EVENT, onAsk);
+    return () => window.removeEventListener(ASK_EVENT, onAsk);
+  }, []);
 
   /**
    * mailto: is handed to the operating system, and a browser with no mail

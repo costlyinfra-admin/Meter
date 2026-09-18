@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type BudgetForecast, type ProviderSpend } from "../api";
 import { AuthProvider } from "../auth/AuthContext";
 import { Dashboard } from "./Dashboard";
+import { OVERVIEW_CONTEXT_EVENT, type AskSuggestion } from "../askMeter";
 import { compactMoney } from "../format";
 
 vi.mock("../api", async (importActual) => {
@@ -1282,5 +1283,64 @@ describe("Dashboard (Overview)", () => {
     await waitFor(() => expect(api.refreshInference).toHaveBeenCalled());
     await waitFor(() => expect(api.dashboard).toHaveBeenCalledTimes(2));
     expect(dispatch.mock.calls.some(([e]) => e.type === "meter:refresh-alerts")).toBe(true);
+  });
+});
+
+describe("what the Overview offers the assistant", () => {
+  it("builds its suggestions from the numbers on the page, not from fixed copy", async () => {
+    const published: AskSuggestion[][] = [];
+    const listen = (e: Event) => void published.push((e as CustomEvent<AskSuggestion[]>).detail);
+    window.addEventListener(OVERVIEW_CONTEXT_EVENT, listen);
+    try {
+      renderDashboard();
+      await screen.findByText("Key insights");
+      const latest = () => published[published.length - 1];
+      await waitFor(() => expect(latest()).toHaveLength(3));
+
+      const suggestions: AskSuggestion[] = latest();
+      expect(suggestions.map((s) => s.label)).toEqual([
+        "Explain the cost spike",
+        "Investigate unattributed spend",
+        "Find ways to reduce spend",
+      ]);
+
+      // The spike's own sentence, as the server wrote it.
+      expect(suggestions[0].detail).toBe(DATA.insights[0].text);
+      // $30 build + $760 inference, read off this period's unattributed bucket.
+      expect(suggestions[1].detail).toBe("$790 is not tied to any feature.");
+      // $1,200 measured + $640 modelled, from the Optimize engine.
+      expect(suggestions[2].detail).toBe("$1,840 a month is currently identified.");
+      // No date and no dollar amount is written into the code: change the data
+      // and every one of these lines changes with it.
+      for (const s of suggestions) expect(s.question).toContain(s.label.split(" ").pop());
+    } finally {
+      window.removeEventListener(OVERVIEW_CONTEXT_EVENT, listen);
+    }
+  });
+
+  it("offers nothing when the period has nothing notable in it", async () => {
+    vi.mocked(api.dashboard).mockResolvedValue({
+      ...DATA,
+      insights: [],
+      unattributed: { build_cost: 0, inference_cost: 0 },
+    });
+    vi.mocked(api.copilotOverview).mockResolvedValue({
+      totals: { measured: 0, modeled_ceiling: 0, directional: 0 },
+      verified_monthly_savings: 0,
+      verified_annual_savings: 0,
+      by_feature: [],
+    } as never);
+
+    const published: AskSuggestion[][] = [];
+    const listen = (e: Event) => void published.push((e as CustomEvent<AskSuggestion[]>).detail);
+    window.addEventListener(OVERVIEW_CONTEXT_EVENT, listen);
+    try {
+      renderDashboard();
+      await screen.findByText("Spend trend");
+      await waitFor(() => expect(published.length).toBeGreaterThan(0));
+      expect(published[published.length - 1]).toEqual([]);
+    } finally {
+      window.removeEventListener(OVERVIEW_CONTEXT_EVENT, listen);
+    }
   });
 });

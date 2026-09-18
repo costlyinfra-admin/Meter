@@ -4958,6 +4958,280 @@ button.method-head:hover .method-title {
 }
 
 /* ---------------------------------------------------------------------------
+   Ask Meter — the discovery layer over the assistant.
+
+   The launcher below is untouched; this sits above it and points down at it, so
+   the thing people were not clicking finally says what it is for. Compact by
+   default. On the Overview it expands once into an invitation built from that
+   page's own numbers, then never again.
+
+   It animates on arrival and nudges once. It does not animate on a loop: a
+   corner of the screen that moves forever is a corner people learn to ignore.
+   --------------------------------------------------------------------------- */
+.ask-bubble {
+  position: fixed;
+  right: 24px;
+  /* Clears the 56px launcher and its 24px inset, leaving the gap the pointer
+     crosses. Matches .assist-panel, so the two never fight for the corner. */
+  bottom: 96px;
+  z-index: 59;
+  animation: ask-bubble-in 0.35s ease-out both;
+}
+
+/* The tail: a small wedge on the underside, aimed at the launcher's centre
+   (24px inset + half of 56px = 52px from the right edge). */
+.ask-bubble::after {
+  content: "";
+  position: absolute;
+  right: 46px;
+  bottom: -6px;
+  width: 0;
+  height: 0;
+  border-top: 7px solid var(--ink);
+  border-right: 6px solid transparent;
+  border-left: 6px solid transparent;
+}
+
+.ask-bubble-compact {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+  color: var(--bg);
+  box-shadow: var(--shadow-lg);
+  /* Two beats, then still. Enough to catch an eye that is elsewhere on the
+     page; short enough that nobody has to wait for it to stop. */
+  animation:
+    ask-bubble-in 0.35s ease-out both,
+    ask-bubble-nudge 1.6s ease-in-out 1.2s 2;
+}
+
+.ask-bubble-open {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.35rem 0.55rem 0.9rem;
+  border: 0;
+  border-radius: var(--radius-pill) 0 0 var(--radius-pill);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ask-bubble-open:hover {
+  color: var(--lime);
+}
+
+.ask-bubble-close {
+  display: flex;
+  align-items: center;
+  padding: 0.55rem 0.7rem 0.55rem 0.35rem;
+  border: 0;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: none;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+
+.ask-bubble-close:hover {
+  opacity: 1;
+}
+
+/* ---- the one-time invitation ---- */
+.ask-bubble-expanded {
+  width: min(320px, calc(100vw - 3rem));
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: var(--shadow-lg);
+}
+
+/* The expanded card is paper, not ink, so its tail has to match. */
+.ask-bubble-expanded::after {
+  border-top-color: var(--card);
+}
+
+.ask-bubble-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.ask-bubble-mark {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ask-bubble-expanded .ask-bubble-close {
+  padding: 0.2rem;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
+.ask-bubble-title {
+  margin: 0 0 0.2rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+/* It is focused when it appears, to announce itself. That is not a click, and
+   should not be drawn as one. */
+.ask-bubble-title:focus {
+  outline: none;
+}
+
+.ask-bubble-title:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.ask-bubble-lead {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.ask-bubble-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ask-bubble-prompt {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.ask-bubble-prompt:hover {
+  border-color: var(--ink);
+}
+
+.ask-bubble-prompt-label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+/* The live detail behind the suggestion — the spike's own sentence, the
+   unattributed total. Clamped: it is a hint, not the answer. */
+.ask-bubble-prompt-detail {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* ---- "Ask Meter" beside a heading ---- */
+.ask-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  /* Sits with the heading it belongs to; whatever else the panel head carries
+     keeps its own place at the far end. */
+  margin-right: auto;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.ask-action:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+@keyframes ask-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ask-bubble-nudge {
+  0%,
+  100% {
+    transform: none;
+  }
+  8% {
+    transform: translateY(-4px);
+  }
+  16% {
+    transform: none;
+  }
+}
+
+/* On a phone the corner is smaller and the content matters more: the bubble
+   tracks the launcher's tighter inset, and the invitation spans the width
+   rather than hanging off the edge. Both stay clear of the bottom, where the
+   thumb and the browser chrome are. */
+@media (max-width: 520px) {
+  .ask-bubble {
+    right: 16px;
+    bottom: 80px;
+  }
+
+  .ask-bubble::after {
+    right: 38px;
+  }
+
+  .ask-bubble-expanded {
+    left: 16px;
+    width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask-bubble,
+  .ask-bubble-compact {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Provider invoice reconciliation — the opt-in module's own styles. Nothing
    here is used by any other screen, so removing the module means removing this
    block and nothing else.

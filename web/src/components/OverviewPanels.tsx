@@ -27,6 +27,7 @@ import { ConnectorMark } from "./ConnectorMark";
 import type { SpendSource } from "./ProviderBreakdown";
 import { forecastShape, type ForecastPoint, type ForecastShape } from "../budget";
 import { compact, compactMoney, money, wholeMoney } from "../format";
+import { AskAction } from "./AskMeter";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -318,6 +319,10 @@ export function KeyInsights({ insights }: { insights: Insight[] }) {
     <section className="panel insights-panel" aria-label="Key insights">
       <div className="panel-head">
         <h2>Key insights</h2>
+        <AskAction
+          source="insights"
+          question="Walk me through the key insights on my Overview. Which one should I act on first, and why?"
+        />
       </div>
       {/* Four is where spreading the rows down the panel reads as a roomy list
           rather than as two items adrift in a tall box. */}
@@ -367,6 +372,10 @@ export function SpendTrend({ trend }: { trend: TrendMonth[] }) {
     <section className="panel trend-panel" aria-label="Spend trend">
       <div className="panel-head">
         <h2>Spend trend</h2>
+        <AskAction
+          source="trend"
+          question="What is driving the shape of my spend trend over these months — build, inference, or both?"
+        />
         <span className="trend-key">
           <span className="trend-key-item">
             <span className="trend-key-swatch build" aria-hidden /> Build
@@ -737,6 +746,10 @@ function BudgetShell({ children, status }: { children: ReactNode; status?: React
     <section className="panel budget-panel" aria-label="Budget and forecast">
       <div className="panel-head">
         <h2>Budget &amp; forecast</h2>
+        <AskAction
+          source="forecast"
+          question="How does Meter forecast my spend against budget, and what should I do if the forecast is over?"
+        />
         {status}
       </div>
       {children}
@@ -788,8 +801,8 @@ export function BudgetForecastPanel({
       <BudgetShell>
         <p className="budget-headline">No budget configured</p>
         <p className="muted budget-empty">
-          Set a monthly or annual AI budget and this card will track the period against it,
-          forecast where it lands, and show what the identified savings would change.
+          Set a monthly or annual AI budget and this card will track the period against it, forecast
+          where it lands, and show what the identified savings would change.
         </p>
         <Link className="kpi-link budget-cta" to="/settings#budgets">
           Set a budget →
@@ -808,8 +821,8 @@ export function BudgetForecastPanel({
       <BudgetShell>
         <p className="budget-headline">Forecast unavailable</p>
         <p className="muted budget-empty">
-          No daily spend has been recorded for this month yet, so there is nothing to project
-          from. {money(forecast.actual)} of a {compactMoney(forecast.budget)} budget is spent.
+          No daily spend has been recorded for this month yet, so there is nothing to project from.{" "}
+          {money(forecast.actual)} of a {compactMoney(forecast.budget)} budget is spent.
         </p>
       </BudgetShell>
     );
@@ -979,6 +992,10 @@ export function OpenActions({ actions }: { actions: OpenAction[] }) {
     <section className="panel actions-panel" aria-label="Open actions">
       <div className="panel-head">
         <h2>Open actions</h2>
+        <AskAction
+          source="actions"
+          question="What are the open actions on my Overview asking me to do, and what happens to my numbers if I do them?"
+        />
       </div>
       {actions.length === 0 ? (
         // An empty list is a real answer here, not a blank state.

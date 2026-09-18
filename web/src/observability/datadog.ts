@@ -36,6 +36,23 @@ declare const __APP_VERSION__: string;
 /** The only hostname that reports. Preview and local builds stay silent. */
 export const RUM_HOST = "meter.costlyinfra.com";
 
+/**
+ * Record a product event.
+ *
+ * A no-op unless RUM actually started, which is every context except the
+ * production site — so tests, `vite dev` and preview builds count nothing, and
+ * no caller has to know that. Attributes are names and counts only: nothing
+ * here may carry a question's text, a customer identifier or a credential.
+ */
+export function track(name: string, attributes?: Record<string, unknown>): void {
+  if (!started) return;
+  try {
+    datadogRum.addAction(name, attributes);
+  } catch {
+    // Telemetry must never break the screen it is measuring.
+  }
+}
+
 /** Guards against a double `init`, which Datadog warns about and ignores. */
 let started = false;
 

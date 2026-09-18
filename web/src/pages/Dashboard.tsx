@@ -36,6 +36,7 @@ interface SavingsState extends SavingsSummary {
   byFeature: Record<string, number>;
 }
 import { ProviderBreakdown, type SpendSource } from "../components/ProviderBreakdown";
+import { AskSuggestion, publishOverviewContext } from "../askMeter";
 import { compact, money, num } from "../format";
 
 type OverviewTab = "products" | "features" | "providers" | "developers" | "customers";
@@ -182,6 +183,51 @@ export function Dashboard() {
       live = false;
     };
   }, [data?.end]);
+
+  /**
+   * Tell the "Ask Meter" bubble what this page is currently showing.
+   *
+   * Every line of it is read off the live dashboard — the spike insight's own
+   * sentence, the unattributed total, the Optimize engine's figure — so no date
+   * and no dollar amount is written into the copy. A page with nothing notable
+   * on it publishes nothing, and the invitation stays closed rather than
+   * offering to explain a spike that is not there.
+   */
+  useEffect(() => {
+    if (!data) return;
+    const suggestions: AskSuggestion[] = [];
+
+    const spike = data.insights.find((i) => i.kind === "spike");
+    if (spike) {
+      suggestions.push({
+        label: "Explain the cost spike",
+        detail: spike.text,
+        topic: "the cost spike",
+        question: `What caused the cost spike on my Overview? ${spike.text}`,
+      });
+    }
+
+    const unattributed = data.unattributed.build_cost + data.unattributed.inference_cost;
+    if (unattributed > 0) {
+      suggestions.push({
+        label: "Investigate unattributed spend",
+        detail: `${money(unattributed)} is not tied to any feature.`,
+        topic: "unattributed spend",
+        question: `${money(unattributed)} of my spend is unattributed. Why does spend land there, and how do I attribute it?`,
+      });
+    }
+
+    if (savings && savings.potentialMonthly > 0) {
+      suggestions.push({
+        label: "Find ways to reduce spend",
+        detail: `${money(savings.potentialMonthly)} a month is currently identified.`,
+        topic: "potential savings",
+        question: `How can I reduce my AI spend? Meter currently identifies ${money(savings.potentialMonthly)} a month in potential savings.`,
+      });
+    }
+
+    publishOverviewContext(suggestions);
+  }, [data, savings]);
 
   // The budget forecast is computed entirely on the server — the stored budget,
   // the observed daily spend, the org's timezone — and asked for on the same
