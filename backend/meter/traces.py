@@ -491,6 +491,26 @@ def _claim_cost(conn, span_id: str, amount: Decimal) -> bool:
     return row is not None
 
 
+def _claim_signal(conn, span_id: str) -> bool:
+    """Claim the right to count this span's optimization signal, exactly once.
+
+    The same mechanism as `_claim_cost` and for the same reason, on a separate
+    column. Money and signals are separately true of a span: a prefix summary
+    carries a signal and no cost, so one claim cannot serve both.
+
+    Without this, re-delivering a span under a new batch id — or none — folded
+    its signal in again. `hook_batch` only recognises a repeat of the *same*
+    batch, and the duplicate-call finding is built on these counts, so a retry
+    loop could grow a customer's "savings" with no new traffic behind it.
+    """
+    row = conn.execute(
+        "UPDATE ai_span SET signalled_at = now() "
+        "WHERE id = %s AND signalled_at IS NULL RETURNING id",
+        (span_id,),
+    ).fetchone()
+    return row is not None
+
+
 def _bump_trace_totals(conn, trace_id: str, amount: Decimal, tokens: int) -> None:
     conn.execute(
         "UPDATE ai_trace SET total_cost = total_cost + %s, total_tokens = total_tokens + %s, "
@@ -613,20 +633,25 @@ def ingest(
 
             signal = ev.get("signal")
             if signal and provider in PRICED_PROVIDERS:
-                hook.accumulate_signal(
-                    signal_acc,
-                    signal,
-                    signal["kind"],
-                    feature_id,
-                    provider,
-                    ev.get("model") or "",
-                    _period_of(ev["occurred_at"]),
-                    tokens_in,
-                    tokens_out,
-                )
+                # Claimed separately from the money below: this span's signal is
+                # counted once however often the span is delivered, and a replay
+                # under a fresh batch id no longer inflates the duplicate count.
+                if _claim_signal(conn, span_id):
+                    hook.accumulate_signal(
+                        signal_acc,
+                        signal,
+                        signal["kind"],
+                        feature_id,
+                        provider,
+                        ev.get("model") or "",
+                        _period_of(ev["occurred_at"]),
+                        tokens_in,
+                        tokens_out,
+                    )
                 if signal["kind"] == "prefix":
                     # A prefix signal summarises calls that were each metered
-                    # already. Recording the signal must not re-cost them.
+                    # already. Recording the signal must not re-cost them —
+                    # whether or not the claim above was this delivery's to make.
                     continue
 
             if ev["span_kind"] != "llm" or provider not in PRICED_PROVIDERS:

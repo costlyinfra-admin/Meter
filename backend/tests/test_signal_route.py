@@ -12,6 +12,7 @@ These go through the real route.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -270,3 +271,104 @@ def test_a_tenant_with_traces_is_not_told_to_install_the_sdk(client):
     )
     after = optimize_measured.copilot_overview(tenant, PERIOD)
     assert (after["has_sdk_telemetry"], after["has_optimize_signals"]) == (True, True)
+
+
+# --- a span's signal counts once, however often the span arrives -----------
+def _totals(tenant_id):
+    """(summed signal call_count, summed inference cost) for the tenant."""
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        signals = conn.execute("SELECT COALESCE(SUM(call_count), 0) FROM usage_signal").fetchone()[
+            0
+        ]
+        cost = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM inference_cost").fetchone()[0]
+    return int(signals), float(cost)
+
+
+def _deliver(client, token, events, batch_id=None):
+    body = {"events": events}
+    if batch_id is not None:
+        body["batch_id"] = batch_id
+    resp = client.post("/api/hook/events", headers={"Authorization": f"Bearer {token}"}, json=body)
+    assert resp.status_code == 200, resp.text
+
+
+def test_re_delivering_a_span_cannot_inflate_its_signal(client):
+    """Money was already idempotent; signals were not.
+
+    `_claim_cost` made re-delivery safe for dollars, but the signal was folded
+    in before it, and `hook_batch` only recognises a repeat of the SAME batch
+    id. A client retrying with a fresh id — or none — grew the duplicate count
+    with no new traffic behind it: 1 -> 2 -> 3 while the cost stayed put. The
+    duplicate-call finding is built on exactly these counts.
+    """
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    span = _span("t-dup", "s-dup", {"kind": "duplicate", "fingerprint": "fp-a", "count": 1})
+
+    _deliver(client, token, [span], batch_id="b1")
+    once = _totals(tenant)
+    assert once == (1, pytest.approx(0.0045))
+
+    _deliver(client, token, [span], batch_id="b1")  # the same batch again
+    _deliver(client, token, [span], batch_id="b2")  # a fresh batch id
+    _deliver(client, token, [span])  # no batch id at all
+    _deliver(client, token, [span, span])  # twice inside one batch
+
+    assert _totals(tenant) == once, "a re-delivered span counted its signal again"
+
+
+def test_two_deliveries_racing_still_count_one_signal(client):
+    """The claim is a conditional UPDATE, so concurrency is decided by Postgres."""
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    span = _span("t-race", "s-race", {"kind": "duplicate", "fingerprint": "fp-race", "count": 1})
+
+    errors: list = []
+
+    def deliver():
+        try:
+            _deliver(client, token, [span])
+        except Exception as exc:  # pragma: no cover - surfaces a harness fault
+            errors.append(exc)
+
+    threads = [threading.Thread(target=deliver) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert _totals(tenant)[0] == 1
+
+
+def test_a_prefix_summary_still_records_its_signal_and_no_cost(client):
+    """The reason signals get their own claim rather than riding the cost one.
+
+    A prefix summary deliberately carries a signal and no cost — its calls were
+    each metered when they happened. Gating signals on the financial claim would
+    have dropped every one of them.
+    """
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    summary = _span(
+        "t-pfx",
+        "s-pfx",
+        {
+            "kind": "prefix",
+            "fingerprint": "fp-pfx",
+            "count": 40,
+            "cached_count": 0,
+            "prefix_tokens": 4000,
+            "tokens_in": 160_000,
+            "tokens_out": 400,
+        },
+    )
+
+    _deliver(client, token, [summary], batch_id="p1")
+    signals, cost = _totals(tenant)
+    assert signals == 40, "the prefix summary's counts were dropped"
+    assert cost == 0.0, "a prefix summary must never be costed"
+
+    # ...and it is claimed too, so a replay does not double the prefix counts.
+    _deliver(client, token, [summary], batch_id="p2")
+    assert _totals(tenant) == (40, 0.0)
