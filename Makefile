@@ -38,7 +38,10 @@ install-web:
 	cd $(WEB) && npm install
 
 # ---- test ----------------------------------------------------------------
-test: test-backend test-web
+# `make test` runs everything CI runs, in the order CI runs it. The SDKs were
+# missing: CI has always had its own job for them, so a change that broke an SDK
+# passed locally and failed on push.
+test: test-backend test-web test-sdk
 
 test-backend:
 	cd $(BACKEND) && .venv/bin/python -m pytest

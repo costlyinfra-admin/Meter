@@ -517,6 +517,14 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
                   <>
                     <strong className="opt-realized">{money(a.realized_monthly ?? 0)}/mo</strong>
                     {a.status === "verified" && <span className="opt-verified">✓ Verified</span>}
+                    {a.status === "unverifiable" && (
+                      <span
+                        className="muted"
+                        title="No optimization telemetry for this lever in this period."
+                      >
+                        can&apos;t verify
+                      </span>
+                    )}
                   </>
                 )}
               </td>

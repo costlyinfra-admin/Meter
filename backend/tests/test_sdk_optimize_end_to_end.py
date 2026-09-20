@@ -192,7 +192,10 @@ def test_the_recommendation_a_customer_sees_comes_out_the_far_end(client):
     """The whole chain: wrapped call -> route -> usage_signal -> the screen."""
     tenant, token, feature_id = setup(client)
     meter = sdk_meter(client, token, feature_id)
-    wrapped = meter.wrap(Anthropic(), feature_id=feature_id)
+    # With a customer named, repeats are scoped: these calls are all one
+    # customer's, so "the second could have been served from the first" is at
+    # least a coherent claim. Without it the finding says so — see the test below.
+    wrapped = meter.wrap(Anthropic(), feature_id=feature_id, customer_id="acme-corp")
     wait_for_salt(meter)
 
     # Both levers gate on volume — 100 cacheable calls, a dollar of savings —
@@ -209,16 +212,28 @@ def test_the_recommendation_a_customer_sees_comes_out_the_far_end(client):
 
     result = optimize_measured.opportunities(tenant, feature_id, PERIOD)
     levers = {o["lever"] for o in result["opportunities"]}
-    assert "duplicate_calls" in levers, "151 identical calls produced no duplicate finding"
+    assert "duplicate_calls" in levers, "151 identical calls produced no repeated-request finding"
     assert "prompt_caching" in levers, "a 22,400-character static prefix produced no finding"
+    repeats = next(o for o in result["opportunities"] if o["lever"] == "duplicate_calls")
+    # The real SDK now sends a v2 identity and an explicit customer scope, so the
+    # finding is built from a comparison of the WHOLE request within one scope.
+    assert repeats["savings_type"] == "modeled_ceiling"
+    assert "reuse safety is unverified" not in repeats["evidence"]
 
-    # And the Recommendations screen's own payload: real dollars on both levers,
-    # and no "install the SDK" prompt for someone who plainly has.
+    # And the Recommendations screen's own payload, with no "install the SDK"
+    # prompt for someone who plainly has.
     overview = optimize_measured.copilot_overview(tenant, PERIOD)
     assert overview["has_sdk_telemetry"] is True
     by_lever = {e["lever"]: e["monthly"] for e in overview["by_lever"]}
-    assert by_lever.get("duplicate_calls", 0) > 0
     assert by_lever.get("prompt_caching", 0) > 0
+
+    # The repeated-request finding is DETECTED and visible on the feature, but
+    # it is excluded from the rollup because these are the same input tokens the
+    # prefix finding already prices. Counting both would sell the same saving
+    # twice; the overlap cannot be quantified from these aggregates, so the
+    # smaller one is dropped rather than added.
+    assert repeats["overlaps"] == "Prompt caching"
+    assert by_lever.get("duplicate_calls", 0) == 0
 
 
 def test_nothing_a_customer_typed_is_anywhere_in_what_was_sent(client):
@@ -243,3 +258,32 @@ def test_nothing_a_customer_typed_is_anywhere_in_what_was_sent(client):
     assert '"signal"' in wire, "this test proves nothing if no signal was sent"
     for leak in (SECRET, "alice@example.com", "SYSTEM", "tool_"):
         assert leak not in wire, f"{leak!r} reached the wire"
+
+
+def test_without_a_customer_the_finding_says_reuse_is_unverified(client):
+    """The honest half of the scope rule, end to end.
+
+    `wrap()` without a customer or cache scope still detects the repeats — they
+    are real — but nobody has said the two calls belong to the same user, tenant
+    or cache, so nothing may imply the second could have served the first.
+    """
+    tenant, token, feature_id = setup(client)
+    meter = sdk_meter(client, token, feature_id)
+    wrapped = meter.wrap(Anthropic(), feature_id=feature_id)  # no customer
+    wait_for_salt(meter)
+
+    request = {
+        "model": "claude-sonnet-4-6",
+        "system": SYSTEM,
+        "messages": [{"role": "user", "content": "the same question"}],
+    }
+    for _ in range(151):
+        wrapped.messages.create(**request)
+    assert meter.flush(timeout=60.0)
+
+    result = optimize_measured.opportunities(tenant, feature_id, PERIOD)
+    repeats = next(o for o in result["opportunities"] if o["lever"] == "duplicate_calls")
+    assert "reuse safety is unverified" in repeats["evidence"]
+    # Below a scoped finding, never above it.
+    assert repeats["confidence"] == "low"
+    assert repeats["savings_type"] == "modeled_ceiling"

@@ -37,10 +37,24 @@ _MAX_TRAIL = 25  # cap the evidence trail payload
 #   directional      — a symptom/estimate; never contributes to a measured total
 _LEVER_META = {
     "duplicate_calls": {
-        "title": "Duplicate calls",
+        # The slug is unchanged: it keys applied actions, exclusions and the
+        # per-lever rollup, and renaming it would orphan a customer's history.
+        # The TITLE is what was wrong. "Duplicate calls" states a conclusion —
+        # that these calls were avoidable — when what was measured is that the
+        # requests were identical. Whether the second could have been served
+        # from the first depends on freshness, authorization, deliberate
+        # sampling, external state and application policy, none of which Meter
+        # can see.
+        "title": "Repeated request candidates",
         "source": "sdk",
-        "savings_type": "measured",
-        "confidence_reason": "Exact count of repeated requests, priced from the price book.",
+        # Not "measured". The repeat count is exact; the SAVING is a ceiling,
+        # because it assumes every repeat was safely reusable and prices it at
+        # list rate against aggregates that cannot reconstruct the billed cost.
+        "savings_type": "modeled_ceiling",
+        "confidence_reason": (
+            "Exact count of identical requests; the saving assumes each repeat "
+            "was safely reusable and is priced at list rate."
+        ),
     },
     "prompt_caching": {
         "title": "Prompt caching",
@@ -111,6 +125,13 @@ _EXCLUSION_GROUPS = [
     {"prompt_caching", "prompt_caching_est"},
     # measured exact-duplicate finding supersedes the semantic-cache estimate
     {"duplicate_calls", "semantic_caching"},
+    # A repeated request and a repeated PREFIX are the same input tokens counted
+    # two ways: caching the whole response makes the prefix saving moot, and
+    # caching the prefix reduces what the duplicate would have cost. The overlap
+    # cannot be quantified from these aggregates — the signals do not say which
+    # repeats shared which prefix — so the smaller is dropped from the totals
+    # rather than both being added as if they were independent.
+    {"duplicate_calls", "prompt_caching"},
 ]
 _SAVINGS_TYPE_RANK = {"measured": 2, "modeled_ceiling": 1, "directional": 0}
 
@@ -157,10 +178,17 @@ _LEVER_GUIDANCE = {
         "verification": "Cache utilization rises and this feature's input cost falls next period.",
     },
     "duplicate_calls": {
-        "validation": "Confirm the duplicates aren't intentional (idempotent retries, distinct "
-        "users) before caching.",
-        "verification": "The duplicate count for this feature drops next period; the "
-        "reconciliation loop reports the realized saving.",
+        "validation": (
+            "Meter measured that these requests were identical. Whether the later ones could "
+            "have been served from the first depends on things it cannot see: how fresh the "
+            "answer had to be, whether the callers were authorized to the same data, whether "
+            "the repeats were deliberate sampling or retries, and whether anything outside "
+            "the prompt had changed. Check those before caching."
+        ),
+        "verification": (
+            "The repeat count for this feature drops next period. The figure is a list-price "
+            "ceiling, not an invoice-verified saving — confirm the drop against your bill."
+        ),
     },
     "model_rightsizing": {
         "validation": "Run a quality eval on a sample before switching — this is a ceiling, not a "
@@ -226,33 +254,72 @@ def _fp(fingerprint: str) -> str:
     return fingerprint[:12]
 
 
-def _duplicate_opportunity(rows: list) -> Optional[dict]:
-    """Rows: (provider, model, fingerprint, call_count, tokens_in, tokens_out)."""
+def _duplicate_opportunity(rows: list, legacy_repeats: int = 0) -> Optional[dict]:
+    """Rows: (provider, model, fingerprint, call_count, tokens_in, tokens_out, scope_kind).
+
+    What is measured here is that the requests were IDENTICAL — same provider,
+    same model, same whole request body, inside one application, feature,
+    operation, environment and customer scope, within the SDK's window. What is
+    not measured is whether the later ones could have been served from the
+    first. That depends on freshness, authorization, deliberate sampling,
+    external state and application policy, none of which reaches Meter. So this
+    is a ceiling on an opportunity, not a saving anybody has banked.
+
+    The dollars are a LIST-PRICE ceiling for a second reason. `pricing.price`
+    prices tokens at the price book, and the aggregate behind these rows carries
+    only total input and output. It cannot tell how much of that input was
+    already served from a provider cache at a tenth of the rate, so the real
+    billed cost of a repeat is at most this and often less. Inventing a cache
+    discount here would be inventing a number; the label says ceiling instead.
+    """
     if not rows:
         return None
     repeats = sum(int(r[3]) for r in rows)
     # price() is linear in tokens, so summing each row's priced tokens gives the
-    # exact cost of all the avoidable repeats — no averaging error.
+    # list-price cost of all the repeats — no averaging error, but no invoice
+    # behind it either.
     savings = sum((pricing.price(r[1], int(r[4]), int(r[5]), r[0]) for r in rows), Decimal("0"))
     if repeats <= 0 or float(savings) < _MIN_SAVINGS:
         return None
+    # Whether anybody named a boundary these responses could be reused across.
+    # One unscoped group is enough to stop the whole finding claiming safety.
+    unscoped = any((r[6] or "unscoped") == "unscoped" for r in rows)
     trail = [
         {
             "fingerprint": _fp(r[2]),
             "provider": r[0],
             "model": r[1],
             "call_count": int(r[3]),
+            "scope": r[6] or "unscoped",
         }
         for r in sorted(rows, key=lambda r: int(r[3]), reverse=True)[:_MAX_TRAIL]
     ]
+    evidence = (
+        f"{repeats:,} repeated requests across {len(rows):,} distinct request shapes "
+        f"this month, priced at list rate"
+    )
+    if unscoped:
+        # Absence of scope is reported as absence. It is not permission.
+        evidence += " — no customer or cache scope was set, so reuse safety is unverified"
+    if legacy_repeats:
+        # Saying so matters: the number visibly dropped, and the reason was a
+        # correction to the detector, not a change in the customer's traffic.
+        evidence += (
+            f". {legacy_repeats:,} further repeats were matched by an older, incomplete "
+            "fingerprint and are excluded"
+        )
     return {
         "lever": "duplicate_calls",
         "savings": round(float(savings), 2),
-        "confidence": "high",  # measured exactly; framed as a ceiling
-        "evidence": (
-            f"{repeats:,} duplicate calls across {len(rows):,} distinct requests this month"
+        # The COUNT is exact. The saving is a ceiling that assumes every repeat
+        # was safely reusable, so the confidence describes the saving, not the
+        # counting: medium, and never "guaranteed".
+        "confidence": "med" if not unscoped else "low",
+        "evidence": evidence,
+        "fix": (
+            "Cache responses for identical requests (key on the request hash) where the "
+            "answer can safely be reused."
         ),
-        "fix": "Add response caching for identical requests (e.g. keyed on the request hash).",
         "trail": trail,
     }
 
@@ -480,25 +547,35 @@ def _rightsizing_opportunity(conn, feature_id, start) -> Optional[dict]:
     }
 
 
-def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[float]]:
+def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[float], dict]:
     rows = conn.execute(
         """
         SELECT signal_kind, provider, model, fingerprint,
                call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
-               prefix_measured
+               prefix_measured, fingerprint_version, scope_kind
         FROM usage_signal
         WHERE feature_id = %s AND period = %s
         """,
         (feature_id, start),
     ).fetchall()
 
-    dup_rows = [(r[1], r[2], r[3], r[4], r[6], r[7]) for r in rows if r[0] == "duplicate"]
+    # v1 fingerprints compared provider, model and messages and nothing else, so
+    # calls differing in temperature, system, tools or response format hashed
+    # identically. Those rows are kept — they are real history and they back
+    # existing applied actions — but an incomplete match must not be presented
+    # as an exact one, so the finding is built from v2 alone.
+    dup_rows = [
+        (r[1], r[2], r[3], r[4], r[6], r[7], r[11])
+        for r in rows
+        if r[0] == "duplicate" and r[10] == "v2"
+    ]
+    legacy_dups = sum(int(r[4]) for r in rows if r[0] == "duplicate" and r[10] != "v2")
     pfx_rows = [(r[1], r[2], r[3], r[4], r[5], r[8], r[9]) for r in rows if r[0] == "prefix"]
 
     opportunities = [
         opp
         for opp in (
-            _duplicate_opportunity(dup_rows),
+            _duplicate_opportunity(dup_rows, legacy_dups),
             _prefix_opportunity(pfx_rows),
             _arbitrage_opportunity(conn, feature_id, start),
             _rightsizing_opportunity(conn, feature_id, start),
@@ -506,7 +583,18 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
         if opp is not None
     ]
     cache_utilization = _cache_utilization(conn, feature_id, start, rows)
-    return opportunities, cache_utilization
+    # Which levers could still SEE anything this period. "No repeats found" and
+    # "nothing was looking" are different facts, and only the first is evidence
+    # that a fix worked — so a lever is observable when its KIND of telemetry
+    # arrived at all, not when it happened to find something.
+    observable = {
+        # v2 signals of any kind prove optimize mode is live and reporting on a
+        # comparison this detector trusts. v1 rows do not: they are excluded
+        # from the finding, so they cannot witness its absence either.
+        "duplicate_calls": any(r[10] == "v2" for r in rows),
+        "prompt_caching": any(r[0] == "prefix" for r in rows),
+    }
+    return opportunities, cache_utilization, observable
 
 
 def _months_between(a: dt.date, b: dt.date) -> int:
@@ -517,13 +605,21 @@ def _months_between(a: dt.date, b: dt.date) -> int:
 _VERIFY_PERIODS = 2
 
 
-def _actions(conn, feature_id, start, measured_by_lever: dict) -> list:
+def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict) -> list:
     """Applied optimizations, reconciled projected → realized → verified (opt spec §20).
 
     realized = frozen projection − the lever's CURRENT avoidable spend, once we're
     past the applied period. Status advances: pending (applied this period) →
     measured (one period reconciled) → verified (the realized drop has held for
     `_VERIFY_PERIODS` periods), the terminal Prove state.
+
+    `observable` says whether each lever could still SEE anything this period.
+    Without it, "current avoidable spend is zero" is ambiguous in the worst
+    possible direction: a customer who turned optimize mode off, or whose old
+    v1 signals are no longer trusted, would show realized = the full projection
+    and, after two periods, "verified". Meter would be reporting a success it
+    had simply stopped being able to look for. A lever with no input this period
+    reconciles to nothing and says so.
     """
     rows = conn.execute(
         """
@@ -539,8 +635,13 @@ def _actions(conn, feature_id, start, measured_by_lever: dict) -> list:
         projected = round(float(projected), 2)
         current = round(float(measured_by_lever.get(lever, 0.0)), 2)
         elapsed = _months_between(applied_on, start)
+        seen = observable.get(lever, True)
         if elapsed <= 0:
             realized, status = None, "pending"  # applied this period, nothing to reconcile
+        elif not seen:
+            # Nothing to compare against. Absence of evidence is reported as
+            # absence, never as a realized saving.
+            realized, status = None, "unverifiable"
         else:
             realized = round(projected - current, 2)
             status = "verified" if elapsed >= _VERIFY_PERIODS and realized > 0 else "measured"
@@ -549,7 +650,7 @@ def _actions(conn, feature_id, start, measured_by_lever: dict) -> list:
                 "lever": lever,
                 "applied_on": applied_on.isoformat(),
                 "projected_monthly": projected,
-                "current_avoidable": current,
+                "current_avoidable": current if seen else None,
                 "realized_monthly": realized,
                 "status": status,
             }
@@ -587,7 +688,7 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date) -> dict:
     Shared by the per-feature endpoint and the tenant Overview (opt spec §21), so
     the Overview aggregates over the SAME numbers a feature page shows.
     """
-    measured, cache_utilization = _measured(conn, feature_id, start)
+    measured, cache_utilization, observable = _measured(conn, feature_id, start)
     estimated = dashboard.heuristic_optimization(conn, feature_id, start)
 
     unified = [_unify_measured(o) for o in measured]
@@ -599,7 +700,7 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date) -> dict:
         for o in unified
         if o["savings_type"] in ("measured", "modeled_ceiling")
     }
-    actions = _actions(conn, feature_id, start, by_lever)
+    actions = _actions(conn, feature_id, start, by_lever, observable)
     # An opportunity's lifecycle status follows its applied action: detected →
     # applied → verified (opt spec §20).
     action_status = {a["lever"]: a["status"] for a in actions}

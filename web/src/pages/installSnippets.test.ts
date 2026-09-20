@@ -211,7 +211,10 @@ describe("the application slug", () => {
 describe("the Install SDK page's prompt capture samples", () => {
   it("use only parameters the Python SDK really takes", () => {
     expect(PYTHON_SDK).toContain("capture_prompts: Optional[bool] = None");
-    expect(PYTHON_SDK).toContain("prompt_version: Optional[str] = None) -> Any:");
+    // The parameter has to exist; it does not have to be LAST. Pinning the
+    // closing `) -> Any:` to it meant any new keyword on wrap() broke this,
+    // which says nothing about whether the snippet is still correct.
+    expect(PYTHON_SDK).toContain("prompt_version: Optional[str] = None");
     expect(CAPTURE_PYTHON).toContain("Meter(capture_prompts=True)");
     expect(CAPTURE_PYTHON).toContain("prompt_id=");
     expect(CAPTURE_PYTHON).toContain("prompt_version=");

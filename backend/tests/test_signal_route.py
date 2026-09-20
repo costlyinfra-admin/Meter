@@ -166,7 +166,16 @@ def test_the_measured_lever_fires_on_a_signal_that_arrived_this_way(client):
             _span(
                 "t3",
                 f"s3-{i}",
-                {"kind": "duplicate", "fingerprint": "fp-repeat", "count": 1},
+                {
+                    "kind": "duplicate",
+                    "fingerprint": "fp-repeat",
+                    "count": 1,
+                    # What a current SDK sends. Without the version this is a
+                    # legacy v1 row, which the detector deliberately excludes —
+                    # v1 compared messages alone, so its matches are not exact.
+                    "fingerprint_version": "v2",
+                    "scope_kind": "explicit",
+                },
                 feature_id=feature,
                 tokens_in=1_000_000,
             )
@@ -175,8 +184,11 @@ def test_the_measured_lever_fires_on_a_signal_that_arrived_this_way(client):
 
     result = optimize_measured.opportunities(tenant, feature, PERIOD)
     levers = {o["lever"]: o for o in result["opportunities"]}
-    assert "duplicate_calls" in levers, "a real signal produced no duplicate-call finding"
-    assert levers["duplicate_calls"]["savings_type"] == "measured"
+    assert "duplicate_calls" in levers, "a real signal produced no repeated-request finding"
+    # A ceiling, not a guaranteed saving: the repeat count is exact, but whether
+    # the later calls could have been served from the first is not something
+    # Meter can see.
+    assert levers["duplicate_calls"]["savings_type"] == "modeled_ceiling"
     assert levers["duplicate_calls"]["projected_monthly_savings"] > 0
 
 

@@ -70,14 +70,72 @@ off). When on, for each recorded call the SDK computes locally:
 is a per-tenant secret fetched once with the ingest token, so hashes are useless
 to anyone without it.
 
+### 4.0 Request identity (v2, 2026-09-20)
+
+**What is measured** is that two requests were *identical*. **What is not
+measured** is whether the second could have been served from the first. That
+depends on freshness, authorization, deliberate sampling, external state and
+application policy — none of which reaches Meter. The finding is therefore a
+**ceiling on an opportunity**, classified `modeled_ceiling` and titled
+*Repeated request candidates*, never a guaranteed saving.
+
+**The identity.** v1 hashed provider, model and messages only, so calls
+differing in `temperature`, `system`, `tools`, `tool_choice`, `max_tokens`,
+`stop`, `response_format`, `seed`, reasoning configuration or conversation state
+matched — all of which change the output. v2 is an **exclusion rule**: every
+serializable request field is part of the identity except transport settings and
+credentials. A parameter nobody has heard of changes the fingerprint rather than
+being ignored. A request that cannot be read — a cycle, an object with no
+documented conversion, a non-finite number, a payload past the depth/size bounds
+— produces **no candidate at all**; there is no truncation and no `str()`
+fallback, because both turn "unreadable" into "identical".
+
+Python and Node emit byte-identical canonical forms, pinned by shared vectors in
+[`sdk/golden/request-fingerprints.json`](../sdk/golden/request-fingerprints.json)
+that both test suites read.
+
+**Scope.** The comparison is confined to one application, feature, operation,
+environment and customer/cache scope, all hashed into the fingerprint with the
+tenant's salt — no raw identifier leaves the process. `wrap()` takes
+`customer_id` / `cache_scope` for this; `agent()` already took a customer. Where
+no scope is stated the repeat is still counted and marked `unscoped`, and the
+finding says reuse safety is unverified. **Absence of scope is never read as
+permission.**
+
+**Window.** A repeat counts only within a bounded window (default 10 minutes),
+measured from the *first* call of a group and never extended by later ones, on a
+monotonic clock. Without it, a request repeated six hours later counted as
+avoidable — a freshness claim nobody had checked.
+
+**Versioning.** Signals carry `fingerprint_version`. Rows written by v1 are kept
+as history but excluded from the finding, and the evidence line says how many
+were excluded so a drop in the number is explained by the correction rather than
+mistaken for a change in traffic.
+
+**Coverage limits.** Detection is process-local. Separate SDK instances — other
+replicas, other hosts, other languages — cannot see each other's first
+occurrences, so real duplicates across them are **missed**. The finding is a
+floor on repetition and a ceiling on savings at the same time. Distributed
+deduplication is deliberately out of scope.
+
+**Pricing.** `pricing.price` prices at the published price book, and the stored
+aggregate carries only total input and output — it cannot tell how much input
+was already served from a provider cache at a tenth of the rate. The figure is a
+**list-price ceiling**, labelled as one; no cache discount is invented.
+
+**Overlap.** A repeated request and a repeated prefix are the same input tokens
+counted two ways. The overlap cannot be quantified from these aggregates, so the
+two levers are mutually exclusive in the totals and the smaller is dropped
+rather than both being summed.
+
 ### 4.1 The SDK aggregates client-side (keeps volume + storage bounded)
 
 To avoid shipping millions of per-call events and storing every unique request:
 
-- The SDK keeps a small **bounded LRU** (`request_fp → last_seen`, cap ~5 000).
-  On a *repeat* within the window it emits a **duplicate signal** — so only
-  confirmed duplicates are ever sent. Non-repeats cost nothing and are never
-  stored.
+- The SDK keeps a small **bounded LRU** (`request_fp → first_seen`, cap ~5 000,
+  entries expiring after the duplicate window). On a *repeat* within the window
+  it emits a **duplicate signal** — so only confirmed repeats are ever sent.
+  Non-repeats cost nothing and are never stored.
 - It keeps a tiny **counter map** (`prefix_fp → {count, prefix_tokens,
   cached_count}`) and flushes summaries on a timer (default 60 s) or at cap.
   Distinct static prefixes per feature are few (a handful of system prompts), so

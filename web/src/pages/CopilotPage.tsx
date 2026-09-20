@@ -66,7 +66,10 @@ export function CopilotPage() {
             <Kpi
               label="Measured savings"
               value={`${money(data.totals.measured)}/mo`}
-              sub="Guaranteed, given your traffic"
+              /* Not "guaranteed". These are computed from measured telemetry
+                 rather than rules of thumb, which is a claim about where the
+                 number came from — not a promise about the next invoice. */
+              sub="From measured telemetry, at list price"
               tone="measured"
             />
             <Kpi
@@ -287,6 +290,17 @@ export function CopilotPage() {
                       <td className="num">
                         {a.status === "pending" ? (
                           <span className="muted">awaiting next period</span>
+                        ) : a.status === "unverifiable" ? (
+                          /* The telemetry this reconciles against stopped
+                             arriving. Showing $0 avoidable here would read as a
+                             complete success, which is the one thing nobody
+                             has evidence for. */
+                          <span
+                            className="muted"
+                            title="No optimization telemetry for this lever in this period, so there is nothing to reconcile the projection against."
+                          >
+                            can&apos;t verify — no telemetry
+                          </span>
                         ) : (
                           <>
                             <strong className="opt-realized">

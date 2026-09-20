@@ -286,6 +286,15 @@ def _signal(raw) -> Optional[dict]:
     # estimate. Anything but an explicit true is an estimate: a claim of
     # measurement has to be made, never inferred from a missing field.
     out["prefix_measured"] = raw.get("prefix_measured") is True
+    # Which request identity produced the fingerprint. An SDK that does not say
+    # is v1 by definition — the field only exists because v2 added it — and v1
+    # compared messages alone, so its matches are not exact.
+    version = _text(raw.get("fingerprint_version"), MAX_TINY, "signal.fingerprint_version")
+    out["fingerprint_version"] = version if version in ("v1", "v2") else "v1"
+    # Whether the caller named a boundary a response could be reused in. Absent
+    # is recorded as absent; it is never read as permission.
+    scope = _text(raw.get("scope_kind"), MAX_TINY, "signal.scope_kind")
+    out["scope_kind"] = scope if scope in ("explicit", "unscoped") else None
     return out
 
 
@@ -699,7 +708,7 @@ def ingest(
                 entry["count"],
             )
         for skey, sentry in signal_acc.items():
-            feature_id, provider, model, period, kind, fingerprint = skey
+            feature_id, provider, model, period, kind, fingerprint, _version = skey
             hook.upsert_signal(
                 conn, tenant_id, feature_id, provider, model, period, kind, fingerprint, sentry
             )

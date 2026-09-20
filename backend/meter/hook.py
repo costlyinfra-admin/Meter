@@ -208,7 +208,7 @@ def ingest_events(tenant_id: str, events: list[dict], batch_id: Optional[str] = 
             upsert_customer_cost(conn, tenant_id, customer_id, period, centry)
 
         for skey, sentry in signal_acc.items():
-            feature_id, provider, model, period, kind, fingerprint = skey
+            feature_id, provider, model, period, kind, fingerprint, _version = skey
             upsert_signal(
                 conn, tenant_id, feature_id, provider, model, period, kind, fingerprint, sentry
             )
@@ -290,7 +290,10 @@ def accumulate_signal(
     fingerprint = sig.get("fingerprint")
     if not fingerprint:
         return  # a signal with no fingerprint is unusable; drop it
-    key = (feature_id, provider, model, period, kind, str(fingerprint))
+    # The version is part of the key: a v1 and a v2 row for one fingerprint are
+    # different facts about different comparisons and must not merge.
+    version = sig.get("fingerprint_version") or "v1"
+    key = (feature_id, provider, model, period, kind, str(fingerprint), version)
     entry = signal_acc.setdefault(
         key,
         {
@@ -300,8 +303,15 @@ def accumulate_signal(
             "cached": 0,
             "prefix_tokens": None,
             "prefix_measured": False,
+            "fingerprint_version": version,
+            "scope_kind": None,
         },
     )
+    # "unscoped" wins: a group is only as safely reusable as its least scoped
+    # member, so one unscoped repeat means the whole group cannot be called safe.
+    scope = sig.get("scope_kind")
+    if scope in ("explicit", "unscoped"):
+        entry["scope_kind"] = "unscoped" if "unscoped" in (scope, entry["scope_kind"]) else scope
     if kind == "duplicate":
         # count = number of avoidable repeats this event represents (default 1).
         entry["call_count"] += int(sig.get("count") or 1)
@@ -324,15 +334,17 @@ def accumulate_signal(
 def upsert_signal(
     conn, tenant_id, feature_id, provider, model, period, kind, fingerprint, entry
 ) -> None:
+    version = entry.get("fingerprint_version") or "v1"
     existing = conn.execute(
         """
         SELECT id FROM usage_signal
         WHERE period = %s AND provider = %s AND signal_kind = %s AND fingerprint = %s
+          AND fingerprint_version = %s
           AND feature_id IS NOT DISTINCT FROM %s
           AND model IS NOT DISTINCT FROM %s
         LIMIT 1
         """,
-        (period, provider, kind, fingerprint, feature_id, model),
+        (period, provider, kind, fingerprint, version, feature_id, model),
     ).fetchone()
     if existing:
         conn.execute(
@@ -352,6 +364,10 @@ def upsert_signal(
                 -- Latches on: once the provider has reported a real prefix size
                 -- for this fingerprint, later estimates do not un-measure it.
                 prefix_measured = prefix_measured OR %s::boolean,
+                -- Least-scoped wins, for the reason in accumulate_signal.
+                scope_kind = CASE
+                    WHEN usage_signal.scope_kind = 'unscoped' OR %s = 'unscoped' THEN 'unscoped'
+                    ELSE COALESCE(%s, usage_signal.scope_kind) END,
                 updated_at = now()
             WHERE id = %s
             """,
@@ -363,6 +379,8 @@ def upsert_signal(
                 entry["prefix_tokens"],
                 entry["prefix_tokens"],
                 entry.get("prefix_measured", False),
+                entry.get("scope_kind"),
+                entry.get("scope_kind"),
                 existing[0],
             ),
         )
@@ -372,8 +390,8 @@ def upsert_signal(
             INSERT INTO usage_signal
                 (tenant_id, feature_id, provider, model, period, signal_kind, fingerprint,
                  call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
-                 prefix_measured)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 prefix_measured, fingerprint_version, scope_kind)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 tenant_id,
@@ -389,6 +407,8 @@ def upsert_signal(
                 entry["tout"],
                 entry["cached"],
                 entry.get("prefix_measured", False),
+                version,
+                entry.get("scope_kind"),
             ),
         )
 

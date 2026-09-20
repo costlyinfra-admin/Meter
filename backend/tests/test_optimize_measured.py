@@ -11,7 +11,17 @@ from meter.db import app_dsn, connect, tenant_tx
 PERIOD = dt.date(2026, 6, 1)
 
 
-def _dup_event(feature_id, fingerprint, tokens_in):
+def _dup_event(feature_id, fingerprint, tokens_in, version="v2", scope="explicit"):
+    """A repeated-request signal as the current SDK sends one.
+
+    `version` defaults to v2 — the identity that compares the whole request.
+    Pass "v1" for a row as the old SDK wrote it: messages only, no scope, and
+    deliberately excluded from the finding.
+    """
+    signal = {"kind": "duplicate", "fingerprint": fingerprint, "count": 1}
+    if version == "v2":
+        signal["fingerprint_version"] = "v2"
+        signal["scope_kind"] = scope
     return {
         "provider": "anthropic",
         "model": "claude-sonnet-4-6",
@@ -19,7 +29,7 @@ def _dup_event(feature_id, fingerprint, tokens_in):
         "tokens_out": 0,
         "feature_id": feature_id,
         "occurred_at": "2026-06-15T10:00:00Z",
-        "signal": {"kind": "duplicate", "fingerprint": fingerprint, "count": 1},
+        "signal": signal,
     }
 
 
@@ -71,19 +81,23 @@ def test_duplicate_savings_match_the_price_book(tenant_id):
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
     dup = _opp(result, "duplicate_calls")
 
-    # 2M input tokens @ $3/M (claude-sonnet-4-6) = $6.00, exactly.
+    # 2M input tokens @ $3/M (claude-sonnet-4-6) = $6.00 at LIST price.
     assert dup["projected_monthly_savings"] == 6.0
-    assert dup["savings_type"] == "measured"
     assert dup["source"] == "sdk"
-    assert dup["confidence"] == "high"
-    # Per-lever effort + deterministic priority (6.0 × high 1.0 × medium 0.5 = 3.0).
-    assert dup["engineering_effort"] == "medium"
-    assert dup["priority_score"] == 3.0
-    # Guidance templates (opt spec §20): how to validate + how Meter verifies.
-    assert "idempotent retries" in dup["validation_guidance"]
-    assert "duplicate count" in dup["verification"]
+    # A ceiling, not a guaranteed saving. The repeat COUNT is exact; whether the
+    # later calls could have been served from the first depends on freshness,
+    # authorization, deliberate sampling and application policy, none of which
+    # Meter can see — and the dollars are list rate against aggregates that
+    # cannot reconstruct the billed cost.
+    assert dup["savings_type"] == "modeled_ceiling"
+    assert dup["confidence"] == "med"
+    assert dup["title"] == "Repeated request candidates"
+    # Guidance says what is measured and what is assumed.
+    assert "identical" in dup["validation_guidance"]
+    assert "list-price ceiling" in dup["verification"]
     assert dup["status"] == "detected"
-    assert "2 duplicate calls across 1 distinct requests" in dup["evidence"]
+    assert "2 repeated requests across 1 distinct request shapes" in dup["evidence"]
+    assert "list rate" in dup["evidence"]
     assert dup["trail"][0]["call_count"] == 2
     # Fingerprints in the trail are short salted-hash handles, never prompt text.
     assert dup["trail"][0]["fingerprint"] == "fp-a"[:12]
@@ -174,15 +188,20 @@ def test_combines_measured_and_estimated_tiers(tenant_id):
     )
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
 
-    # Measured total = duplicate $6 + prompt caching $10.80 = $16.80 (guaranteed only).
-    assert result["totals"]["measured"] == 16.8
-    # Highest-savings measured lever sorts first.
+    # Measured total is prompt caching alone, $10.80. The repeated-request
+    # finding is a ceiling, not a measured saving, so it is not in here.
+    assert result["totals"]["measured"] == 10.8
     measured = [o for o in result["opportunities"] if o["savings_type"] == "measured"]
     assert measured[0]["lever"] == "prompt_caching"
-    # The three savings types are tracked separately and never combined. The Sonnet
-    # duplicate spend ($6) also surfaces a right-sizing ceiling ($6 × 0.733 = $4.40),
-    # counted in modeled_ceiling — NOT in the guaranteed measured total.
+
+    # ...and it is not added to the ceiling total either, because a repeated
+    # request and a repeated PREFIX are the same input tokens counted two ways.
+    # The overlap cannot be quantified from these aggregates, so the smaller is
+    # dropped rather than both being summed as if they were independent.
+    dup = _opp(result, "duplicate_calls")
+    assert dup["overlaps"] == "Prompt caching"
     assert set(result["totals"]) == {"measured", "modeled_ceiling", "directional"}
+    # Only the right-sizing ceiling remains ($6 × 0.733 = $4.40).
     assert result["totals"]["modeled_ceiling"] == 4.4
 
 
@@ -403,3 +422,104 @@ def test_unknown_feature_returns_none(tenant_id):
         optimize_measured.opportunities(tenant_id, "00000000-0000-0000-0000-000000000000", PERIOD)
         is None
     )
+
+
+# --- request identity, honestly labelled ----------------------------------
+def test_legacy_fingerprints_are_excluded_and_said_so(tenant_id):
+    """v1 compared provider, model and messages and nothing else, so calls
+    differing in temperature, system or tools hashed identically. Those rows are
+    real history and are kept, but an incomplete match must never be presented
+    as an exact one."""
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _dup_event(triage["id"], "fp-old", 1_000_000, version="v1"),
+            _dup_event(triage["id"], "fp-old", 1_000_000, version="v1"),
+            _dup_event(triage["id"], "fp-new", 1_000_000),
+            _dup_event(triage["id"], "fp-new", 1_000_000),
+        ],
+    )
+
+    dup = _opp(optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "duplicate_calls")
+    # Only the v2 pair is priced: 2M tokens @ $3/M, not 4M.
+    assert dup["projected_monthly_savings"] == 6.0
+    # And the drop is explained rather than silent — the number fell because the
+    # detector was corrected, not because the customer's traffic changed.
+    assert "2 further repeats were matched by an older, incomplete fingerprint" in dup["evidence"]
+
+
+def test_a_v1_and_a_v2_row_for_one_fingerprint_stay_separate(tenant_id):
+    """Different comparisons of the same request are different facts."""
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _dup_event(triage["id"], "same-fp", 1_000_000, version="v1"),
+            _dup_event(triage["id"], "same-fp", 1_000_000),
+        ],
+    )
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        rows = conn.execute(
+            "SELECT fingerprint_version, call_count FROM usage_signal "
+            "WHERE signal_kind = 'duplicate' ORDER BY fingerprint_version"
+        ).fetchall()
+    assert [(r[0], r[1]) for r in rows] == [("v1", 1), ("v2", 1)]
+
+
+def test_an_unscoped_repeat_is_never_presented_as_safe_reuse(tenant_id):
+    """Nobody said the two calls belong to the same user, tenant or cache."""
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _dup_event(triage["id"], "fp-a", 1_000_000, scope="unscoped"),
+            _dup_event(triage["id"], "fp-a", 1_000_000, scope="unscoped"),
+        ],
+    )
+
+    dup = _opp(optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "duplicate_calls")
+    assert "reuse safety is unverified" in dup["evidence"]
+    assert dup["confidence"] == "low"  # below a scoped repeat, never above it
+    assert dup["savings_type"] == "modeled_ceiling"
+
+
+# --- what absent telemetry may not prove ----------------------------------
+def test_an_applied_action_is_not_verified_just_because_telemetry_stopped(tenant_id):
+    """The trap that excluding legacy signals would otherwise spring.
+
+    `realized = projected - current avoidable`. If the current figure falls to
+    zero because nobody is reporting any more — optimize mode switched off, or
+    v1 rows no longer trusted — the action reads as a complete success and, two
+    periods on, as VERIFIED. Meter would be reporting a win it had simply
+    stopped being able to look for.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "duplicate_calls", 40.0, dt.date(2026, 3, 1)
+    )
+    # No v2 signals at all this period: nothing is observing this lever.
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    action = next(a for a in result["actions"] if a["lever"] == "duplicate_calls")
+
+    assert action["status"] == "unverifiable"
+    assert action["realized_monthly"] is None, "absence of evidence is not a realized saving"
+    assert action["current_avoidable"] is None
+    assert action["projected_monthly"] == 40.0  # the history itself is preserved
+
+
+def test_telemetry_that_is_arriving_and_finding_nothing_does_verify(tenant_id):
+    """The other half: optimize mode running and reporting no repeats IS
+    evidence the fix worked, and must still be able to reach verified."""
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "duplicate_calls", 40.0, dt.date(2026, 3, 1)
+    )
+    # A v2 prefix-free signal for a DIFFERENT fingerprint: the SDK is live and
+    # reporting, it simply has no repeats to report for the applied lever.
+    hook.ingest_events(tenant_id, [_dup_event(triage["id"], "fp-other", 1)])
+
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    action = next(a for a in result["actions"] if a["lever"] == "duplicate_calls")
+    assert action["status"] in ("measured", "verified")
+    assert action["realized_monthly"] is not None

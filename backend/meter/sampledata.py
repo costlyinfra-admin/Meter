@@ -280,6 +280,14 @@ def _add_usage_signal(
     tokens_out=0,
     prefix_tokens=None,
     cached_count=0,
+    # The demo seeds v2 signals: a v1 row is a LEGACY row by definition, and the
+    # detector excludes those, so seeding v1 would leave the demo's repeated-
+    # request finding permanently empty.
+    fingerprint_version="v2",
+    # The demo's SDK is configured with a customer, so its repeats are scoped —
+    # which is what lets the screen show a finding that is allowed to say
+    # anything about reuse safety.
+    scope_kind="explicit",
     period=DEFAULT_PERIOD,
 ):
     """Seed one optimize-mode signal (opt spec §5). Demo-only — fingerprints are
@@ -288,8 +296,9 @@ def _add_usage_signal(
         """
         INSERT INTO usage_signal (tenant_id, feature_id, provider, model, period,
                                   signal_kind, fingerprint, call_count, prefix_tokens,
-                                  tokens_in, tokens_out, cached_count)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                  tokens_in, tokens_out, cached_count,
+                                  fingerprint_version, scope_kind)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             tenant_id,
@@ -304,6 +313,8 @@ def _add_usage_signal(
             tokens_in,
             tokens_out,
             cached_count,
+            fingerprint_version,
+            scope_kind,
         ),
     )
 

@@ -164,7 +164,15 @@ def test_opportunities_endpoint_surfaces_measured_savings(client):
                 "tokens_out": 0,
                 "feature_id": feature["id"],
                 "occurred_at": "2026-06-15T10:00:00Z",
-                "signal": {"kind": "duplicate", "fingerprint": "fp-a", "count": 1},
+                "signal": {
+                    "kind": "duplicate",
+                    "fingerprint": "fp-a",
+                    "count": 1,
+                    # As a current SDK sends it; an unversioned signal is a
+                    # legacy v1 row and is excluded from the finding.
+                    "fingerprint_version": "v2",
+                    "scope_kind": "explicit",
+                },
             }
         )
 
@@ -178,9 +186,14 @@ def test_opportunities_endpoint_surfaces_measured_savings(client):
     assert resp.status_code == 200
     body = resp.json()
     dup_opp = next(o for o in body["opportunities"] if o["lever"] == "duplicate_calls")
-    assert dup_opp["projected_monthly_savings"] == 6.0  # 2M input @ $3/M
-    assert dup_opp["savings_type"] == "measured"
-    assert body["totals"]["measured"] == 6.0
+    assert dup_opp["projected_monthly_savings"] == 6.0  # 2M input @ $3/M, list price
+    # A ceiling, not a measured saving: the repeat count is exact, the reuse is
+    # an assumption Meter cannot check, and the dollars are list rate.
+    assert dup_opp["savings_type"] == "modeled_ceiling"
+    assert body["totals"]["measured"] == 0.0
+    # The repeats are the $6 of it; right-sizing contributes the rest, and the
+    # two are different levers sharing one bucket.
+    assert body["totals"]["modeled_ceiling"] >= 6.0
 
     missing = client.get("/api/features/00000000-0000-0000-0000-000000000000/opportunities")
     assert missing.status_code == 404
@@ -200,7 +213,13 @@ def test_copilot_overview_aggregates_across_features(client):
             tokens_out=0,
             feature_id=fid,
             occurred_at="2026-06-15T10:00:00Z",
-            signal={"kind": "duplicate", "fingerprint": "fp-a", "count": 1},
+            signal={
+                "kind": "duplicate",
+                "fingerprint": "fp-a",
+                "count": 1,
+                "fingerprint_version": "v2",
+                "scope_kind": "explicit",
+            },
         )
         second = span_event(
             **{
@@ -215,8 +234,13 @@ def test_copilot_overview_aggregates_across_features(client):
         )
 
     body = client.get("/api/copilot/overview?period=2026-06").json()
-    # Three savings figures kept separate. Each feature's duplicates = $6, so $12.
-    assert body["totals"]["measured"] == 12.0
+    # Three savings figures kept separate. Each feature's repeats = $6, so $12 —
+    # in the CEILING total, because a repeated request is a candidate for reuse
+    # rather than a saving anybody has banked.
+    assert body["totals"]["measured"] == 0.0
+    # The ceiling bucket holds every lever of that type, not just this one — the
+    # per-lever figure is asserted below, where it means only the repeats.
+    assert body["totals"]["modeled_ceiling"] >= 12.0
     assert "modeled_ceiling" in body["totals"] and "directional" in body["totals"]
     # Top recommendations are ranked and tagged with their feature.
     assert body["top_recommendations"][0]["feature_name"] in {

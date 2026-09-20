@@ -1069,9 +1069,13 @@ export interface OptimizationAction {
   lever: string;
   applied_on: string;
   projected_monthly: number;
-  current_avoidable: number;
+  /** null when nothing is observing this lever any more — see `unverifiable`. */
+  current_avoidable: number | null;
   realized_monthly: number | null; // null until a later period can reconcile it
-  status: "pending" | "measured" | "verified";
+  /** `unverifiable`: the telemetry this lever reconciles against stopped
+   *  arriving, so there is nothing to compare the projection with. Absence of
+   *  evidence is reported as absence, never as a realized saving. */
+  status: "pending" | "measured" | "verified" | "unverifiable";
 }
 
 export interface FeatureOpportunities {
