@@ -1532,6 +1532,7 @@ class _Optimizer:
         dup_capacity: int = DUP_CAPACITY,
         prefix_capacity: int = PREFIX_CAPACITY,
         window: float = DUPLICATE_WINDOW,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self._m = meter
         self._prefix_chars = int(prefix_chars)
@@ -1539,6 +1540,11 @@ class _Optimizer:
         self._dup_capacity = int(dup_capacity)
         self._prefix_capacity = int(prefix_capacity)
         self._window = float(window)
+        # Injected so a test can move time without patching the stdlib clock,
+        # which `mock.patch` would do process-wide — the delivery threads read
+        # `time.monotonic` too, and handing them a frozen clock makes flushes
+        # hang or fire at random depending on scheduling.
+        self._clock = clock
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._prefixes: dict = {}
         self._last_flush = time.monotonic()
@@ -1580,7 +1586,7 @@ class _Optimizer:
         feature = feature_id or self._m.feature_id
         measured = int(usage.get("cache_write_tokens") or 0)
         cache_read = int(usage.get("cache_read_tokens") or 0)
-        now = time.monotonic()  # never the wall clock: it can move backwards
+        now = self._clock()  # never the wall clock: it can move backwards
         with self._lock:
             duplicate = False
             if request_fp is not None:

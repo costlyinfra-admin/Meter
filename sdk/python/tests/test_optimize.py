@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-from unittest import mock
 
 import pytest
 
@@ -353,7 +352,7 @@ def test_a_request_this_cannot_read_is_never_called_a_duplicate():
         def __str__(self):
             return "obj"  # v1 collapsed every instance onto this
 
-    for value in (1, 2):
+    for _ in range(2):
         client.messages.create(model="m", messages=[Opaque()])
     drain(m)
     assert t.signals("duplicate") == []
@@ -541,7 +540,8 @@ def test_an_unscoped_repeat_is_recorded_but_not_called_safe():
 
     scoped = _Scope(application="app", customer_id="acme")
     collector.on_call("anthropic", "m", request, {}, scope=scoped)
-    assert collector.on_call("anthropic", "m", request, {}, scope=scoped)["scope_kind"] == "explicit"
+    repeat = collector.on_call("anthropic", "m", request, {}, scope=scoped)
+    assert repeat["scope_kind"] == "explicit"
 
 
 def test_the_response_model_is_preferred_and_the_request_model_is_the_fallback():
@@ -558,18 +558,19 @@ def test_the_response_model_is_preferred_and_the_request_model_is_the_fallback()
 # --- the window ------------------------------------------------------------
 def test_a_repeat_after_the_window_is_not_an_avoidable_call():
     clock = {"t": 1000.0}
-    collector = _Optimizer(meter(Captured("pepper"), salt="pepper"), window=600.0)
+    collector = _Optimizer(
+        meter(Captured("pepper"), salt="pepper"), window=600.0, clock=lambda: clock["t"]
+    )
     request = {"model": "m", "messages": [{"content": "hi"}]}
 
-    with mock.patch("costlyinfra_meter.time.monotonic", lambda: clock["t"]):
-        assert collector.on_call("anthropic", "m", request, {}) is None  # first
-        clock["t"] += 599.0
-        assert collector.on_call("anthropic", "m", request, {}) is not None  # inside
-        clock["t"] += 2.0  # 601s from the FIRST call
-        assert collector.on_call("anthropic", "m", request, {}) is None  # expired
-        # ...and that expiry opened a new group, so the next one repeats again.
-        clock["t"] += 1.0
-        assert collector.on_call("anthropic", "m", request, {}) is not None
+    assert collector.on_call("anthropic", "m", request, {}) is None  # first
+    clock["t"] += 599.0
+    assert collector.on_call("anthropic", "m", request, {}) is not None  # inside
+    clock["t"] += 2.0  # 601s from the FIRST call
+    assert collector.on_call("anthropic", "m", request, {}) is None  # expired
+    # ...and that expiry opened a new group, so the next one repeats again.
+    clock["t"] += 1.0
+    assert collector.on_call("anthropic", "m", request, {}) is not None
 
 
 def test_steady_traffic_cannot_keep_one_cached_response_alive_forever():
@@ -577,33 +578,36 @@ def test_steady_traffic_cannot_keep_one_cached_response_alive_forever():
     out, a request made every minute would claim a six-hour-old response was
     still good."""
     clock = {"t": 0.0}
-    collector = _Optimizer(meter(Captured("pepper"), salt="pepper"), window=600.0)
+    collector = _Optimizer(
+        meter(Captured("pepper"), salt="pepper"), window=600.0, clock=lambda: clock["t"]
+    )
     request = {"model": "m", "messages": [{"content": "hi"}]}
 
-    with mock.patch("costlyinfra_meter.time.monotonic", lambda: clock["t"]):
-        collector.on_call("anthropic", "m", request, {})
-        for _ in range(9):
-            clock["t"] += 60.0  # t = 60 .. 540, all inside the group's window
-            assert collector.on_call("anthropic", "m", request, {}) is not None
-        clock["t"] += 61.0  # t = 601, past the group's start by more than 600
-        assert collector.on_call("anthropic", "m", request, {}) is None
+    collector.on_call("anthropic", "m", request, {})
+    for _ in range(9):
+        clock["t"] += 60.0  # t = 60 .. 540, all inside the group's window
+        assert collector.on_call("anthropic", "m", request, {}) is not None
+    clock["t"] += 61.0  # t = 601, past the group's start by more than 600
+    assert collector.on_call("anthropic", "m", request, {}) is None
 
 
 def test_the_window_boundary_is_inclusive():
     """Stated, not incidental: a repeat at exactly the window is still inside
     it, and one microsecond later is not."""
-    clock = {"t": 0.0}
-    collector = _Optimizer(meter(Captured("pepper"), salt="pepper"), window=600.0)
     request = {"model": "m", "messages": [{"content": "hi"}]}
 
-    with mock.patch("costlyinfra_meter.time.monotonic", lambda: clock["t"]):
-        collector.on_call("anthropic", "m", request, {})
-        clock["t"] = 600.0
-        assert collector.on_call("anthropic", "m", request, {}) is not None
+    clock = {"t": 0.0}
+    collector = _Optimizer(
+        meter(Captured("pepper"), salt="pepper"), window=600.0, clock=lambda: clock["t"]
+    )
+    collector.on_call("anthropic", "m", request, {})
+    clock["t"] = 600.0
+    assert collector.on_call("anthropic", "m", request, {}) is not None
 
     clock2 = {"t": 0.0}
-    collector2 = _Optimizer(meter(Captured("pepper"), salt="pepper"), window=600.0)
-    with mock.patch("costlyinfra_meter.time.monotonic", lambda: clock2["t"]):
-        collector2.on_call("anthropic", "m", request, {})
-        clock2["t"] = 600.000001
-        assert collector2.on_call("anthropic", "m", request, {}) is None
+    collector2 = _Optimizer(
+        meter(Captured("pepper"), salt="pepper"), window=600.0, clock=lambda: clock2["t"]
+    )
+    collector2.on_call("anthropic", "m", request, {})
+    clock2["t"] = 600.000001
+    assert collector2.on_call("anthropic", "m", request, {}) is None

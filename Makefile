@@ -53,13 +53,20 @@ test-web:
 # `-m pip` / `-m pytest` rather than the console scripts: those carry an
 # absolute shebang baked in at venv creation, which breaks the moment the
 # checkout moves or is renamed.
+lint-sdk:
+	$(PY) -m pip install -q -e "sdk/python[dev]"
+	cd sdk/python && ../../$(PY) -m ruff check .
+
 test-sdk:
 	$(PY) -m pip install -q -e "sdk/python[dev]"
 	cd sdk/python && ../../$(PY) -m pytest
 	cd sdk/node && node --test
 
 # ---- lint ----------------------------------------------------------------
-lint: lint-backend lint-web
+# CI lints the SDKs too (`ruff check .` in the SDK job). Leaving them out here
+# meant a lint error in an SDK passed locally and failed on push — which is
+# exactly how it just did.
+lint: lint-backend lint-web lint-sdk
 
 lint-backend:
 	cd $(BACKEND) && .venv/bin/python -m ruff check .
