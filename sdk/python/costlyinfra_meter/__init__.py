@@ -53,7 +53,7 @@ import uuid
 from collections import OrderedDict, deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 __version__ = "2.2.0"
 
@@ -87,6 +87,18 @@ OPTIMIZE_FLUSH_INTERVAL = 60.0
 #: Bounds. A fingerprint map that grows with traffic is a leak, not a feature.
 DUP_CAPACITY = 5000
 PREFIX_CAPACITY = 512
+#: How long a first call stays a plausible cache hit for a later identical one.
+#:
+#: There was no window at all: a request repeated six hours later counted as an
+#: avoidable duplicate, which asserts that the first response was still good —
+#: a claim about freshness nobody had checked. Ten minutes is the documented
+#: starting point, short enough that "you could have served the first answer" is
+#: usually true and long enough to catch real retry storms and fan-out.
+#:
+#: Measured from the FIRST call of a group, never extended by later ones, so
+#: steady repeating traffic cannot keep one supposed cached response alive
+#: forever.
+DUPLICATE_WINDOW = 600.0
 #: How long the server's answer to "is capture open for this feature" is trusted.
 #: A withdrawal takes effect within this window at the latest, and on the very
 #: next sample, because the server re-checks consent every time.
@@ -153,6 +165,7 @@ class Meter:
         optimize: bool = False,
         prefix_chars: int = PREFIX_CHARS,
         optimize_flush_interval: float = OPTIMIZE_FLUSH_INTERVAL,
+        optimize_window: float = DUPLICATE_WINDOW,
         salt: Optional[str] = None,
     ):
         self.application = application or os.environ.get("METER_APPLICATION") or "default"
@@ -213,7 +226,12 @@ class Meter:
         self._salt = salt
         self._salt_state = "ready" if salt else "cold"
         self._optimizer = (
-            _Optimizer(self, prefix_chars=prefix_chars, flush_interval=optimize_flush_interval)
+            _Optimizer(
+                self,
+                prefix_chars=prefix_chars,
+                flush_interval=optimize_flush_interval,
+                window=optimize_window,
+            )
             if optimize
             else None
         )
@@ -235,7 +253,8 @@ class Meter:
     # -- the two entry points ---------------------------------------------
     def wrap(self, client: Any, *, feature_id: Optional[str] = None,
              application: Optional[str] = None, provider: Optional[str] = None,
-             prompt_id: Optional[str] = None, prompt_version: Optional[str] = None) -> Any:
+             prompt_id: Optional[str] = None, prompt_version: Optional[str] = None,
+             customer_id: Optional[str] = None, cache_scope: Optional[str] = None) -> Any:
         """Instrument a provider client so each call becomes its own trace.
 
         For the common case — one model call, no workflow around it — explicit
@@ -246,11 +265,19 @@ class Meter:
         official SDKs and fails quietly for a wrapper, a subclass or a test
         double — so it can be stated outright. Passing it wrong instruments
         nothing rather than instrumenting the wrong thing.
+
+        `customer_id` / `cache_scope` exist for optimize mode and nothing else.
+        Two identical requests are only interchangeable inside whatever boundary
+        the application would actually reuse a response across; without one
+        stated, Meter records the repeat but will not call it safely reusable.
+        `agent()` has always taken a customer; this is the wrapped-client
+        equivalent. Neither ever reaches the provider's API.
         """
         return _Wrapped(client, self, provider or _detect_provider(client),
                         feature_id=feature_id or self.feature_id,
                         application=application or self.application,
-                        prompt_id=prompt_id, prompt_version=prompt_version)
+                        prompt_id=prompt_id, prompt_version=prompt_version,
+                        customer_id=customer_id, cache_scope=cache_scope)
 
     @contextmanager
     def agent(self, operation_name: str, *, feature_id: Optional[str] = None,
@@ -1101,7 +1128,8 @@ class _Wrapped:
 
     def __init__(self, target: Any, meter: Meter, provider: str, *, path: tuple = (),
                  feature_id: Optional[str] = None, application: Optional[str] = None,
-                 prompt_id: Optional[str] = None, prompt_version: Optional[str] = None):
+                 prompt_id: Optional[str] = None, prompt_version: Optional[str] = None,
+                 customer_id: Optional[str] = None, cache_scope: Optional[str] = None):
         object.__setattr__(self, "_t", target)
         object.__setattr__(self, "_m", meter)
         object.__setattr__(self, "_p", provider)
@@ -1110,6 +1138,8 @@ class _Wrapped:
         object.__setattr__(self, "_app", application)
         object.__setattr__(self, "_prompt", prompt_id)
         object.__setattr__(self, "_version", prompt_version)
+        object.__setattr__(self, "_customer", customer_id)
+        object.__setattr__(self, "_cache_scope", cache_scope)
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._t, name)
@@ -1118,7 +1148,8 @@ class _Wrapped:
         if any(p[: len(new_path)] == new_path for p in paths):
             return _Wrapped(attr, self._m, self._p, path=new_path,
                             feature_id=self._feature, application=self._app,
-                            prompt_id=self._prompt, prompt_version=self._version)
+                            prompt_id=self._prompt, prompt_version=self._version,
+                            customer_id=self._customer, cache_scope=self._cache_scope)
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -1169,9 +1200,26 @@ class _Wrapped:
             # against an LLM call's latency; the network stays where it was.
             signal, summaries = None, []
             if meter._optimizer is not None:
+                feature = self._feature or meter.feature_id
                 signal = meter._optimizer.on_call(
-                    usage.get("provider") or self._p, usage.get("model") or "", kwargs, usage,
-                    self._feature or meter.feature_id,
+                    usage.get("provider") or self._p,
+                    # The response's model when it reported one, the request's
+                    # when it did not. v1 used the response alone and fell back
+                    # to "", so a streaming call — or any response shape
+                    # `_usage_of` does not recognise — made two DIFFERENT models
+                    # share one identity.
+                    usage.get("model") or _request_model(kwargs),
+                    kwargs,
+                    usage,
+                    feature,
+                    scope=_Scope(
+                        application=self._app or meter.application,
+                        feature_id=feature,
+                        operation=operation,
+                        environment=meter.environment,
+                        customer_id=self._customer,
+                        cache_scope=self._cache_scope,
+                    ),
                 )
                 summaries = meter._optimizer.due_summaries()
             meter._send([
@@ -1218,6 +1266,206 @@ def wrap(client: Any, meter: Meter, *, feature_id: Optional[str] = None) -> Any:
 #                 was avoidable. Rides on the span the call already sends.
 #   'prefix'    — many calls share a large static head that is not being cached.
 #                 A bounded counter map, flushed on a timer as its own span.
+# ---------------------------------------------------------------------------
+# Canonical request identity (v2)
+# ---------------------------------------------------------------------------
+# What makes two model calls "the same call". Getting this wrong in either
+# direction is expensive: too loose and Meter tells a customer to cache
+# responses that legitimately differ; too strict and it finds nothing.
+#
+# v1 hashed the provider, the model and the messages, and nothing else. So a
+# call differing only in `temperature`, `system`, `tools`, `max_tokens`,
+# `response_format`, `seed` or `stop` produced an identical fingerprint and was
+# reported as an avoidable repeat. All seven of those change the output.
+#
+# THE RULE IS AN EXCLUSION, NOT AN ALLOWLIST. Every serializable field of the
+# request is part of its identity except a short list of transport and
+# credential settings that provably cannot reach the model. A field nobody here
+# has heard of is therefore included rather than ignored — a new provider
+# parameter changes the fingerprint on the day it ships, instead of silently
+# collapsing two different calls into a match.
+#
+# ANYTHING UNREADABLE SKIPS THE CANDIDATE. A value this cannot serialize —
+# a file handle, an SDK sentinel, a cyclic structure, a payload past the size
+# bound — raises, and the caller emits no signal for that call. There is no
+# truncation and no `str()` fallback: both turn "I could not read this" into
+# "these two calls are identical", which is the one answer that must never be
+# guessed.
+#
+# NOTHING HERE IS EVER TRANSMITTED. The canonical form is hashed with the
+# tenant's salt and discarded; the digest is what leaves the process.
+
+#: Bumped when the canonical form changes. It is hashed in, so identities from
+#: different versions cannot collide, and it rides on the signal so the server
+#: can tell a v1 row (messages only) from a v2 one (the whole request).
+CANON_VERSION = "v2"
+
+#: Settings that reach the transport and not the model. Everything else in a
+#: request body is treated as output-affecting. Credentials are here because a
+#: fingerprint must not be derived from one, and because rotating a key would
+#: otherwise change every identity the process has.
+_TRANSPORT_FIELDS = frozenset({
+    "api_key", "auth", "authorization", "headers", "extra_headers", "extra_query",
+    "timeout", "request_timeout", "max_retries", "http_client", "client",
+    "default_headers", "organization", "project_id", "base_url", "user_agent",
+})
+
+#: Bounds on traversal. A request past any of them is unreadable rather than
+#: truncated: a truncated payload compares equal to every other payload with the
+#: same first N bytes, which is a false match by construction.
+_MAX_DEPTH = 40
+_MAX_NODES = 20_000
+_MAX_CANON_BYTES = 1_000_000
+
+
+class UnsupportedRequest(Exception):
+    """This request cannot be read safely, so it is not a duplicate candidate."""
+
+
+def _canonical(value, depth: int, state: dict):
+    """A JSON-safe copy of `value`, or raise. Cycles and bounds checked here."""
+    state["nodes"] += 1
+    if depth > _MAX_DEPTH or state["nodes"] > _MAX_NODES:
+        raise UnsupportedRequest("request is too deeply nested or too large to compare")
+
+    if value is None or isinstance(value, str):
+        return value
+    # bool before int: bool IS an int in Python, and True must not become 1.
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise UnsupportedRequest("request contains a non-finite number")
+        # 1.0 and 1 are the same argument to every provider, and JavaScript
+        # cannot tell them apart at all. Normalising here is what lets the two
+        # SDKs agree byte for byte.
+        if value.is_integer() and abs(value) < 1e15:
+            return int(value)
+        return value
+
+    if isinstance(value, (list, tuple)):
+        marker = id(value)
+        if marker in state["seen"]:
+            raise UnsupportedRequest("request contains a cycle")
+        state["seen"].add(marker)
+        try:
+            return [_canonical(item, depth + 1, state) for item in value]
+        finally:
+            state["seen"].discard(marker)
+
+    if isinstance(value, dict):
+        marker = id(value)
+        if marker in state["seen"]:
+            raise UnsupportedRequest("request contains a cycle")
+        state["seen"].add(marker)
+        try:
+            out = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise UnsupportedRequest("request has a non-string key")
+                out[key] = _canonical(item, depth + 1, state)
+            return out
+        finally:
+            state["seen"].discard(marker)
+
+    # Provider SDKs hand back model objects rather than dicts. Two conversions
+    # are supported explicitly, because both are documented, lossless and
+    # widely used; anything else is unreadable rather than guessed at.
+    dump = getattr(value, "model_dump", None)  # pydantic v2
+    if callable(dump):
+        try:
+            return _canonical(dump(mode="json"), depth + 1, state)
+        except UnsupportedRequest:
+            raise
+        except Exception as exc:
+            raise UnsupportedRequest("request contains an object that cannot be read") from exc
+    as_dict = getattr(value, "to_dict", None)  # google-genai and friends
+    if callable(as_dict):
+        try:
+            return _canonical(as_dict(), depth + 1, state)
+        except UnsupportedRequest:
+            raise
+        except Exception as exc:
+            raise UnsupportedRequest("request contains an object that cannot be read") from exc
+
+    raise UnsupportedRequest(f"request contains an unreadable {type(value).__name__}")
+
+
+def canonical_request(request: dict) -> str:
+    """The request's identity as a string, or raise `UnsupportedRequest`.
+
+    Keys are sorted, message order and text are kept exactly, and the output is
+    byte-identical to the Node SDK's for the same request — `separators` and
+    `ensure_ascii` are both set for that reason, not for looks.
+    """
+    if not isinstance(request, dict):
+        raise UnsupportedRequest("request is not a mapping")
+    body = {k: v for k, v in request.items() if k not in _TRANSPORT_FIELDS}
+    if not body:
+        raise UnsupportedRequest("request has no comparable fields")
+    state = {"nodes": 0, "seen": set()}
+    canonical = _canonical(body, 0, state)
+    try:
+        text = json.dumps(
+            canonical,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise UnsupportedRequest("request could not be serialized") from exc
+    if len(text.encode("utf-8")) > _MAX_CANON_BYTES:
+        raise UnsupportedRequest("request is too large to compare")
+    return text
+
+
+class _Scope(NamedTuple):
+    """The boundary inside which two identical requests could be interchangeable.
+
+    Not a label on the finding — part of its identity. Two customers sending the
+    same prompt are not one avoidable call, and neither are two environments or
+    two features that happen to share wording. All of it is hashed with the
+    tenant's salt, so no raw application, feature or customer name is ever in a
+    fingerprint that leaves the process.
+    """
+
+    application: Optional[str] = None
+    feature_id: Optional[str] = None
+    operation: Optional[str] = None
+    environment: Optional[str] = None
+    customer_id: Optional[str] = None
+    cache_scope: Optional[str] = None
+
+    def key(self) -> str:
+        return "\x1e".join(
+            f"{name}={value or ''}"
+            for name, value in zip(self._fields, self)
+        )
+
+    @property
+    def explicit(self) -> bool:
+        """Whether the caller stated a boundary a response could be reused in.
+
+        Without one, a repeat is still a repeat — but nobody has said the two
+        calls belong to the same user, tenant or cache, so Meter must not imply
+        the second could have served the first. Absent scope is reported as
+        absent, never as permission.
+        """
+        return bool(self.customer_id or self.cache_scope)
+
+
+def _request_model(request: dict) -> str:
+    """The model the caller asked for, when the response did not say."""
+    if isinstance(request, dict):
+        model = request.get("model")
+        if isinstance(model, str):
+            return model
+    return ""
+
+
 def _sha(*parts: str) -> str:
     h = hashlib.sha256()
     h.update("\x1f".join(parts).encode("utf-8"))
@@ -1283,19 +1531,22 @@ class _Optimizer:
         flush_interval: float = OPTIMIZE_FLUSH_INTERVAL,
         dup_capacity: int = DUP_CAPACITY,
         prefix_capacity: int = PREFIX_CAPACITY,
+        window: float = DUPLICATE_WINDOW,
     ):
         self._m = meter
         self._prefix_chars = int(prefix_chars)
         self._flush_interval = float(flush_interval)
         self._dup_capacity = int(dup_capacity)
         self._prefix_capacity = int(prefix_capacity)
+        self._window = float(window)
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._prefixes: dict = {}
         self._last_flush = time.monotonic()
         self._lock = threading.Lock()
 
     def on_call(self, provider: str, model: str, request: dict, usage: dict,
-                feature_id: Optional[str] = None) -> Optional[dict]:
+                feature_id: Optional[str] = None,
+                scope: Optional[_Scope] = None) -> Optional[dict]:
         """Fold one call in; return a 'duplicate' signal if this request repeats.
 
         `usage` is what the response reported. Two fields matter here: a cache
@@ -1307,26 +1558,44 @@ class _Optimizer:
         salt = self._m.salt()
         if not salt:
             return None  # never emit an unsalted hash
-        body = _normalize(request)
-        if not body:
-            # A call shape this cannot read — no messages, no input, no contents.
-            # Every such call would hash identically and the second one would be
-            # reported as an avoidable repeat of the first, which is a finding
-            # about this code rather than about the customer's traffic.
-            return None
         model = model or ""
-        request_fp = _sha(salt, provider, model, body)
+        scope = scope or _Scope()
+        # The whole request, not just its messages, and scoped to the boundary a
+        # response could actually be reused in. Unreadable requests raise rather
+        # than degrade: a truncated or stringified payload compares equal to
+        # things it is not.
+        try:
+            canonical = canonical_request(request)
+        except UnsupportedRequest:
+            request_fp = None
+        else:
+            request_fp = _sha(
+                salt, CANON_VERSION, scope.key(), provider, model, canonical
+            )
+        # Prefix detection keeps its own, unchanged normalisation. The two
+        # questions are different — "is this the same call" versus "do these
+        # calls share a head" — and one must not move when the other does.
         static, estimated = _static_prefix(request, self._prefix_chars)
         prefix_fp = _sha(salt, provider, model, static)
         feature = feature_id or self._m.feature_id
         measured = int(usage.get("cache_write_tokens") or 0)
         cache_read = int(usage.get("cache_read_tokens") or 0)
+        now = time.monotonic()  # never the wall clock: it can move backwards
         with self._lock:
-            duplicate = request_fp in self._seen
-            if duplicate:
-                self._seen.move_to_end(request_fp)
-            else:
-                self._seen[request_fp] = None
+            duplicate = False
+            if request_fp is not None:
+                opened = self._seen.get(request_fp)
+                if opened is not None and (now - opened) <= self._window:
+                    duplicate = True
+                    # Recency for eviction only. The group's start time is NOT
+                    # refreshed, so steady repeating traffic cannot keep one
+                    # supposed cached response alive indefinitely.
+                    self._seen.move_to_end(request_fp)
+                else:
+                    # First sighting, or the window has closed and this opens a
+                    # new group — an expired repeat is not an avoidable call.
+                    self._seen[request_fp] = now
+                    self._seen.move_to_end(request_fp)
                 while len(self._seen) > self._dup_capacity:
                     self._seen.popitem(last=False)
             entry = self._prefixes.setdefault(
@@ -1344,7 +1613,16 @@ class _Optimizer:
             if cache_read:
                 entry["cached"] += 1
         if duplicate:
-            return {"kind": "duplicate", "fingerprint": request_fp, "count": 1}
+            return {
+                "kind": "duplicate",
+                "fingerprint": request_fp,
+                "count": 1,
+                "fingerprint_version": CANON_VERSION,
+                # Whether anybody said these two calls belong to the same user,
+                # tenant or cache. The server will not present an unscoped
+                # repeat as a safe reuse.
+                "scope_kind": "explicit" if scope.explicit else "unscoped",
+            }
         return None
 
     def due_summaries(self, force: bool = False) -> list:

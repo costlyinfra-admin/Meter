@@ -7,8 +7,11 @@
  * most of what follows is about what does not leave the process.
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
-import { Meter } from "../index.mjs";
+import { fileURLToPath } from "node:url";
+import { CANON_VERSION, canonicalRequest, Meter, UnsupportedRequest } from "../index.mjs";
 
 const URL = "https://app.test/api/hook/events";
 const SECRET = "the quick brown fox jumped over the lazy dog";
@@ -309,18 +312,48 @@ test("the map of seen requests cannot grow with traffic", async () => {
   assert.equal(collector.onCall("anthropic", "m", { messages: [{ c: 0 }] }, {}), null);
 });
 
-test("a request shape this cannot read is never called a duplicate", async () => {
-  // normalizeRequest reads messages / input / contents. A call with none of
-  // them has nothing to compare, and reporting the second such call as a repeat
-  // of the first would be a finding about this code, not about the traffic.
+test("a call shape v1 could not read is now compared properly", async () => {
+  // v1 read messages / input / contents and gave up on anything else, so a
+  // legacy completion call was dropped entirely. The canonical form reads the
+  // whole request, so these compare on their merits.
   const t = capture();
   const m = meter(t, { optimize: true, salt: "pepper" });
   const client = clientFor(m);
   await client.messages.create({ model: "m", prompt: "a legacy completion call" });
   await client.messages.create({ model: "m", prompt: "a different one entirely" });
   await flush(m);
+  assert.deepEqual(t.signals("duplicate"), []);
 
-  assert.deepEqual(t.signals(), []);
+  await client.messages.create({ model: "m", prompt: "a legacy completion call" });
+  await flush(m);
+  assert.equal(t.signals("duplicate").length, 1);
+});
+
+test("a request this cannot read is never called a duplicate", async () => {
+  // Unreadable must never degrade into identical. v1's String() fallback turned
+  // distinct objects into one shared string, so they matched.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  const client = clientFor(m);
+
+  const cyclic = { role: "user" };
+  cyclic.self = cyclic;
+  for (let i = 0; i < 2; i += 1) {
+    await client.messages.create({ model: "m", messages: [cyclic] });
+  }
+  await flush(m);
+  assert.deepEqual(t.signals("duplicate"), []);
+
+  class Opaque {
+    toString() {
+      return "obj";
+    }
+  }
+  for (let i = 0; i < 2; i += 1) {
+    await client.messages.create({ model: "m", messages: [new Opaque()] });
+  }
+  await flush(m);
+  assert.deepEqual(t.signals("duplicate"), []);
 });
 
 test("a prefix is attributed to the feature the call was for", async () => {
@@ -357,4 +390,121 @@ test("prefix counters are not lost when a short process ends", async () => {
   const prefixes = t.signals("prefix");
   assert.ok(prefixes.length > 0);
   assert.equal(prefixes[0].count, 3);
+});
+
+// --- request identity (v2) -------------------------------------------------
+// Every one of these changes what the model returns. v1 hashed only the
+// messages, so all of them produced the SAME fingerprint as the base request.
+const OUTPUT_AFFECTING = [
+  ["temperature", { temperature: 0.9 }],
+  ["system prompt", { system: "You are terse." }],
+  ["tools", { tools: [{ name: "search" }] }],
+  ["tool choice", { tool_choice: "required" }],
+  ["max tokens", { max_tokens: 32 }],
+  ["stop sequences", { stop: ["STOP"] }],
+  ["response format", { response_format: { type: "json_object" } }],
+  ["seed", { seed: 7 }],
+  ["reasoning effort", { reasoning_effort: "high" }],
+  ["conversation state", { previous_response_id: "resp_42" }],
+  ["a parameter nobody here has heard of", { future_provider_knob: "on" }],
+];
+
+test("a field that changes the output changes the identity", () => {
+  const base = { model: "m", messages: [{ role: "user", content: "hi" }] };
+  for (const [label, extra] of OUTPUT_AFFECTING) {
+    assert.notEqual(canonicalRequest(base), canonicalRequest({ ...base, ...extra }), label);
+  }
+});
+
+test("credentials and transport settings are not part of identity", () => {
+  const base = { model: "m", messages: [{ content: "hi" }] };
+  const noisy = {
+    ...base, api_key: "sk-secret", timeout: 30, maxRetries: 9,
+    headers: { "X-Trace": "abc" }, baseURL: "https://example",
+  };
+  assert.equal(canonicalRequest(base), canonicalRequest(noisy));
+  assert.ok(!canonicalRequest(noisy).includes("sk-secret"));
+});
+
+test("absent is not null", () => {
+  assert.notEqual(
+    canonicalRequest({ messages: [], stop: null }),
+    canonicalRequest({ messages: [] }),
+  );
+});
+
+test("oversized and cyclic requests fail safely rather than matching", () => {
+  const cyclic = {};
+  cyclic.self = cyclic;
+  assert.throws(() => canonicalRequest({ messages: [cyclic] }), UnsupportedRequest);
+
+  let deep = { end: true };
+  for (let i = 0; i < 80; i += 1) deep = { n: deep };
+  assert.throws(() => canonicalRequest({ messages: [deep] }), UnsupportedRequest);
+
+  class Opaque {}
+  assert.throws(() => canonicalRequest({ messages: [new Opaque()] }), UnsupportedRequest);
+  assert.throws(() => canonicalRequest({ temperature: NaN }), UnsupportedRequest);
+});
+
+test("the golden vectors match this implementation, byte for byte", () => {
+  // The same file the Python suite reads. If the two ever disagree, a company
+  // running both languages is told two different stories about one request.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const golden = JSON.parse(
+    readFileSync(join(here, "..", "..", "golden", "request-fingerprints.json"), "utf8"),
+  );
+  assert.equal(golden.canon_version, CANON_VERSION);
+  assert.ok(golden.vectors.length >= 10);
+  for (const vector of golden.vectors) {
+    assert.equal(canonicalRequest(vector.request), vector.canonical, vector.name);
+  }
+});
+
+// --- comparison scope ------------------------------------------------------
+test("two customers sending the same prompt are not one avoidable call", async () => {
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  class Anthropic {
+    constructor() {
+      this.messages = { create: async () => response() };
+    }
+  }
+  const request = { model: "m", messages: [{ content: "hi" }] };
+  await m.wrap(new Anthropic(), { featureId: "f", customerId: "acme" }).messages.create(request);
+  await m.wrap(new Anthropic(), { featureId: "f", customerId: "globex" }).messages.create(request);
+  await flush(m);
+
+  assert.deepEqual(t.signals("duplicate"), []);
+});
+
+test("an unscoped repeat is recorded but not called safe", async () => {
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  const request = { model: "m", messages: [{ content: "hi" }] };
+  const client = clientFor(m); // no customerId anywhere
+  await client.messages.create(request);
+  await client.messages.create(request);
+  await flush(m);
+
+  assert.equal(t.signals("duplicate")[0].scope_kind, "unscoped");
+  assert.equal(t.signals("duplicate")[0].fingerprint_version, "v2");
+});
+
+// --- the window ------------------------------------------------------------
+test("a repeat after the window is not an avoidable call", async () => {
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper", optimizeWindowMs: 50 });
+  const client = clientFor(m);
+  const request = { model: "m", messages: [{ content: "hi" }] };
+
+  await client.messages.create(request);
+  await client.messages.create(request);
+  await flush(m);
+  assert.equal(t.signals("duplicate").length, 1, "the repeat inside the window");
+
+  await new Promise((r) => setTimeout(r, 80)); // past the group's start
+  await client.messages.create(request);
+  await flush(m);
+  assert.equal(t.signals("duplicate").length, 1, "an expired repeat is not avoidable");
 });

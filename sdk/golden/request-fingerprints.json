@@ -1,0 +1,206 @@
+{
+  "canon_version": "v2",
+  "vectors": [
+    {
+      "name": "plain",
+      "request": {
+        "model": "m",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "canonical": "{\"messages\":[{\"content\":\"hi\",\"role\":\"user\"}],\"model\":\"m\"}"
+    },
+    {
+      "name": "unicode",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "héllo — ünicode 🙂"
+          }
+        ]
+      },
+      "canonical": "{\"messages\":[{\"content\":\"héllo — ünicode 🙂\",\"role\":\"user\"}]}"
+    },
+    {
+      "name": "control characters",
+      "request": {
+        "messages": [
+          {
+            "content": "a\nb\tc\"d\\e"
+          }
+        ]
+      },
+      "canonical": "{\"messages\":[{\"content\":\"a\\nb\\tc\\\"d\\\\e\"}]}"
+    },
+    {
+      "name": "key order",
+      "request": {
+        "b": 1,
+        "a": 2,
+        "nested": {
+          "z": 1,
+          "y": {
+            "q": 2,
+            "p": 3
+          }
+        }
+      },
+      "canonical": "{\"a\":2,\"b\":1,\"nested\":{\"y\":{\"p\":3,\"q\":2},\"z\":1}}"
+    },
+    {
+      "name": "integers",
+      "request": {
+        "seed": 7,
+        "max_tokens": 1024,
+        "n": 0,
+        "neg": -3
+      },
+      "canonical": "{\"max_tokens\":1024,\"n\":0,\"neg\":-3,\"seed\":7}"
+    },
+    {
+      "name": "integral float collapses to int",
+      "request": {
+        "temperature": 1.0,
+        "top_p": 0.0
+      },
+      "canonical": "{\"temperature\":1,\"top_p\":0}"
+    },
+    {
+      "name": "fractional floats",
+      "request": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "penalty": -0.25
+      },
+      "canonical": "{\"penalty\":-0.25,\"temperature\":0.7,\"top_p\":0.95}"
+    },
+    {
+      "name": "booleans and null",
+      "request": {
+        "stream": false,
+        "echo": true,
+        "stop": null
+      },
+      "canonical": "{\"echo\":true,\"stop\":null,\"stream\":false}"
+    },
+    {
+      "name": "empty containers",
+      "request": {
+        "messages": [],
+        "tools": [],
+        "meta": {}
+      },
+      "canonical": "{\"messages\":[],\"meta\":{},\"tools\":[]}"
+    },
+    {
+      "name": "deep nesting",
+      "request": {
+        "a": {
+          "b": {
+            "c": {
+              "d": [
+                1,
+                {
+                  "e": "f"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "canonical": "{\"a\":{\"b\":{\"c\":{\"d\":[1,{\"e\":\"f\"}]}}}}"
+    },
+    {
+      "name": "array order preserved",
+      "request": {
+        "messages": [
+          {
+            "n": 1
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 3
+          }
+        ]
+      },
+      "canonical": "{\"messages\":[{\"n\":1},{\"n\":2},{\"n\":3}]}"
+    },
+    {
+      "name": "tools and structured output",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "q"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "search",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "q": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "q"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "response_format": {
+          "type": "json_schema",
+          "json_schema": {
+            "name": "r",
+            "strict": true
+          }
+        }
+      },
+      "canonical": "{\"messages\":[{\"content\":\"q\",\"role\":\"user\"}],\"response_format\":{\"json_schema\":{\"name\":\"r\",\"strict\":true},\"type\":\"json_schema\"},\"tool_choice\":\"auto\",\"tools\":[{\"function\":{\"name\":\"search\",\"parameters\":{\"properties\":{\"q\":{\"type\":\"string\"}},\"required\":[\"q\"],\"type\":\"object\"}},\"type\":\"function\"}]}"
+    },
+    {
+      "name": "provider specific",
+      "request": {
+        "system": "be terse",
+        "thinking": {
+          "type": "enabled",
+          "budget_tokens": 1024
+        },
+        "reasoning_effort": "high",
+        "previous_response_id": "resp_123"
+      },
+      "canonical": "{\"previous_response_id\":\"resp_123\",\"reasoning_effort\":\"high\",\"system\":\"be terse\",\"thinking\":{\"budget_tokens\":1024,\"type\":\"enabled\"}}"
+    },
+    {
+      "name": "credentials and transport excluded",
+      "request": {
+        "messages": [
+          {
+            "content": "x"
+          }
+        ],
+        "api_key": "sk-secret",
+        "timeout": 30,
+        "max_retries": 5,
+        "headers": {
+          "X": "y"
+        },
+        "base_url": "https://example"
+      },
+      "canonical": "{\"messages\":[{\"content\":\"x\"}]}"
+    }
+  ]
+}

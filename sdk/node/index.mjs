@@ -72,6 +72,13 @@ const OPTIMIZE_FLUSH_INTERVAL_MS = 60_000;
 /** Bounds. A fingerprint map that grows with traffic is a leak, not a feature. */
 const DUP_CAPACITY = 5000;
 const PREFIX_CAPACITY = 512;
+/** How long a first call stays a plausible cache hit for a later identical one.
+ *  There was no window at all: a request repeated six hours later counted as an
+ *  avoidable duplicate, which asserts the first response was still good — a
+ *  freshness claim nobody had checked. Measured from the FIRST call of a group
+ *  and never extended, so steady traffic cannot keep one supposed cached
+ *  response alive forever. See the Python SDK for the full note. */
+const DUPLICATE_WINDOW_MS = 600_000;
 
 const CAPTURE_PATHS = [
   ["anthropic", "messages.create"],
@@ -407,6 +414,7 @@ export class Meter {
       ? new Optimizer(this, {
           prefixChars: options.prefixChars ?? PREFIX_CHARS,
           flushIntervalMs: options.optimizeFlushIntervalMs ?? OPTIMIZE_FLUSH_INTERVAL_MS,
+          windowMs: options.optimizeWindowMs ?? DUPLICATE_WINDOW_MS,
         })
       : null;
   }
@@ -479,6 +487,16 @@ export class Meter {
    * official SDKs and fails quietly for a wrapper or a test double — so it can
    * be stated outright.
    */
+  /**
+   * Instrument a provider client so each call becomes its own trace.
+   *
+   * `customerId` / `cacheScope` exist for optimize mode and nothing else. Two
+   * identical requests are only interchangeable inside whatever boundary the
+   * application would actually reuse a response across; without one stated,
+   * Meter records the repeat but will not call it safely reusable. `agent()`
+   * has always taken a customer; this is the wrapped-client equivalent.
+   * Neither ever reaches the provider's API.
+   */
   wrap(client, options = {}) {
     const provider = options.provider ?? detectProvider(client);
     return this._proxy(client, provider, [], {
@@ -486,6 +504,8 @@ export class Meter {
       application: options.application ?? this.application,
       promptId: options.promptId ?? null,
       promptVersion: options.promptVersion ?? null,
+      customerId: options.customerId ?? null,
+      cacheScope: options.cacheScope ?? null,
     });
   }
 
@@ -571,10 +591,21 @@ export class Meter {
       if (this._optimizer) {
         signal = this._optimizer.onCall(
           usage.provider,
-          usage.model,
+          // The response's model when it reported one, the request's when it
+          // did not. v1 used the response alone and fell back to "", so a
+          // streaming call made two DIFFERENT models share one identity.
+          usage.model ?? requestModel(args[0]),
           args[0],
           usage,
           ctx.featureId ?? null,
+          {
+            application: ctx.application ?? this.application,
+            feature_id: ctx.featureId ?? null,
+            operation,
+            environment: this.environment,
+            customer_id: ctx.customerId ?? null,
+            cache_scope: ctx.cacheScope ?? null,
+          },
         );
         summaries = this._optimizer.dueSummaries();
       }
@@ -960,6 +991,188 @@ export class Meter {
 // Traffic SHAPE only: salted-hash fingerprints and counts. No prompt text, no
 // response text, no tool arguments — nothing here reads a request's content
 // except to hash it, salted with a secret the database does not contain.
+// ---------------------------------------------------------------------------
+// Canonical request identity (v2)
+// ---------------------------------------------------------------------------
+// The Node half of the rule documented in the Python SDK. The two must produce
+// byte-identical output for the same request, so a company running both can be
+// told the truth about traffic that spans them.
+//
+// v1 hashed provider, model and messages only, so a call differing solely in
+// temperature, system, tools, max_tokens, response_format, seed or stop looked
+// identical and was reported as an avoidable repeat. All seven change output.
+//
+// The rule is an EXCLUSION, not an allowlist: every serializable request field
+// is part of the identity except transport and credential settings. A parameter
+// nobody here has heard of changes the fingerprint rather than being ignored.
+//
+// Anything unreadable — a cycle, a class instance, a payload past the bounds —
+// throws, and the caller emits no signal for that call. No truncation, no
+// String() fallback: both turn "unreadable" into "identical".
+//
+// Nothing here is transmitted. The canonical form is hashed and discarded.
+
+/** Bumped when the canonical form changes; hashed in, so versions cannot mix. */
+export const CANON_VERSION = "v2";
+
+/** Reaches the transport, never the model. Credentials included deliberately. */
+const TRANSPORT_FIELDS = new Set([
+  "api_key", "apiKey", "auth", "authorization", "headers", "extra_headers",
+  "extraHeaders", "extra_query", "extraQuery", "timeout", "request_timeout",
+  "requestTimeout", "max_retries", "maxRetries", "http_client", "httpClient",
+  "client", "default_headers", "defaultHeaders", "organization", "project_id",
+  "projectId", "base_url", "baseURL", "baseUrl", "user_agent", "userAgent",
+  "signal", "fetch", "dispatcher",
+]);
+
+const MAX_DEPTH = 40;
+const MAX_NODES = 20_000;
+const MAX_CANON_BYTES = 1_000_000;
+
+/** This request cannot be read safely, so it is not a duplicate candidate. */
+export class UnsupportedRequest extends Error {}
+
+function canonicalValue(value, depth, state) {
+  state.nodes += 1;
+  if (depth > MAX_DEPTH || state.nodes > MAX_NODES) {
+    throw new UnsupportedRequest("request is too deeply nested or too large to compare");
+  }
+
+  if (value === null) return null;
+  const t = typeof value;
+  if (t === "string" || t === "boolean") return value;
+  if (t === "number") {
+    if (!Number.isFinite(value)) throw new UnsupportedRequest("request contains a non-finite number");
+    return value; // integral floats are already integers here; see the Python note
+  }
+  // `undefined` is a field that was not set. Absent and null are different
+  // arguments to a provider, so they stay different here: undefined is dropped
+  // by the object walk below, null is kept.
+  if (t === "undefined") return undefined;
+  if (t === "bigint" || t === "function" || t === "symbol") {
+    throw new UnsupportedRequest(`request contains an unreadable ${t}`);
+  }
+
+  if (Array.isArray(value)) {
+    if (state.seen.has(value)) throw new UnsupportedRequest("request contains a cycle");
+    state.seen.add(value);
+    try {
+      // A hole or an explicit undefined inside an array becomes null, which is
+      // what JSON does with it; there is no way to express "absent" in a list.
+      return value.map((item) => {
+        const out = canonicalValue(item, depth + 1, state);
+        return out === undefined ? null : out;
+      });
+    } finally {
+      state.seen.delete(value);
+    }
+  }
+
+  if (t === "object") {
+    if (state.seen.has(value)) throw new UnsupportedRequest("request contains a cycle");
+    // Provider SDKs hand back model objects. toJSON is the documented, lossless
+    // conversion; a bare class instance is unreadable rather than guessed at.
+    if (typeof value.toJSON === "function") {
+      state.seen.add(value);
+      try {
+        return canonicalValue(value.toJSON(), depth + 1, state);
+      } catch (err) {
+        if (err instanceof UnsupportedRequest) throw err;
+        throw new UnsupportedRequest("request contains an object that cannot be read");
+      } finally {
+        state.seen.delete(value);
+      }
+    }
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new UnsupportedRequest(`request contains an unreadable ${value.constructor?.name ?? "object"}`);
+    }
+    state.seen.add(value);
+    try {
+      const out = {};
+      for (const key of Object.keys(value)) {
+        const item = canonicalValue(value[key], depth + 1, state);
+        if (item !== undefined) out[key] = item; // absent stays absent
+      }
+      return out;
+    } finally {
+      state.seen.delete(value);
+    }
+  }
+
+  throw new UnsupportedRequest(`request contains an unreadable ${t}`);
+}
+
+/** Serialize with sorted keys and no whitespace — Python's json.dumps with
+ *  sort_keys, ensure_ascii=False and (",", ":") produces the same bytes. */
+function canonicalJson(value) {
+  if (value === null) return "null";
+  const t = typeof value;
+  if (t === "number") {
+    // Python writes an integral float as an int because JavaScript cannot tell
+    // 1.0 from 1; both sides therefore emit "1".
+    return Number.isInteger(value) ? String(value) : JSON.stringify(value);
+  }
+  if (t === "boolean") return value ? "true" : "false";
+  if (t === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
+}
+
+/** The request's identity as a string, or throw UnsupportedRequest. */
+/** The model the caller asked for, when the response did not say. */
+function requestModel(request) {
+  return request && typeof request.model === "string" ? request.model : "";
+}
+
+/**
+ * The boundary inside which two identical requests could be interchangeable.
+ *
+ * Not a label on the finding — part of its identity. Two customers sending the
+ * same prompt are not one avoidable call, and neither are two environments or
+ * two features that happen to share wording. Hashed with the tenant's salt, so
+ * no raw application, feature or customer name leaves the process.
+ */
+const SCOPE_FIELDS = [
+  "application", "feature_id", "operation", "environment", "customer_id", "cache_scope",
+];
+
+function scopeKey(scope) {
+  return SCOPE_FIELDS.map((f) => `${f}=${scope?.[f] ?? ""}`).join("\u001e");
+}
+
+/**
+ * Whether the caller stated a boundary a response could be reused in.
+ *
+ * Without one a repeat is still a repeat, but nobody has said the two calls
+ * belong to the same user, tenant or cache — so Meter must not imply the second
+ * could have served the first. Absent scope is reported as absent, never as
+ * permission.
+ */
+function scopeIsExplicit(scope) {
+  return Boolean(scope?.customer_id || scope?.cache_scope);
+}
+
+export function canonicalRequest(request) {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    throw new UnsupportedRequest("request is not an object");
+  }
+  const body = {};
+  for (const key of Object.keys(request)) {
+    if (!TRANSPORT_FIELDS.has(key)) body[key] = request[key];
+  }
+  if (Object.keys(body).length === 0) {
+    throw new UnsupportedRequest("request has no comparable fields");
+  }
+  const canonical = canonicalValue(body, 0, { nodes: 0, seen: new Set() });
+  const text = canonicalJson(canonical);
+  if (Buffer.byteLength(text, "utf8") > MAX_CANON_BYTES) {
+    throw new UnsupportedRequest("request is too large to compare");
+  }
+  return text;
+}
+
 function sha(...parts) {
   return createHash("sha256").update(parts.join("\u001f"), "utf8").digest("hex");
 }
@@ -1027,6 +1240,7 @@ class Optimizer {
     this._flushIntervalMs = options.flushIntervalMs ?? OPTIMIZE_FLUSH_INTERVAL_MS;
     this._dupCapacity = options.dupCapacity ?? DUP_CAPACITY;
     this._prefixCapacity = options.prefixCapacity ?? PREFIX_CAPACITY;
+    this._windowMs = options.windowMs ?? DUPLICATE_WINDOW_MS;
     this._seen = new Map();
     this._prefixes = new Map();
     this._lastFlush = Date.now();
@@ -1040,17 +1254,24 @@ class Optimizer {
    * cache WRITE is the provider's own measurement of the static prefix — the
    * only place a real token count for it can come from.
    */
-  onCall(provider, model, request, usage = {}, featureId = null) {
+  onCall(provider, model, request, usage = {}, featureId = null, scope = null) {
     const salt = this._m.salt();
     if (!salt) return null; // never emit an unsalted hash
-    const body = normalizeRequest(request);
-    // A call shape this cannot read — no messages, no input, no contents. Every
-    // such call would hash identically and the second one would be reported as
-    // an avoidable repeat of the first, which is a finding about this code
-    // rather than about the customer's traffic.
-    if (!body) return null;
     const modelName = model ?? "";
-    const requestFp = sha(salt, provider, modelName, body);
+    // The whole request, not just its messages, and scoped to the boundary a
+    // response could actually be reused in. Unreadable requests produce no
+    // candidate rather than degrading: a truncated or stringified payload
+    // compares equal to things it is not.
+    let requestFp = null;
+    try {
+      requestFp = sha(
+        salt, CANON_VERSION, scopeKey(scope), provider, modelName, canonicalRequest(request),
+      );
+    } catch (err) {
+      if (!(err instanceof UnsupportedRequest)) throw err;
+    }
+    // Prefix detection keeps its own, unchanged normalisation: "is this the
+    // same call" and "do these calls share a head" are different questions.
     const [staticPart, estimated] = staticPrefix(request, this._prefixChars);
     const prefixFp = sha(salt, provider, modelName, staticPart);
     // A prefix belongs to the feature whose call it came from, not to the
@@ -1060,11 +1281,28 @@ class Optimizer {
     const measured = int(usage.cache_write_tokens);
     const cacheRead = int(usage.cache_read_tokens);
 
-    const duplicate = this._seen.has(requestFp);
-    if (duplicate) this._seen.delete(requestFp); // re-insert = most recently used
-    this._seen.set(requestFp, true);
-    while (this._seen.size > this._dupCapacity) {
-      this._seen.delete(this._seen.keys().next().value);
+    // performance.now(), not Date.now(): a monotonic clock cannot move backwards
+    // under an NTP correction and turn an expiry into a negative age.
+    const now = performance.now();
+    let duplicate = false;
+    if (requestFp !== null) {
+      const opened = this._seen.get(requestFp);
+      if (opened !== undefined && now - opened <= this._windowMs) {
+        duplicate = true;
+        // Recency for eviction only. The group's start time is NOT refreshed,
+        // so steady repeating traffic cannot keep one supposed cached response
+        // alive indefinitely.
+        this._seen.delete(requestFp);
+        this._seen.set(requestFp, opened);
+      } else {
+        // First sighting, or the window has closed and this opens a new group —
+        // an expired repeat is not an avoidable call.
+        this._seen.delete(requestFp);
+        this._seen.set(requestFp, now);
+      }
+      while (this._seen.size > this._dupCapacity) {
+        this._seen.delete(this._seen.keys().next().value);
+      }
     }
 
     let entry = this._prefixes.get(key);
@@ -1090,7 +1328,18 @@ class Optimizer {
     if (measured) entry.measured = Math.max(entry.measured, measured);
     if (cacheRead) entry.cached += 1;
 
-    return duplicate ? { kind: "duplicate", fingerprint: requestFp, count: 1 } : null;
+    return duplicate
+      ? {
+          kind: "duplicate",
+          fingerprint: requestFp,
+          count: 1,
+          fingerprint_version: CANON_VERSION,
+          // Whether anybody said these two calls belong to the same user,
+          // tenant or cache. The server will not present an unscoped repeat as
+          // a safe reuse.
+          scope_kind: scopeIsExplicit(scope) ? "explicit" : "unscoped",
+        }
+      : null;
   }
 
   /**
