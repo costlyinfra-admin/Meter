@@ -33,13 +33,16 @@ function SparkIcon() {
 /** The three promises the website leads with, in the same order it makes them. */
 const TRUST = [
   {
-    label: "Read-only first",
+    label: "Read-only access",
     path: "M8 1.4 13.4 3.4v4.3c0 3.3-2.2 5.6-5.4 6.9-3.2-1.3-5.4-3.6-5.4-6.9V3.4L8 1.4Z M5.8 8l1.6 1.6L10.5 6",
   },
-  { label: "No prompt storage required", path: "M3 8.4 6.3 11.7 13 5" },
+  { label: "Privacy by design", path: "M3 8.4 6.3 11.7 13 5" },
   {
-    label: "Bill reconciliation",
-    path: "M2.6 3.2h10.8v9.6H2.6z M8 5.4v5.2 M6.4 6.6h2.4a1.1 1.1 0 0 1 0 2.2H7.2a1.1 1.1 0 0 0 0 2.2h2.4",
+    label: "No gateway required",
+    // A straight line, not the dollar-in-a-box that used to sit here: that icon
+    // was drawn for "Bill reconciliation" and reads as nonsense beside this.
+    // Traffic goes direct — that is the whole claim.
+    path: "M2.5 8h11 M10 4.5 13.5 8 10 11.5",
   },
 ];
 
@@ -87,10 +90,10 @@ export function AuthForm({ title, submitLabel, onSubmit, footer, note }: AuthFor
             <SparkIcon />
             AI economics for product companies
           </span>
-          <h1 className="auth-headline">Stop guessing the margin on your AI product.</h1>
+          <h1 className="auth-headline">Understand and optimize every dollar of AI spend.</h1>
           <p className="auth-sub">
-            See AI cost by customer and feature, find the highest-value optimizations, and verify
-            what you actually saved — without routing production traffic through another gateway.
+            Track costs across products, customers, and features—understand the economics, identify
+            spend drivers, and prioritize optimizations that improve margin.
           </p>
           <ul className="auth-trust">
             {TRUST.map((item) => (
