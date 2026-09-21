@@ -487,7 +487,7 @@ export const CATEGORIES: Category[] = [
             "Per-feature inference cost at **high** confidence rather than inferred",
             "Cost per customer (the [By Customer](/) tab)",
             "Latency per feature",
-            "Measured optimization findings — duplicate calls and uncached repeated prompt prefixes",
+            "Optimization findings from real traffic — repeated requests, and prompt prefixes being resent instead of cached",
           ),
           note(
             "It is entirely optional. Meter is designed to be useful without it, and installing it later does not invalidate anything you already have.",
@@ -772,7 +772,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "[Optimize](/optimize) produces findings from two different kinds of evidence, and is explicit about which is which.",
           ),
           list(
-            "**Measured** findings come from SDK telemetry: duplicated calls, repeated prompt prefixes that are not being cached, a model larger than the traffic needs. These carry a quantified saving because the traffic was observed.",
+            "**SDK-telemetry** findings come from your own traffic: requests sent more than once, prompt prefixes resent instead of cached, a model larger than the traffic needs. These carry a number because the traffic was observed — but see the table below, because only some of them are savings rather than ceilings.",
             "**Billing-data** findings come from your bills alone and need no SDK: unclassified spend, unattributed spend, non-production keys, a single key dominating the bill, sharp growth, no cost controls in place.",
           ),
           p(
@@ -788,10 +788,13 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           table(
             ["Label", "Meaning"],
             [
-              ["**Measured**", "A before/after reduction actually observed in your traffic"],
+              [
+                "**Measured**",
+                "Computed from observed traffic, not a percentage — e.g. prefix tokens the provider itself reported. Priced at list rate, not read off your invoice",
+              ],
               [
                 "**Modeled ceiling**",
-                "An upper bound from your measured token mix — quality-gated, realize with care",
+                "An upper bound. The count is real; realizing it depends on something Meter cannot check — that a smaller model holds quality, or that a repeated request could safely have been answered from the first",
               ],
               [
                 "**Not quantified**",
@@ -801,6 +804,32 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
           p(
             'The distinction is deliberate. A finding that says "$1,800 of spend sits on one unclassified key" is telling you where to look. It is not telling you that $1,800 is recoverable, and it will not pretend otherwise.',
+          ),
+        ],
+      },
+      {
+        slug: "repeated-requests",
+        title: "Repeated request candidates",
+        summary: "What Meter measures about repeats, and the part it cannot know.",
+        blocks: [
+          p(
+            "With optimize mode on, the SDK notices when your application sends the **same request twice** — the whole request, not just the prompt: model, system instructions, tools, temperature, output limits, response format and the rest. Two calls differing in any of them are two different calls.",
+          ),
+          p("What that finding does and does not claim:"),
+          list(
+            "**The count is exact.** Those requests really were identical, within one application, feature, operation, environment and customer scope.",
+            "**Whether the repeat was avoidable is not measured.** Serving the second from the first assumes the answer was still fresh, the caller was entitled to the same data, the repeat was not deliberate sampling or a retry, and nothing outside the prompt had changed. Meter sees none of that, so it reports a **ceiling**, never a saving.",
+            "**The dollars are list price.** Meter prices the repeats from the published price book. It cannot tell how much of that input your provider had already cached at a discount, so the real figure is at most this and often less.",
+            "**It only sees one process at a time.** The comparison happens in memory inside one SDK instance, so repeats spread across replicas, restarts or two languages are missed. Read the number as a floor.",
+          ),
+          note(
+            "If you do not pass a customer or cache scope, Meter still counts the repeats but says reuse safety is unverified — nobody has told it the two calls belong to the same user or tenant, and it will not assume they do.",
+          ),
+          p(
+            "Repeated requests and uncached prefixes often describe the same tokens, so Meter counts whichever is larger and drops the other rather than adding both.",
+          ),
+          note(
+            "This finding used to be called **duplicate calls**, and was presented as a measured saving. The detection is the same idea and much stricter now — it compares the whole request rather than the prompt alone — but the old name asserted the repeats were avoidable, which is the one part Meter cannot check.",
           ),
         ],
       },

@@ -45,7 +45,7 @@ Two detectors, chosen because they are **exactly measurable** and **privacy-safe
 
 | Detector | What it proves | Why it's real (not a %) |
 |---|---|---|
-| **Duplicate calls** | The same request was sent N times in a period | The (N−1) repeats are avoidable; savings = repeats × the call's real priced cost |
+| **Repeated request candidates** | The same request was sent N times in a period, inside one scope and window | The COUNT is exact. Avoidability is not measured (see §4.0); savings = repeats × list price, a ceiling |
 | **Cacheable prompt prefix** | Many calls share a large identical prefix that isn't cached | Savings = repeated prefix tokens × (input rate − cached-read rate), from the price book |
 
 Explicitly **out of scope for this slice** (future tiers, §12): model-downgrade

@@ -1,17 +1,27 @@
 """Measured optimization opportunities (opt spec §7).
 
 Unlike the heuristic estimator ([optimize.py](optimize.py)), every number here is
-*measured*: it is computed from the SDK's `usage_signal` rows (counts of real
-duplicate calls and repeated uncached prefixes) and priced from the price book
-([pricing.py](pricing.py)) — never a flat percentage. The heuristic tier remains
-below this as the zero-instrumentation fallback.
+*counted*: it comes from the SDK's `usage_signal` rows and is priced from the
+price book ([pricing.py](pricing.py)) — never a flat percentage. The heuristic
+tier remains below this as the zero-instrumentation fallback.
 
-Two detectors in this slice:
-  * **Duplicate calls** — the (N-1) repeats of a request are avoidable; savings
-    is their real priced cost.
+What is counted and what is assumed are not the same thing, and the two
+detectors differ in exactly that:
+
+  * **Repeated request candidates** (`duplicate_calls`) — the (N-1) repeats of
+    an identical request. The COUNT is exact. Whether those repeats were
+    avoidable is not measured: it depends on freshness, authorization,
+    deliberate sampling, external state and application policy, none of which
+    reaches Meter. The dollars are a list-price ceiling, because the stored
+    aggregate cannot tell how much of that input was already cache-served at a
+    tenth of the rate. Classified `modeled_ceiling`, never `measured`.
   * **Cacheable prompt prefix** — a large static prefix repeated across many
     uncached calls; savings is the repeated prefix tokens priced at
-    (input rate − cached-read rate) from the price book.
+    (input rate − cached-read rate) from the price book. `measured` where the
+    provider reported the prefix size, `modeled_ceiling` where it is an estimate.
+
+The two overlap — the same input tokens counted two ways — so they are mutually
+exclusive in the totals rather than summed.
 """
 
 from __future__ import annotations

@@ -611,3 +611,116 @@ def test_the_window_boundary_is_inclusive():
     collector2.on_call("anthropic", "m", request, {})
     clock2["t"] = 600.000001
     assert collector2.on_call("anthropic", "m", request, {}) is None
+
+
+def test_no_scope_label_ever_reaches_the_wire():
+    """Scope is part of the identity, not a field on it.
+
+    Application, feature, operation, environment and customer are hashed into
+    the fingerprint so two customers' identical prompts are not one avoidable
+    call. They must not travel as themselves: a customer id is the tenant's own
+    private label for someone, and Meter has no business storing it in an
+    optimization aggregate.
+    """
+    t = Captured("pepper")
+    m = meter(t, optimize=True, salt="pepper")
+
+    class Anthropic:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return Response()
+
+    client = m.wrap(
+        Anthropic(),
+        feature_id="feature-secret-project",
+        customer_id="northwind-financial",
+        cache_scope="tenant-42",
+    )
+    request = {"model": "m", "system": "static", "messages": [{"content": "hi"}]}
+    client.messages.create(**request)
+    client.messages.create(**request)
+    drain(m)
+
+    assert t.signals("duplicate"), "this test proves nothing if no signal was sent"
+    wire = t.raw
+    # These two are the tenant's own private labels for somebody. They exist
+    # only to keep one customer's repeats apart from another's, and they do that
+    # inside the hash.
+    for label in ("northwind-financial", "tenant-42"):
+        assert label not in wire, f"{label!r} reached the wire"
+
+    # Application and feature DO travel, and always have: they are span fields,
+    # they name rows the customer already sees on the Applications and Features
+    # screens, and metering would not work without them. The scope addition did
+    # not widen what is sent — it only added two labels, and those stay hashed.
+    assert '"application": "support-agent"' in wire
+    signal = t.signals("duplicate")[0]
+    assert set(signal) == {"kind", "fingerprint", "count", "fingerprint_version", "scope_kind"}
+    assert signal["scope_kind"] == "explicit"  # the fact, never the label
+
+
+def test_a_fresh_process_cannot_see_the_previous_one_s_first_calls():
+    """Detection is process-local, and the coverage gap that creates is real.
+
+    A restart, a new replica or a second language runtime starts with an empty
+    map. The first call it sees is a first call to it, whatever happened
+    elsewhere — so genuine repeats across instances are MISSED. The finding is a
+    floor on repetition, never a complete count, and this pins that so nobody
+    later mistakes a low number for a clean bill of health.
+    """
+    request = {"model": "m", "messages": [{"content": "hi"}]}
+
+    first = _Optimizer(meter(Captured("pepper"), salt="pepper"))
+    assert first.on_call("anthropic", "m", request, {}) is None  # first sighting
+    assert first.on_call("anthropic", "m", request, {}) is not None  # a repeat
+
+    # A second instance of the same application, same salt, same request.
+    restarted = _Optimizer(meter(Captured("pepper"), salt="pepper"))
+    assert restarted.on_call("anthropic", "m", request, {}) is None, (
+        "a fresh process must not report a repeat it never saw the first of"
+    )
+
+
+def test_a_request_it_cannot_read_still_returns_and_still_meters():
+    """Optimization is an extra. It may cost a signal, never a call."""
+    t = Captured("pepper")
+    m = meter(t, optimize=True, salt="pepper")
+    original = Response()
+
+    class Anthropic:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return original
+
+    cyclic: dict = {"role": "user"}
+    cyclic["self"] = cyclic
+    client = m.wrap(Anthropic(), feature_id="f")
+
+    # The canonicalizer cannot read this, and the caller is unaffected.
+    assert client.messages.create(model="m", messages=[cyclic]) is original
+    drain(m)
+
+    assert t.signals("duplicate") == []  # no candidate, as designed
+    done = [e for e in t.events if e["event_type"] == "span.completed"]
+    assert done, "the call was not metered"
+    assert done[0]["tokens_in"] == 1000, "ordinary inference accounting changed"
+
+
+def test_an_exception_is_re_raised_unchanged_with_optimize_on():
+    t = Captured("pepper")
+    m = meter(t, optimize=True, salt="pepper")
+
+    class Anthropic:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                raise RuntimeError("upstream 500: secret-detail")
+
+    with pytest.raises(RuntimeError, match="upstream 500"):
+        m.wrap(Anthropic(), feature_id="f").messages.create(model="m", messages=[{"c": 1}])
+    drain(m)
+
+    assert [e["event_type"] for e in t.events][-2:] == ["span.failed", "trace.failed"]
+    assert "secret-detail" not in t.raw  # the exception text is the customer's

@@ -66,10 +66,14 @@ const OPPORTUNITIES = {
     }),
     opp({
       lever: "duplicate_calls",
-      title: "Duplicate calls",
+      // What the server sends now: the count is exact, the avoidability is not
+      // measured, and the dollars are a list-price ceiling.
+      title: "Repeated request candidates",
+      savings_type: "modeled_ceiling",
       projected_monthly_savings: 369.0,
-      evidence: "1,240 duplicate calls across 3 distinct requests this month",
-      fix: "Add response caching for identical requests (e.g. keyed on the request hash).",
+      evidence:
+        "1,240 repeated requests across 3 distinct request shapes this month, priced at list rate",
+      fix: "Cache responses for identical requests (key on the request hash) where the answer can safely be reused.",
       trail: [{ fingerprint: "dup-alert-fo", model: "claude-sonnet-4-6", call_count: 620 }],
     }),
     opp({
@@ -230,10 +234,10 @@ describe("FeatureDetail", () => {
     // Optimization: measured findings on top, estimated (heuristic) demoted.
     expect(screen.getByText("Optimization opportunities")).toBeInTheDocument();
     expect(await screen.findByText("Prompt caching")).toBeInTheDocument(); // measured lever
-    expect(screen.getByText("Duplicate calls")).toBeInTheDocument(); // measured lever
-    // Measured evidence sentence + the specific fix render.
+    expect(screen.getByText("Repeated request candidates")).toBeInTheDocument();
+    // The evidence sentence + the specific fix render.
     expect(
-      screen.getByText(/1,240 duplicate calls across 3 distinct requests/),
+      screen.getByText(/1,240 repeated requests across 3 distinct request shapes/),
     ).toBeInTheDocument();
     expect(screen.getByText("$634/mo")).toBeInTheDocument(); // measured savings headline (rounded)
     // Each measured card shows its engineering-effort chip (how hard the fix is).

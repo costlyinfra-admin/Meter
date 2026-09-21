@@ -1149,6 +1149,26 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
             tokens_in=tin,
             tokens_out=tout,
         )
+    # ...and repeats on a feature with NO prefix signal, so the demo actually
+    # shows the repeated-request finding. On triage it is correctly suppressed:
+    # the same input tokens are already priced by the prefix finding there, and
+    # when two levers overlap Meter keeps the better-evidenced one even when it
+    # is the smaller. Without a second feature the new labelling — a ceiling,
+    # list-priced, scoped — would never appear on screen.
+    for fp, calls, tin, tout in (
+        ("dup-report-render", 310, 18_000_000, 2_400_000),
+        ("dup-report-summary", 120, 6_500_000, 800_000),
+    ):
+        _add_usage_signal(
+            conn,
+            tenant_id,
+            base["report"],
+            "duplicate",
+            fp,
+            calls,
+            tokens_in=tin,
+            tokens_out=tout,
+        )
     # A 4,100-token static system prompt across 26,000 calls, ~8% already cached.
     _add_usage_signal(
         conn,

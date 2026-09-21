@@ -510,4 +510,25 @@ test("optimize mode is documented as the option the SDK actually takes", () => {
   assert.ok(shown.includes("new Meter({ application:"), "the Node example is not a v2 Meter");
   assert.ok(!/new Meter\("/.test(shown), "the Node example still passes a positional argument");
   assert.ok(shown.includes("optimize: true"));
+
+  // Every option the section names has to be one the SDK reads. The scope and
+  // window options are the whole reason a repeat means anything, so a README
+  // that names them wrongly is worse than one that omits them.
+  const here2 = dirname(fileURLToPath(import.meta.url));
+  const node = readFileSync(join(here2, "..", "index.mjs"), "utf8");
+  const python = readFileSync(
+    join(here2, "..", "..", "python", "costlyinfra_meter", "__init__.py"),
+    "utf8",
+  );
+  // Both directions, unconditionally. A conditional check is vacuous exactly
+  // when it matters: a README naming an option the SDK does not have simply
+  // fails to mention the real one, and the check skips itself.
+  for (const option of ["customerId", "cacheScope", "optimizeWindowMs"]) {
+    assert.ok(shown.includes(option), `the README stopped documenting ${option}`);
+    assert.ok(node.includes(`options.${option}`), `README names ${option}; the SDK does not`);
+  }
+  for (const option of ["customer_id", "cache_scope", "optimize_window"]) {
+    assert.ok(shown.includes(option), `the README stopped documenting ${option}`);
+    assert.ok(python.includes(option), `README names ${option}; the Python SDK does not`);
+  }
 });

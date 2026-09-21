@@ -259,7 +259,11 @@ function monthLabel(iso: string): string {
 // Lever → friendly title, for the Applied-optimizations table (whose rows carry
 // only a lever). Opportunity cards use the `title` the API now provides.
 const LEVER_TITLES: Record<string, string> = {
-  duplicate_calls: "Duplicate calls",
+  // "Duplicate calls" asserted the repeats were avoidable. What is measured is
+  // that the requests were identical; whether the later ones could have been
+  // served from the first is not something Meter can see. Kept in step with
+  // _LEVER_META on the server, which this table cannot read.
+  duplicate_calls: "Repeated request candidates",
   prompt_caching: "Prompt caching",
   provider_switch: "Cheaper provider",
   model_rightsizing: "Model right-sizing",

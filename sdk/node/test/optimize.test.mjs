@@ -508,3 +508,80 @@ test("a repeat after the window is not an avoidable call", async () => {
   await flush(m);
   assert.equal(t.signals("duplicate").length, 1, "an expired repeat is not avoidable");
 });
+
+test("no scope label ever reaches the wire", async () => {
+  // Scope is part of the identity, not a field on it. A customer id is the
+  // tenant's own private label for somebody; it keeps one customer's repeats
+  // apart from another's from inside the hash.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  class Anthropic {
+    constructor() {
+      this.messages = { create: async () => response() };
+    }
+  }
+  const client = m.wrap(new Anthropic(), {
+    featureId: "feature-secret-project",
+    customerId: "northwind-financial",
+    cacheScope: "tenant-42",
+  });
+  const request = { model: "m", system: "static", messages: [{ content: "hi" }] };
+  await client.messages.create(request);
+  await client.messages.create(request);
+  await flush(m);
+
+  assert.ok(t.signals("duplicate").length > 0, "this proves nothing with no signal");
+  const wire = t.raw();
+  for (const label of ["northwind-financial", "tenant-42"]) {
+    assert.ok(!wire.includes(label), `${label} reached the wire`);
+  }
+  // Application and feature DO travel — they are span fields naming rows the
+  // customer already sees. The scope addition did not widen what is sent.
+  assert.deepEqual(Object.keys(t.signals("duplicate")[0]).sort(), [
+    "count", "fingerprint", "fingerprint_version", "kind", "scope_kind",
+  ]);
+});
+
+test("a fresh process cannot see the previous one's first calls", async () => {
+  // Detection is process-local. A restart, a replica or the other language
+  // starts empty, so genuine repeats across instances are MISSED — the number
+  // is a floor on repetition, never a complete count.
+  const request = { model: "m", messages: [{ content: "hi" }] };
+
+  const first = meter(capture(), { optimize: true, salt: "pepper" });
+  assert.equal(first._optimizer.onCall("anthropic", "m", request, {}), null);
+  assert.ok(first._optimizer.onCall("anthropic", "m", request, {}) !== null);
+
+  const restarted = meter(capture(), { optimize: true, salt: "pepper" });
+  assert.equal(
+    restarted._optimizer.onCall("anthropic", "m", request, {}),
+    null,
+    "a fresh process must not report a repeat it never saw the first of",
+  );
+});
+
+test("a request it cannot read still returns and still meters", async () => {
+  // Optimization is an extra. It may cost a signal, never a call.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  const original = response();
+  class Anthropic {
+    constructor() {
+      this.messages = { create: async () => original };
+    }
+  }
+  const cyclic = { role: "user" };
+  cyclic.self = cyclic;
+
+  const got = await m.wrap(new Anthropic(), { featureId: "f" }).messages.create({
+    model: "m",
+    messages: [cyclic],
+  });
+  await flush(m);
+
+  assert.equal(got, original);
+  assert.deepEqual(t.signals("duplicate"), []);
+  const done = t.events().filter((e) => e.event_type === "span.completed");
+  assert.ok(done.length > 0, "the call was not metered");
+  assert.equal(done[0].tokens_in, 1000, "ordinary inference accounting changed");
+});
