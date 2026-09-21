@@ -36,7 +36,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 
-export const VERSION = "2.2.0";
+export const VERSION = "2.3.0";
 
 const FLUSH_INTERVAL_MS = 2000;
 const BATCH_SIZE = 50;

@@ -55,7 +55,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Callable, NamedTuple, Optional
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 FLUSH_INTERVAL = 2.0
 BATCH_SIZE = 50
