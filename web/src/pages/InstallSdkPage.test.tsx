@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type Feature } from "../api";
 import { AuthProvider } from "../auth/AuthContext";
 import { InstallSdkPage } from "./InstallSdkPage";
+import { MIN_SDK } from "./installPrompt";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
@@ -197,15 +198,17 @@ describe("InstallSdkPage — manual route", () => {
     renderPage("/install-sdk?tab=manual");
     await screen.findByRole("heading", { name: "1. Install the package" });
 
-    expect(screen.getByText("npm install costlyinfra-meter")).toBeInTheDocument();
-    expect(screen.queryByText("pnpm add costlyinfra-meter")).not.toBeInTheDocument();
+    // Every manager pins the same version the Python command and the agent
+    // prompt ask for; they used to install whatever npm happened to serve.
+    expect(screen.getByText(`npm install costlyinfra-meter@^${MIN_SDK}`)).toBeInTheDocument();
+    expect(screen.queryByText(`pnpm add costlyinfra-meter@^${MIN_SDK}`)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "pnpm" }));
-    expect(screen.getByText("pnpm add costlyinfra-meter")).toBeInTheDocument();
-    expect(screen.queryByText("npm install costlyinfra-meter")).not.toBeInTheDocument();
+    expect(screen.getByText(`pnpm add costlyinfra-meter@^${MIN_SDK}`)).toBeInTheDocument();
+    expect(screen.queryByText(`npm install costlyinfra-meter@^${MIN_SDK}`)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "bun" }));
-    expect(screen.getByText("bun add costlyinfra-meter")).toBeInTheDocument();
+    expect(screen.getByText(`bun add costlyinfra-meter@^${MIN_SDK}`)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "bun" })).toHaveAttribute("aria-pressed", "true");
   });
 

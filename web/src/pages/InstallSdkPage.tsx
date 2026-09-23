@@ -94,12 +94,14 @@ function AlertIcon() {
 type PrimaryTab = "ai" | "manual" | "otel" | "splunk";
 type NodePm = "npm" | "yarn" | "pnpm" | "bun";
 
-/** Install commands, one per manager. All four resolve the same package. */
+/** Install commands, one per manager. All four resolve the same package, and
+ *  all four pin the same version the Python command and the agent prompt do —
+ *  they used to install whatever npm happened to serve. */
 const NODE_INSTALL: Record<NodePm, string> = {
-  npm: "npm install costlyinfra-meter",
-  yarn: "yarn add costlyinfra-meter",
-  pnpm: "pnpm add costlyinfra-meter",
-  bun: "bun add costlyinfra-meter",
+  npm: `npm install costlyinfra-meter@^${MIN_SDK}`,
+  yarn: `yarn add costlyinfra-meter@^${MIN_SDK}`,
+  pnpm: `pnpm add costlyinfra-meter@^${MIN_SDK}`,
+  bun: `bun add costlyinfra-meter@^${MIN_SDK}`,
 };
 
 const NODE_PMS: NodePm[] = ["npm", "yarn", "pnpm", "bun"];

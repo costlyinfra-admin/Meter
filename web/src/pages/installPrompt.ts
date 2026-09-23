@@ -13,8 +13,20 @@
  */
 import type { Feature } from "../api";
 
-/** The lowest SDK version with the queue, batching and retries. */
-export const MIN_SDK = "2.0";
+/**
+ * The version the install instructions pin.
+ *
+ * 2.0 was the floor for the queue, batching and retries, and those still work
+ * on it. The floor moved because of optimize mode: below 2.3 the SDK compares
+ * only the provider, model and messages when deciding two requests are the
+ * same, so the server records those signals as a legacy identity and leaves
+ * them out of the repeated-request finding. Someone installing today and
+ * turning optimize mode on would get a feature that reports nothing.
+ *
+ * There is no reason to install an older one, so this is what both languages
+ * are told to ask for.
+ */
+export const MIN_SDK = "2.3.0";
 
 function featureList(features: Feature[]): string {
   if (features.length === 0) {

@@ -38,6 +38,17 @@ describe("the coding-agent prompt", () => {
     expect(NODE_MANIFEST.version).toBe(/version = "([\d.]+)"/.exec(PYTHON_MANIFEST)![1]);
   });
 
+  it("asks for a version whose optimize mode actually reports something", () => {
+    // Not "equals the current release" — `>=` and `^` both pick up later ones,
+    // so pinning the exact version would fail CI on every bump for no reason.
+    // What must not slip is the FLOOR: below 2.3 the SDK compares only the
+    // provider, model and messages, those signals are stored as a legacy
+    // identity, and the repeated-request finding leaves them out. Someone
+    // following this page would turn optimize mode on and see nothing.
+    const [major, minor] = MIN_SDK.split(".").map(Number);
+    expect(major > 2 || (major === 2 && minor >= 3)).toBe(true);
+  });
+
   // The prompt tells a coding agent which methods to call. If it names one the
   // SDK does not have, the agent writes code that cannot work — so the prompt
   // is checked against the SDK source, not against what we remember shipping.
