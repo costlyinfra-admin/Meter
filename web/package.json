@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:docs": "node scripts/build-docs.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

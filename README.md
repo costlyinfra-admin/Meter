@@ -380,6 +380,7 @@ The connector path is the shippable core; the metering hook is additive precisio
 - [`docs/build-plan.md`](docs/build-plan.md) — the ordered milestones (M0–M8) with acceptance criteria.
 - [`docs/deploy.md`](docs/deploy.md) — deploy-your-own-instance guide.
 - [`docs/demo-script.md`](docs/demo-script.md) — a start-to-finish demo narrative.
+- [`docs/public-docs.md`](docs/public-docs.md) — generating the public documentation site from the in-app handbook.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to set up, run, and contribute.
 - [`CLAUDE.md`](CLAUDE.md) — standing instructions / non-negotiable invariants (AI-build guidance; not required to use the app).
 

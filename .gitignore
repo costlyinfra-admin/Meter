@@ -23,6 +23,8 @@ dist/
 # --- Node / web ---
 web/node_modules/
 web/dist/
+# Generated public documentation (see docs/public-docs.md); rebuilt on demand.
+web/dist-docs/
 node_modules/
 npm-debug.log*
 

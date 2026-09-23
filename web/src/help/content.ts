@@ -8,6 +8,7 @@
  * product's whole premise.
  */
 import { code, list, note, p, steps, table, type Block } from "./blocks";
+import { MIN_SDK } from "../pages/installPrompt";
 
 export interface Topic {
   slug: string;
@@ -504,20 +505,24 @@ export const CATEGORIES: Category[] = [
           ),
           code(`# Python
 from anthropic import Anthropic
-from costlyinfra_meter import wrap
+from costlyinfra_meter import Meter
 
-client = wrap(Anthropic(), feature_id="<feature-id>")
+meter = Meter()                       # reads the environment variables below
+client = meter.wrap(Anthropic(), feature_id="<feature-id>")
 resp = client.messages.create(...)   # metered automatically`),
           code(`// Node
-import { wrap } from "costlyinfra-meter";
+import { Meter } from "costlyinfra-meter";
 
-const client = wrap(openai, { featureId: "<feature-id>" });
+const meter = new Meter();
+const client = meter.wrap(openai, { featureId: "<feature-id>" });
 await client.chat.completions.create({ ... });   // metered automatically`),
           p(
             "Configuration is two environment variables — the ingest URL and your token. With neither set, every call is a no-op, so the same code runs in environments where you have not enabled it.",
           ),
           note(
-            'Install into the environment your app actually runs in. On Python that means the virtualenv — `python3 -m pip install "costlyinfra-meter>=0.4"`, or a line in your requirements file. The Node package is ESM only, so `import` it rather than `require()` it.',
+            'Install into the environment your app actually runs in. On Python that means the virtualenv — `python3 -m pip install "costlyinfra-meter>=' +
+              MIN_SDK +
+              '"`, or a line in your requirements file. The Node package is ESM only, so `import` it rather than `require()` it.',
           ),
         ],
       },

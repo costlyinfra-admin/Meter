@@ -9,7 +9,7 @@ PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
 .PHONY: help install install-backend install-web test test-backend test-web test-sdk \
-        lint lint-backend lint-web format db-migrate db-seed db-reset api web clean \
+        lint lint-backend lint-web format db-migrate db-seed db-reset api web docs clean \
         ingest ingest-infra expire-traces
 
 help:
@@ -24,6 +24,7 @@ help:
 	@echo "  make api         - run the backend API (uvicorn, port 8000)"
 	@echo "  make web         - run the web dev server (vite, port 5173)"
 	@echo "  make demo        - one-command seeded demo (throwaway DB + API + web)"
+	@echo "  make docs        - build the public documentation site (web/dist-docs)"
 	@echo "  make clean       - remove virtualenv, node_modules, build caches"
 
 # ---- install -------------------------------------------------------------
@@ -118,8 +119,14 @@ web:
 demo:
 	./scripts/demo.sh
 
+# ---- public documentation ------------------------------------------------
+# Renders web/src/help/content.ts — the same handbook the app and Ask Meter read
+# — as a static site for costlyinfra.com/docs. See docs/public-docs.md.
+docs:
+	cd $(WEB) && npm run build:docs
+
 # ---- clean ---------------------------------------------------------------
 clean:
-	rm -rf $(VENV) $(WEB)/node_modules $(WEB)/dist
+	rm -rf $(VENV) $(WEB)/node_modules $(WEB)/dist $(WEB)/dist-docs
 	find $(BACKEND) -type d -name __pycache__ -prune -exec rm -rf {} +
 	find $(BACKEND) -type d -name .pytest_cache -prune -exec rm -rf {} +

@@ -5,25 +5,16 @@
 import { describe, expect, it } from "vitest";
 import { blockText } from "./blocks";
 import { ALL_TOPICS, CATEGORIES, findTopic } from "./content";
+import { APP_ROUTES } from "./routes";
 import { search } from "./search";
+import { MIN_SDK } from "../pages/installPrompt";
 
-/** Every route the app actually serves. Kept beside App.tsx by these tests. */
-const ROUTES = new Set([
-  "/",
-  "/optimize",
-  "/optimize/prompts",
-  "/products",
-  "/applications",
-  "/traces",
-  "/cost-sources",
-  "/features",
-  "/install-sdk",
-  "/alerts",
-  "/settings",
-  "/help",
-  // Opt-in module: the route always exists, and refuses unless it is enabled.
-  "/reconciliation",
-]);
+// The SDKs as text, so a snippet that no longer compiles fails here rather than
+// in a reader's terminal. The handbook shipped `from costlyinfra_meter import
+// wrap` and `import { wrap }` for a while; neither has worked since the v2
+// rewrite, and nothing noticed.
+import PYTHON_SDK from "../../../sdk/python/costlyinfra_meter/__init__.py?raw";
+import NODE_SDK from "../../../sdk/node/index.mjs?raw";
 
 const LINKS = /\[[^\]]+\]\(([^)]+)\)/g;
 
@@ -41,7 +32,7 @@ describe("knowledge base content", () => {
       const text = [topic.summary, ...topic.blocks.map(blockText)].join(" ");
       for (const [, href] of text.matchAll(LINKS)) {
         if (!href.startsWith("/")) continue; // external links are not ours to check
-        const ok = ROUTES.has(href) || (href.startsWith("/help/") && findTopic(...split(href)));
+        const ok = APP_ROUTES.has(href) || (href.startsWith("/help/") && findTopic(...split(href)));
         if (!ok) bad.push(`${category.slug}/${topic.slug} -> ${href}`);
       }
     }
@@ -159,3 +150,46 @@ describe("invoice reconciliation topics", () => {
 function text(topic: { blocks: { kind: string }[] }): string {
   return JSON.stringify(topic.blocks);
 }
+
+describe("the SDK snippets", () => {
+  const snippets = findTopic("sdk", "installing")!
+    .topic.blocks.filter((b) => b.kind === "code")
+    .map((b) => (b.kind === "code" ? b.text : ""));
+  const python = snippets.find((s) => s.startsWith("# Python"))!;
+  const node = snippets.find((s) => s.startsWith("// Node"))!;
+
+  it("imports only names the Python package exports", () => {
+    const exported = /__all__ = \[([^\]]+)\]/.exec(PYTHON_SDK)![1];
+    for (const [, names] of python.matchAll(/from costlyinfra_meter import (.+)/g)) {
+      for (const name of names.split(",").map((n) => n.trim())) {
+        expect(exported, name).toContain(`"${name}"`);
+      }
+    }
+  });
+
+  it("imports only names the Node package exports", () => {
+    for (const [, names] of node.matchAll(/import \{([^}]+)\} from "costlyinfra-meter"/g)) {
+      for (const name of names.split(",").map((n) => n.trim())) {
+        expect(NODE_SDK, name).toMatch(new RegExp(`export (class|function|const) ${name}\\b`));
+      }
+    }
+  });
+
+  it("wraps the way the SDK supports — through a Meter, in both languages", () => {
+    // Python also has a module-level wrap(), but it takes the meter as its
+    // second argument, so `wrap(Anthropic(), feature_id=...)` raises TypeError.
+    // Node has no module-level wrap at all. The method is the documented path
+    // because it is the one that exists in both.
+    expect(python).toContain("meter = Meter()");
+    expect(python).toMatch(/meter\.wrap\(/);
+    expect(node).toContain("new Meter()");
+    expect(node).toMatch(/meter\.wrap\(/);
+    expect(PYTHON_SDK).toMatch(/def wrap\(self, client/);
+    expect(NODE_SDK).toMatch(/\n {2}wrap\(client/);
+  });
+
+  it("asks for the version the rest of the product asks for", () => {
+    const note = findTopic("sdk", "installing")!.topic.blocks.find((b) => b.kind === "note")!;
+    expect(note.kind === "note" && note.text).toContain(`costlyinfra-meter>=${MIN_SDK}`);
+  });
+});
