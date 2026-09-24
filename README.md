@@ -141,6 +141,7 @@ Postgres; an optional SDK and a scheduled job feed it.
 | Path | What it is |
 |---|---|
 | [`backend/`](backend) | Python API + ingest/attribution/reconciliation (FastAPI, psycopg). |
+| [`backend/meter/mcp/`](backend/meter/mcp) | Read-only MCP server over the same read services, for coding agents. |
 | [`backend/migrations/`](backend/migrations) | Plain SQL migrations, applied in filename order. |
 | [`web/`](web) | React + TypeScript single-page app (Vite, Vitest). |
 | [`sdk/python/`](sdk/python), [`sdk/node/`](sdk/node) | The optional metering-hook SDKs (dependency-free, fail-safe). |
@@ -381,6 +382,7 @@ The connector path is the shippable core; the metering hook is additive precisio
 - [`docs/deploy.md`](docs/deploy.md) — deploy-your-own-instance guide.
 - [`docs/demo-script.md`](docs/demo-script.md) — a start-to-finish demo narrative.
 - [`docs/public-docs.md`](docs/public-docs.md) — generating the public documentation site from the in-app handbook.
+- [`docs/mcp-server.md`](docs/mcp-server.md) — the read-only MCP server, and how to connect a coding agent to it.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to set up, run, and contribute.
 - [`CLAUDE.md`](CLAUDE.md) — standing instructions / non-negotiable invariants (AI-build guidance; not required to use the app).
 
