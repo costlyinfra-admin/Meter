@@ -7511,3 +7511,42 @@ button.span-head:focus-visible {
 .trend-seg-fill.product-seg-unattributed {
   fill: var(--muted);
 }
+
+/* ---------------------------------------------------------------------------
+   Settings → Coding agents (MCP tokens)
+   --------------------------------------------------------------------------- */
+/* A token is shown once and never again, so the block that carries it is
+   marked out rather than left to look like another field. */
+.mcp-new-token {
+  border: 1px solid var(--accent-ring);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.1rem;
+}
+.mcp-new-token button {
+  align-self: flex-start;
+  margin-top: 0.6rem;
+}
+
+.mcp-add {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+.mcp-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The trail is a log, so it reads as one: monospaced, small, and scrollable
+   rather than pushing the rest of the card off the screen. */
+.mcp-activity {
+  max-height: 16rem;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.7;
+}
+.mcp-activity li {
+  margin-bottom: 0;
+}

@@ -1,4 +1,4 @@
-"""Who the MCP server is acting as, and how hard it may ask.
+"""Who the stdio MCP server is acting as.
 
 One process serves one tenant, resolved once at startup from a token. That is
 deliberate: the server runs on a developer's machine next to their editor, and
@@ -20,34 +20,19 @@ from __future__ import annotations
 
 import os
 
-from .. import ratelimit
 from . import tokens
+from .server import Caller
 
 #: Where the server reads its credential from.
 TOKEN_VAR = "METER_MCP_TOKEN"
-
-#: Per-tenant sliding window. Generous for a person working with an agent —
-#: a question usually costs two or three calls — and low enough that a client
-#: stuck in a retry loop stops being the database's problem. Same mechanism as
-#: the assistant's, a bigger budget, because a tool call is cheaper than a
-#: model call.
-RATE_LIMIT = 120
-RATE_WINDOW = 60.0
-
-_limiter = ratelimit.Limiter(
-    RATE_LIMIT,
-    RATE_WINDOW,
-    f"Too many Meter tool calls in the last minute (limit {RATE_LIMIT}). "
-    "Wait a moment before retrying.",
-)
 
 
 class NotAuthenticated(Exception):
     """The server has no usable Meter identity, so it must not start."""
 
 
-def resolve_tenant() -> str:
-    """The tenant this process serves, or raise.
+def resolve_caller() -> Caller:
+    """Who this process serves, or raise.
 
     Deliberately fails at startup rather than on the first tool call: a client
     that connects successfully and then fails every query looks like a Meter
@@ -59,19 +44,9 @@ def resolve_tenant() -> str:
             f"Set {TOKEN_VAR} to a Meter MCP token. Mint one with "
             "`python -m meter.mcp.mint`."
         )
-    tenant_id = tokens.resolve(token)
-    if tenant_id is None:
+    found = tokens.resolve(token)
+    if found is None:
         # No detail about why: this message can reach a log, and "expired"
         # versus "never existed" is information a guesser can use.
         raise NotAuthenticated("That MCP token is not valid. It may have been revoked.")
-    return tenant_id
-
-
-def check_rate(tenant_id: str) -> None:
-    """Raises ratelimit.RateLimited when a client is asking too fast."""
-    _limiter.check(tenant_id)
-
-
-def reset_rate() -> None:
-    """Forget the window. For tests."""
-    _limiter.reset()
+    return Caller(found.tenant_id, found.token_id, "stdio")

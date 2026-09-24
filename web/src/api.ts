@@ -1492,6 +1492,34 @@ export class ApiError extends Error {
   }
 }
 
+/** A credential a coding agent uses to read this organization's data over MCP. */
+export interface McpToken {
+  id: string;
+  label: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  active: boolean;
+  /** Tool calls in the last seven days — "is anything still using this?" */
+  recent_calls: number;
+}
+
+/** The token itself, returned once at creation and never again. */
+export interface McpTokenCreated extends Pick<McpToken, "id" | "label" | "created_at"> {
+  token: string;
+}
+
+/** One tool call an agent made: the question, never the answer. */
+export interface McpActivity {
+  at: string;
+  tool: string;
+  arguments: string | null;
+  outcome: "ok" | "error" | "rate_limited";
+  duration_ms: number | null;
+  transport: "stdio" | "http";
+  token_label: string | null;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     credentials: "include",
@@ -1637,6 +1665,21 @@ export const api = {
     }),
 
   promptAudit: () => request<{ events: PromptAuditEvent[] }>("/prompt-optimization/audit"),
+
+  // ---- MCP: read-only access for coding agents ----
+  mcpTokens: () => request<McpToken[]>("/mcp/tokens"),
+
+  /** The response carries the token itself — the only time it exists. */
+  createMcpToken: (label: string) =>
+    request<McpTokenCreated>("/mcp/tokens", {
+      method: "POST",
+      body: JSON.stringify({ label }),
+    }),
+
+  revokeMcpToken: (id: string) =>
+    request<void>(`/mcp/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  mcpActivity: () => request<McpActivity[]>("/mcp/activity"),
 
   evalKeys: () => request<{ keys: EvalKey[] }>("/prompt-optimization/eval-keys"),
 

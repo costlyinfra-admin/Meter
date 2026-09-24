@@ -26,6 +26,10 @@ vi.mock("../api", async (importActual) => {
       grantPromptConsent: vi.fn(),
       withdrawPromptConsent: vi.fn(),
       setPromptFeature: vi.fn(),
+      mcpTokens: vi.fn(),
+      mcpActivity: vi.fn(),
+      createMcpToken: vi.fn(),
+      revokeMcpToken: vi.fn(),
     },
   };
 });
@@ -63,6 +67,9 @@ function setupMocks() {
   // Budgets card loads alongside the page; default to "none set".
   vi.mocked(api.getBudget).mockResolvedValue({ budget: null });
   vi.mocked(api.updateSettings).mockImplementation(async (p) => ({ ...SETTINGS, ...p }));
+  // The Coding agents card loads alongside the page; default to "none yet".
+  vi.mocked(api.mcpTokens).mockResolvedValue([]);
+  vi.mocked(api.mcpActivity).mockResolvedValue([]);
   // The BYOK card loads alongside the page; default to "not configured".
   vi.mocked(api.discoveryLlm).mockResolvedValue({
     configured: false,
@@ -100,12 +107,13 @@ describe("SettingsPage", () => {
     expect(screen.getByLabelText("Time zone")).toHaveValue("America/Los_Angeles");
     expect(screen.getByLabelText("Default currency")).toHaveValue("USD");
 
-    // Four tabs, one selected.
+    // Five tabs, one selected.
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((t) => t.textContent)).toEqual([
       "Organization",
       "Budgets",
       "Bring your own key",
+      "Coding agents",
       "Privacy & data",
     ]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");

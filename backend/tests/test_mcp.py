@@ -18,18 +18,22 @@ import sys
 
 import pytest
 from meter import dashboard, optimize_measured, ratelimit
-from meter.mcp import server, session, tools
+from meter.mcp import limits, server, tools
 from meter.sampledata import insert_sample_data
 
 PERIOD = dt.date(2026, 5, 1)  # sampledata's period
 MONTH = "2026-05"
+
+#: A stand-in for the protocol tests, which care about the envelope and not
+#: about whose data is behind it.
+ANYONE = server.Caller("tenant")
 
 
 @pytest.fixture(autouse=True)
 def _fresh_rate_window():
     """Each test starts with the full budget. The limiter is process-wide, so
     without this a long file would fail on whichever test crossed the line."""
-    session.reset_rate()
+    limits.reset_rate()
 
 
 @pytest.fixture
@@ -57,7 +61,7 @@ def _call(tenant_id: str, name: str, arguments: dict) -> dict:
     response = server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
          "params": {"name": name, "arguments": arguments}},
-        tenant_id,
+        server.Caller(tenant_id),
     )
     result = response["result"]
     return {"payload": json.loads(result["content"][0]["text"]), "is_error": result["isError"]}
@@ -70,7 +74,7 @@ def test_initialize_declares_tools_and_agrees_on_a_version():
     reply = server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"protocolVersion": "2025-03-26"}},
-        "tenant",
+        ANYONE,
     )["result"]
     assert reply["protocolVersion"] == "2025-03-26"  # the client's, since we speak it
     assert reply["capabilities"]["tools"] is not None
@@ -81,13 +85,13 @@ def test_initialize_falls_back_when_the_client_speaks_something_else():
     reply = server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"protocolVersion": "1999-01-01"}},
-        "tenant",
+        ANYONE,
     )["result"]
     assert reply["protocolVersion"] == server.DEFAULT_PROTOCOL
 
 
 def test_lists_exactly_the_three_read_tools():
-    listed = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "t")["result"]
+    listed = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, ANYONE)["result"]
     assert [t["name"] for t in listed["tools"]] == [
         "get_cost_summary",
         "find_optimization_opportunities",
@@ -102,18 +106,19 @@ def test_lists_exactly_the_three_read_tools():
 
 def test_a_notification_gets_no_reply():
     # Replying to a notification is a protocol violation, and some clients hang.
-    assert server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}, "t") is None
+    notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    assert server.handle(notification, ANYONE) is None
 
 
 def test_an_unknown_method_is_a_jsonrpc_error():
-    reply = server.handle({"jsonrpc": "2.0", "id": 7, "method": "resources/list"}, "t")
+    reply = server.handle({"jsonrpc": "2.0", "id": 7, "method": "resources/list"}, ANYONE)
     assert reply["error"]["code"] == server.METHOD_NOT_FOUND
 
 
 def test_unparseable_input_does_not_kill_the_server():
     out = io.StringIO()
     server.serve(
-        "t",
+        ANYONE,
         io.StringIO('not json\n{"jsonrpc":"2.0","id":2,"method":"ping"}\n'),
         out,
     )
@@ -531,7 +536,7 @@ def test_it_refuses_to_start_with_no_read_only_credential(server_env):
 def test_a_revoked_token_stops_working(server_env, app_env):
     from meter.mcp import tokens
 
-    tenant = tokens.resolve(server_env["METER_MCP_TOKEN"])
+    tenant = tokens.resolve(server_env["METER_MCP_TOKEN"]).tenant_id
     only = tokens.list_tokens(tenant)[0]
     tokens.revoke(tenant, only["id"])
 
@@ -543,7 +548,7 @@ def test_a_revoked_token_stops_working(server_env, app_env):
 def test_using_a_token_records_that_it_was_used(server_env):
     from meter.mcp import tokens
 
-    tenant = tokens.resolve(server_env["METER_MCP_TOKEN"])
+    tenant = tokens.resolve(server_env["METER_MCP_TOKEN"]).tenant_id
     assert tokens.list_tokens(tenant)[0]["last_used_at"] is not None
 
 
@@ -591,7 +596,7 @@ def test_an_unknown_feature_id_is_refused_by_the_opportunity_tool(seeded):
 def test_a_flood_of_calls_is_slowed_down(seeded):
     # An agent in a retry loop should be told to wait, not allowed to hammer
     # the database until something else breaks.
-    for _ in range(session.RATE_LIMIT):
+    for _ in range(limits.RATE_LIMIT):
         assert not _call(seeded, "get_cost_summary", {"start": MONTH})["is_error"]
 
     stopped = _call(seeded, "get_cost_summary", {"start": MONTH})
@@ -603,7 +608,7 @@ def test_the_limit_is_checked_before_the_work(seeded, monkeypatch):
     def explode(*_args, **_kwargs):
         raise AssertionError("a rate-limited call must not reach the database")
 
-    for _ in range(session.RATE_LIMIT):
+    for _ in range(limits.RATE_LIMIT):
         _call(seeded, "get_cost_summary", {"start": MONTH})
     # Patched where server.py LOOKS IT UP, not where it is defined: server.py
     # imported the name, so patching tools.call_tool would change nothing and
@@ -616,12 +621,12 @@ def test_the_limit_is_checked_before_the_work(seeded, monkeypatch):
 
 
 def test_being_rate_limited_is_a_tool_result_not_a_broken_server(seeded):
-    for _ in range(session.RATE_LIMIT):
+    for _ in range(limits.RATE_LIMIT):
         _call(seeded, "get_cost_summary", {"start": MONTH})
     reply = server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
          "params": {"name": "get_cost_summary", "arguments": {}}},
-        seeded,
+        server.Caller(seeded),
     )
     # A JSON-RPC error would read as a server fault and prompt a reconnect.
     assert "error" not in reply

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from ..db import app_dsn, connect, tenant_tx
 
@@ -64,13 +64,23 @@ def create(tenant_id: str, label: str) -> dict:
     }
 
 
+#: How far back the "is anyone still using this?" count looks.
+RECENT_DAYS = 7
+
+
 def list_tokens(tenant_id: str) -> list:
     """Every token this tenant has, revoked ones included — the history is the
-    point of keeping them."""
+    point of keeping them — with how much each has been used lately."""
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         rows = conn.execute(
-            "SELECT id, label, created_at, last_used_at, revoked_at "
-            "FROM mcp_token ORDER BY created_at DESC"
+            """
+            SELECT t.id, t.label, t.created_at, t.last_used_at, t.revoked_at,
+                   (SELECT count(*) FROM mcp_audit a
+                     WHERE a.token_id = t.id
+                       AND a.created_at > now() - make_interval(days => %s)) AS recent
+            FROM mcp_token t ORDER BY t.created_at DESC
+            """,
+            (RECENT_DAYS,),
         ).fetchall()
     return [
         {
@@ -80,8 +90,9 @@ def list_tokens(tenant_id: str) -> list:
             "last_used_at": used.isoformat() if used else None,
             "revoked_at": revoked.isoformat() if revoked else None,
             "active": revoked is None,
+            "recent_calls": int(recent),
         }
-        for tid, label, created, used, revoked in rows
+        for tid, label, created, used, revoked, recent in rows
     ]
 
 
@@ -100,8 +111,16 @@ def revoke(tenant_id: str, token_id: str) -> dict:
     return {"id": str(row[0]), "label": row[1], "revoked_at": row[2].isoformat()}
 
 
-def resolve(token: str) -> Optional[str]:
-    """The tenant this token belongs to, or None. Records the use.
+class Resolved(NamedTuple):
+    """Who a token belongs to, and which token it was — the audit trail needs
+    both, and neither may ever come from a request body."""
+
+    tenant_id: str
+    token_id: str
+
+
+def resolve(token: str) -> Optional[Resolved]:
+    """Who this token belongs to, or None. Records the use.
 
     Runs on whatever role the process has — including the SELECT-only one —
     because the lookup is a SECURITY DEFINER function rather than a query
@@ -110,5 +129,9 @@ def resolve(token: str) -> Optional[str]:
     if not token:
         return None
     with connect(app_dsn(), autocommit=True) as conn:
-        row = conn.execute("SELECT mcp_resolve_token(%s)", (_hash(token),)).fetchone()
-    return str(row[0]) if row and row[0] else None
+        row = conn.execute(
+            "SELECT tenant_id, token_id FROM mcp_resolve_token(%s)", (_hash(token),)
+        ).fetchone()
+    if not row or not row[0]:
+        return None
+    return Resolved(str(row[0]), str(row[1]))

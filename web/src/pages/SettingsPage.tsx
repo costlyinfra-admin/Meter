@@ -7,7 +7,7 @@
  * the organization profile, its budget, and privacy preferences, stored at the
  * tenant level.
  *
- * Four tabs, using the same tablist the Overview's breakdown uses. Every panel
+ * Five tabs, using the same tablist the Overview's breakdown uses. Every panel
  * stays mounted and inactive ones are hidden, rather than unmounted: each card
  * holds its own draft state and its own request, and switching tabs should not
  * discard a half-typed budget or re-fetch what is already on screen.
@@ -17,6 +17,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError, type OrgSettings } from "../api";
 import { BudgetCard } from "../components/BudgetCard";
 import { DiscoveryLlmCard } from "../components/DiscoveryLlmCard";
+import { McpTokensCard } from "../components/McpTokensCard";
 import { PromptOptimizationCard } from "../components/PromptOptimizationCard";
 
 /** Tab ids double as URL fragments, so /settings#budgets opens the right one —
@@ -25,6 +26,7 @@ const TABS = [
   { id: "organization", label: "Organization" },
   { id: "budgets", label: "Budgets" },
   { id: "byok", label: "Bring your own key" },
+  { id: "agents", label: "Coding agents" },
   { id: "privacy", label: "Privacy & data" },
 ] as const;
 
@@ -269,6 +271,15 @@ export function SettingsPage() {
         hidden={tab !== "byok"}
       >
         <DiscoveryLlmCard />
+      </div>
+
+      <div
+        role="tabpanel"
+        id="settings-panel-agents"
+        aria-labelledby="settings-tab-agents"
+        hidden={tab !== "agents"}
+      >
+        <McpTokensCard />
       </div>
 
       <div

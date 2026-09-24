@@ -5,6 +5,8 @@
 #   DATABASE_URL              Neon connection string (the owner/admin role)
 #   APP_SECRET_KEY            long random string; encrypts stored credentials — NEVER change once set
 #   METER_APP_DB_PASSWORD    a password you choose for the app's RLS-enforced DB role
+#   METER_READ_DB_PASSWORD   a password you choose for the SELECT-only DB role,
+#                            required only if you serve /api/mcp
 #   METER_DISCOVERY_API_KEY  key for the model behind feature discovery and the
 #                            in-app assistant. Without it both fall back: discovery
 #                            to a branch-name heuristic, the assistant to a fixed
@@ -25,8 +27,19 @@ services:
         sync: false
       - key: METER_APP_DB_PASSWORD
         sync: false
+      # Read-only DB role (migration 0060). Required for /api/mcp — the MCP
+      # endpoint narrows every call to this role so a coding agent's read
+      # cannot become a write. Leave unset to run without MCP; the endpoint
+      # then answers 503 rather than falling back to a role that can write.
+      - key: METER_READ_DB_PASSWORD
+        sync: false
       - key: METER_SECURE_COOKIES
         value: "true"
+      # The only browser origin /api/mcp will answer. MCP clients are not
+      # browsers and send no Origin at all; this exists so a web page cannot
+      # drive the endpoint (the spec's DNS-rebinding requirement).
+      - key: METER_APP_ORIGIN
+        value: https://meter.costlyinfra.com
       - key: METER_LOG_LEVEL
         value: INFO
       # The model behind feature discovery and the "Ask Meter" assistant. The

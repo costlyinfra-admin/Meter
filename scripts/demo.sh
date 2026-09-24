@@ -49,6 +49,14 @@ export DATABASE_URL="host=$TMPD port=5544 dbname=meter"
 # migration grants it what it needs, all of which `make db-seed` applies below.
 # DATABASE_URL stays the owner connection used by migrations, seeding and auth.
 export DATABASE_APP_URL="host=$TMPD port=5544 dbname=meter user=meter_app"
+# The SELECT-only role (migration 0060), which /api/mcp narrows every call to.
+# Same reasoning as the line above: without it the MCP endpoint answers 503
+# rather than falling back to a role that can write, and the demo would show a
+# broken feature instead of the real one.
+export DATABASE_READ_URL="host=$TMPD port=5544 dbname=meter user=meter_read"
+# The one browser Origin the MCP endpoint answers. In the demo the app is served
+# by Vite, so that is where an in-product client would be.
+export METER_APP_ORIGIN="http://localhost:5173"
 export APP_SECRET_KEY="demo-secret-change-me"
 # The demo account is an admin here so the internal Admin Portal is explorable in
 # the throwaway demo. In production, set METER_ADMIN_EMAILS to your own admins.

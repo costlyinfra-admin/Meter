@@ -20,14 +20,26 @@ guarantee does not rest on nobody adding the wrong tool later.
 Layout:
   tokens.py  — the credential: create, list, revoke, resolve
   mint.py    — `python -m meter.mcp.mint`, which issues one
-  session.py — who the server acts as (one tenant, resolved once) and how fast
+  audit.py   — what was asked, and when
+  limits.py  — how fast one organization may ask
   tools.py   — the three tools: their schemas and their handlers
-  server.py  — the stdio JSON-RPC loop
+  server.py  — protocol handling, transport-agnostic
+  session.py — who the stdio server acts as (one tenant, resolved once)
+  http.py    — the hosted endpoint, for customers with no database access
   __main__.py— `python -m meter.mcp`
 """
 
-from .server import serve
-from .session import NotAuthenticated, resolve_tenant
+from .server import Caller, handle, serve
+from .session import NotAuthenticated, resolve_caller
 from .tools import TOOLS, ToolError, call_tool
 
-__all__ = ["TOOLS", "NotAuthenticated", "ToolError", "call_tool", "resolve_tenant", "serve"]
+__all__ = [
+    "TOOLS",
+    "Caller",
+    "NotAuthenticated",
+    "ToolError",
+    "call_tool",
+    "handle",
+    "resolve_caller",
+    "serve",
+]

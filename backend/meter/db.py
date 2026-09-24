@@ -17,6 +17,7 @@ import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from glob import glob
 
 import psycopg
@@ -43,7 +44,7 @@ def app_dsn() -> str:
     """Connection string for the non-privileged application role.
 
     Resolution order:
-      0. The read-only role, if this process called read_only().
+      0. The read-only role, if this process or this call asked to be.
       1. DATABASE_APP_URL if set (explicit, used by tests and advanced setups).
       2. Otherwise, if METER_APP_DB_PASSWORD is set, derive from DATABASE_URL
          by swapping in the `meter_app` role + that password. This is the
@@ -51,7 +52,7 @@ def app_dsn() -> str:
          the app connects as the RLS-enforced role automatically.
       3. Otherwise fall back to DATABASE_URL (fine for single-user local dev).
     """
-    if _read_only:
+    if is_read_only():
         return read_dsn()
     explicit = os.environ.get("DATABASE_APP_URL")
     if explicit:
@@ -65,29 +66,52 @@ def app_dsn() -> str:
     return os.environ["DATABASE_URL"]
 
 
-#: Set once, at startup, by a process that must never write (see read_only()).
-_read_only = False
+# Read-only is declared by the CALLER, not asked for by the code being called.
+# The alternative was threading a DSN through `dashboard`, `optimize_measured`
+# and `ai_reads` and every function they call, which would put a "which role am
+# I?" argument in the signature of code that has no business knowing.
+#
+# Two scopes, because there are two shapes of caller:
+#
+#   * a whole process — `python -m meter.mcp`, which never writes anything;
+#   * a single call — the `/api/mcp` endpoint, which lives inside the API
+#     process. That process must be able to write, so the MCP endpoint narrows
+#     itself for the duration of one request and widens again afterwards.
+#
+# The per-call scope is a ContextVar rather than a global so that concurrent
+# requests cannot see each other's setting.
+_read_only_process = False
+_read_only_call: ContextVar = ContextVar("meter_read_only_call", default=False)
 
 
 def read_only() -> None:
-    """Make every application connection in THIS process read-only.
+    """Make every application connection in THIS PROCESS read-only.
 
-    Called by `python -m meter.mcp` before it serves anything. The alternative
-    was threading a DSN through `dashboard`, `optimize_measured` and `ai_reads`
-    and every function they call, so that one caller could ask for a different
-    role — which would put a "which role am I?" argument in the signature of
-    code that has no business knowing. The property belongs to the process, so
-    it is set on the process.
-
-    One-way on purpose: there is no matching `read_write()`. A process that has
-    declared itself read-only cannot talk itself back out of it.
+    Called by `python -m meter.mcp` before it serves anything. One-way on
+    purpose: there is no matching `read_write()`. A process that has declared
+    itself read-only cannot talk itself back out of it.
     """
-    global _read_only
-    _read_only = True
+    global _read_only_process
+    _read_only_process = True
+
+
+@contextmanager
+def read_only_call() -> Iterator[None]:
+    """Make every application connection in THIS CALL read-only.
+
+    Restored on the way out, including on an exception — a request that fails
+    must not leave the next one narrowed, and a request that succeeds must not
+    leave the process wide open.
+    """
+    token = _read_only_call.set(True)
+    try:
+        yield
+    finally:
+        _read_only_call.reset(token)
 
 
 def is_read_only() -> bool:
-    return _read_only
+    return _read_only_process or _read_only_call.get()
 
 
 def read_dsn() -> str:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 from meter import db, ratelimit
-from meter.mcp import session, tokens
+from meter.mcp import limits, tokens
 
 
 @pytest.fixture
@@ -40,7 +40,8 @@ def test_two_tokens_are_different(tenant_id):
     first = tokens.create(tenant_id, "laptop")
     second = tokens.create(tenant_id, "ci")
     assert first["token"] != second["token"]
-    assert tokens.resolve(first["token"]) == tokens.resolve(second["token"]) == tenant_id
+    assert tokens.resolve(first["token"]).tenant_id == tenant_id
+    assert tokens.resolve(second["token"]).tenant_id == tenant_id
 
 
 def test_a_token_needs_a_label_that_identifies_a_machine(tenant_id):
@@ -73,9 +74,9 @@ def test_it_resolves_under_the_read_only_role(tenant_id, monkeypatch, read_conni
     # goes through a SECURITY DEFINER function. If that ever stopped working,
     # the server would not start.
     made = tokens.create(tenant_id, "laptop")
-    monkeypatch.setattr(db, "_read_only", True)
+    monkeypatch.setattr(db, "_read_only_process", True)
     monkeypatch.setenv("DATABASE_READ_URL", read_conninfo)
-    assert tokens.resolve(made["token"]) == tenant_id
+    assert tokens.resolve(made["token"]).tenant_id == tenant_id
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ def test_revoking_one_token_leaves_the_others_working(tenant_id):
     tokens.revoke(tenant_id, laptop["id"])
 
     assert tokens.resolve(laptop["token"]) is None
-    assert tokens.resolve(ci["token"]) == tenant_id
+    assert tokens.resolve(ci["token"]).tenant_id == tenant_id
 
 
 def test_a_revoked_token_is_kept_as_history_not_deleted(tenant_id):
@@ -123,32 +124,32 @@ def test_one_organization_cannot_see_or_revoke_anothers_tokens(tenant_id, other_
     with pytest.raises(tokens.TokenError):
         tokens.revoke(tenant_id, theirs["id"])
     # ...and it still works, because nothing happened to it.
-    assert tokens.resolve(theirs["token"]) == other_tenant
+    assert tokens.resolve(theirs["token"]).tenant_id == other_tenant
 
 
 def test_a_token_resolves_to_its_own_organization(tenant_id, other_tenant):
     mine = tokens.create(tenant_id, "laptop")
     theirs = tokens.create(other_tenant, "their laptop")
-    assert tokens.resolve(mine["token"]) == tenant_id
-    assert tokens.resolve(theirs["token"]) == other_tenant
+    assert tokens.resolve(mine["token"]).tenant_id == tenant_id
+    assert tokens.resolve(theirs["token"]).tenant_id == other_tenant
 
 
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
 def test_a_client_in_a_loop_is_stopped():
-    session.reset_rate()
-    for _ in range(session.RATE_LIMIT):
-        session.check_rate("tenant-a")
+    limits.reset_rate()
+    for _ in range(limits.RATE_LIMIT):
+        limits.check_rate("tenant-a")
     with pytest.raises(ratelimit.RateLimited):
-        session.check_rate("tenant-a")
+        limits.check_rate("tenant-a")
 
 
 def test_the_limit_is_per_organization():
-    session.reset_rate()
-    for _ in range(session.RATE_LIMIT):
-        session.check_rate("tenant-a")
-    session.check_rate("tenant-b")  # unaffected
+    limits.reset_rate()
+    for _ in range(limits.RATE_LIMIT):
+        limits.check_rate("tenant-a")
+    limits.check_rate("tenant-b")  # unaffected
 
 
 def test_the_window_moves():
@@ -162,9 +163,9 @@ def test_the_window_moves():
 
 
 def test_the_message_says_what_to_do():
-    session.reset_rate()
-    for _ in range(session.RATE_LIMIT):
-        session.check_rate("tenant-a")
+    limits.reset_rate()
+    for _ in range(limits.RATE_LIMIT):
+        limits.check_rate("tenant-a")
     with pytest.raises(ratelimit.RateLimited) as caught:
-        session.check_rate("tenant-a")
+        limits.check_rate("tenant-a")
     assert "Wait" in str(caught.value)

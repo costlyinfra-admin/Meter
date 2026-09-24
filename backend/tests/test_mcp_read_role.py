@@ -32,7 +32,7 @@ def seeded(tenant_id, app_env):
 def as_read_role(monkeypatch, read_conninfo):
     """Make every service connection in this test use the SELECT-only role,
     exactly as `python -m meter.mcp` does at startup."""
-    monkeypatch.setattr(db, "_read_only", True)
+    monkeypatch.setattr(db, "_read_only_process", True)
     monkeypatch.setenv("DATABASE_READ_URL", read_conninfo)
     assert db.app_dsn() == read_conninfo
 
@@ -73,11 +73,11 @@ def test_the_numbers_are_the_same_as_the_app_sees(seeded, as_read_role, read_con
     from meter import dashboard
 
     under_read = tools.call_tool("get_cost_summary", {"start": MONTH}, seeded)
-    db._read_only = False
+    db._read_only_process = False
     try:
         expected = dashboard.dashboard(seeded, PERIOD)
     finally:
-        db._read_only = True
+        db._read_only_process = True
     assert under_read["totals"] == expected["totals"]
     assert under_read["feature_count"] == len(expected["features"])
 
@@ -155,7 +155,7 @@ def test_with_no_tenant_set_it_sees_nothing(read_conn, app_env, tenant_id):
 # ---------------------------------------------------------------------------
 def test_read_only_is_one_way(app_env, monkeypatch, read_conninfo):
     monkeypatch.setenv("DATABASE_READ_URL", read_conninfo)
-    monkeypatch.setattr(db, "_read_only", False)
+    monkeypatch.setattr(db, "_read_only_process", False)
     assert db.app_dsn() != read_conninfo
     db.read_only()
     try:
@@ -164,7 +164,42 @@ def test_read_only_is_one_way(app_env, monkeypatch, read_conninfo):
         # There is no way back — no read_write(), by design.
         assert not hasattr(db, "read_write")
     finally:
-        db._read_only = False
+        db._read_only_process = False
+
+
+def test_a_call_can_narrow_itself_and_widens_again(app_env, monkeypatch, read_conninfo):
+    # The /api/mcp endpoint lives inside a process that must be able to write,
+    # so it narrows per call rather than per process.
+    monkeypatch.setenv("DATABASE_READ_URL", read_conninfo)
+    monkeypatch.setattr(db, "_read_only_process", False)
+
+    assert not db.is_read_only()
+    with db.read_only_call():
+        assert db.is_read_only()
+        assert db.app_dsn() == read_conninfo
+    assert not db.is_read_only()
+
+
+def test_a_failed_call_still_widens_again(app_env, monkeypatch, read_conninfo):
+    # A request that raises must not leave the next one narrowed — which would
+    # turn one bad MCP call into an outage for every ordinary write after it.
+    monkeypatch.setenv("DATABASE_READ_URL", read_conninfo)
+    monkeypatch.setattr(db, "_read_only_process", False)
+
+    with pytest.raises(ValueError):
+        with db.read_only_call():
+            raise ValueError("a tool blew up")
+    assert not db.is_read_only()
+
+
+def test_a_process_that_is_read_only_stays_read_only(app_env, monkeypatch, read_conninfo):
+    # Leaving the per-call scope must not widen a process that declared itself
+    # read-only at startup — the stdio server never writes, ever.
+    monkeypatch.setenv("DATABASE_READ_URL", read_conninfo)
+    monkeypatch.setattr(db, "_read_only_process", True)
+    with db.read_only_call():
+        pass
+    assert db.is_read_only()
 
 
 def test_it_refuses_to_guess_a_read_credential(app_env, monkeypatch):

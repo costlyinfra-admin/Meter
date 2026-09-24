@@ -42,6 +42,7 @@ from . import (
     credentials,
     cursorspend,
     dashboard,
+    db,
     discovery,
     discovery_llm,
     entra,
@@ -63,6 +64,10 @@ from . import (
     traces,
 )
 from .github import GitHubError
+from .mcp import audit as mcp_audit
+from .mcp import http as mcp_http
+from .mcp import tokens as mcp_tokens
+from .mcp.server import Caller
 from .providers import ProviderError
 from .reconciliation import api as reconciliation_api
 
@@ -701,6 +706,10 @@ _LEVER_PATTERN = r"^(duplicate_calls|prompt_caching|provider_switch|model_rights
 class ApplyOpportunityRequest(BaseModel):
     lever: str = Field(pattern=_LEVER_PATTERN)
     projected_monthly: float = Field(ge=0)
+
+
+class McpTokenRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=mcp_tokens.MAX_LABEL)
 
 
 class AdminConnectorRequest(BaseModel):
@@ -1868,6 +1877,120 @@ def create_app() -> FastAPI:
     ) -> dict:
         resolved = _parse_period(period) if period else None
         return optimize_measured.copilot_overview(user["tenant_id"], resolved)
+
+    # ---- MCP: read-only access for coding agents ------------------------
+    # Two surfaces, one credential. `/api/mcp` is the Model Context Protocol
+    # endpoint an agent talks to; `/api/mcp/tokens` is how a person mints and
+    # revokes what it talks with. The first is bearer-authenticated, the second
+    # session-authenticated, and neither can stand in for the other.
+    def _mcp_caller(request: Request) -> Caller:
+        """Who is calling the MCP endpoint, from its bearer token ALONE.
+
+        Deliberately blind to the session cookie. If this endpoint honoured a
+        browser session, any page the user visited could drive it with their
+        ambient credentials and read the organization's cost data. A bearer
+        header is something no cross-origin form can set.
+        """
+        header = request.headers.get("authorization", "")
+        token = header[7:] if header.lower().startswith("bearer ") else ""
+        found = mcp_tokens.resolve(token) if token else None
+        if found is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid MCP token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return Caller(found.tenant_id, found.token_id, "http")
+
+    def _mcp_reply(reply: mcp_http.Reply) -> Response:
+        if reply.body is None:
+            return Response(status_code=reply.status)
+        return Response(
+            content=json.dumps(reply.body),
+            status_code=reply.status,
+            media_type="application/json",
+        )
+
+    def _mcp_post(body, caller: Caller, **options) -> mcp_http.Reply:
+        """One MCP message, served on a connection that cannot write.
+
+        This endpoint lives inside the API process, which must be able to write
+        — so the read-only guarantee the standalone server gets from its role
+        has to be re-established per call, or the hosted path would be the one
+        customers use and the weaker one. `read_only_call` narrows every
+        connection this request opens, and widens again on the way out however
+        it ends.
+        """
+        with db.read_only_call():
+            # Checked here, before dispatching, so a deploy with no read-only
+            # credential answers once and clearly. Left to the tools, the same
+            # failure arrives as "get_cost_summary failed" on every call, which
+            # nobody can diagnose.
+            db.read_dsn()
+            return mcp_http.post(body, caller, **options)
+
+    @app.post("/api/mcp")
+    async def mcp_endpoint(request: Request) -> Response:
+        # The tools are synchronous and talk to Postgres, so they run off the
+        # event loop — the same treatment every other blocking read here gets.
+        caller = _mcp_caller(request)
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return _mcp_reply(mcp_http.Reply(400, {"error": "Invalid JSON."}))
+        try:
+            reply = await run_in_threadpool(
+                _mcp_post,
+                body,
+                caller,
+                origin=request.headers.get("origin"),
+                protocol=request.headers.get(mcp_http.PROTOCOL_HEADER),
+                app_origin=os.environ.get("METER_APP_ORIGIN"),
+            )
+        except RuntimeError as exc:
+            # db.read_dsn() refuses to guess. Say so plainly rather than 500:
+            # this deploy is missing one variable, and nobody can tell that
+            # from "Internal Server Error".
+            logger.error("MCP endpoint has no read-only database credential: %s", exc)
+            return _mcp_reply(
+                mcp_http.Reply(
+                    503,
+                    {"error": "MCP is not configured on this deployment."},
+                )
+            )
+        return _mcp_reply(reply)
+
+    @app.get("/api/mcp")
+    def mcp_no_stream() -> Response:
+        return _mcp_reply(mcp_http.get())
+
+    @app.delete("/api/mcp")
+    def mcp_no_session() -> Response:
+        return _mcp_reply(mcp_http.delete())
+
+    @app.get("/api/mcp/tokens")
+    def list_mcp_tokens(user: CurrentUser) -> list[dict]:
+        return mcp_tokens.list_tokens(user["tenant_id"])
+
+    @app.post("/api/mcp/tokens", status_code=status.HTTP_201_CREATED)
+    def create_mcp_token(body: McpTokenRequest, user: CurrentUser) -> dict:
+        # The response carries the token itself — the only time it exists.
+        try:
+            return mcp_tokens.create(user["tenant_id"], body.label)
+        except mcp_tokens.TokenError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.delete("/api/mcp/tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def revoke_mcp_token(token_id: str, user: CurrentUser) -> None:
+        try:
+            mcp_tokens.revoke(user["tenant_id"], token_id)
+        except mcp_tokens.TokenError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    @app.get("/api/mcp/activity")
+    def mcp_activity(user: CurrentUser, limit: int = Query(default=25, ge=1, le=200)) -> list[dict]:
+        # What the agent read, and when. The question everyone asks first.
+        return mcp_audit.recent(user["tenant_id"], limit)
 
     # ---- Internal admin portal (allow-listed admins only) --------------
     @app.get("/api/admin/overview")

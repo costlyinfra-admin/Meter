@@ -23,11 +23,13 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import IO, Any, Optional
+import time
+from typing import IO, Any, NamedTuple, Optional
 
 from .. import __version__
 from ..ratelimit import RateLimited
-from .session import check_rate
+from . import audit
+from .limits import check_rate
 from .tools import TOOLS, ToolError, call_tool
 
 logger = logging.getLogger("meter.mcp")
@@ -47,6 +49,20 @@ METHOD_NOT_FOUND = -32601
 INTERNAL_ERROR = -32603
 
 
+class Caller(NamedTuple):
+    """Who is asking.
+
+    Always derived from a credential — a token, or the session behind one — and
+    never from anything in a message. A tenant id that a client could put in a
+    request body would be a tenant id a confused model could change.
+    """
+
+    tenant_id: str
+    #: Which token, for the audit trail. None where there is no token to name.
+    token_id: Optional[str] = None
+    transport: str = "stdio"
+
+
 def _result(request_id: Any, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
@@ -64,7 +80,7 @@ def _tool_result(payload: dict, *, is_error: bool = False) -> dict:
     }
 
 
-def handle(message: dict, tenant_id: str) -> Optional[dict]:
+def handle(message: dict, caller: Caller) -> Optional[dict]:
     """One request in, one response out — or None for a notification."""
     request_id = message.get("id")
     method = message.get("method")
@@ -109,31 +125,49 @@ def handle(message: dict, tenant_id: str) -> Optional[dict]:
         name = params.get("name")
         if not isinstance(name, str):
             return _error(request_id, INVALID_REQUEST, "tools/call needs a tool name.")
+        arguments = params.get("arguments")
+        started = time.perf_counter()
+
+        def done(outcome: str) -> None:
+            audit.record(
+                caller.tenant_id,
+                caller.token_id,
+                transport=caller.transport,
+                tool=name,
+                arguments=arguments,
+                outcome=outcome,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
         try:
             # Before the work, not after: the point is to stop a client in a
             # retry loop from reaching the database at all.
-            check_rate(tenant_id)
-            payload = call_tool(name, params.get("arguments"), tenant_id)
+            check_rate(caller.tenant_id)
+            payload = call_tool(name, arguments, caller.tenant_id)
         except RateLimited as exc:
             # A tool result, not a protocol error — the model should read this
             # and wait, rather than see a broken server and reconnect.
+            done(audit.RATE_LIMITED)
             return _result(request_id, _tool_result({"error": str(exc)}, is_error=True))
         except ToolError as exc:
             # The model's problem to fix, so it is told rather than the transport.
+            done(audit.ERROR)
             return _result(request_id, _tool_result({"error": str(exc)}, is_error=True))
         except Exception:
             # Never leak an internal message — it can carry a DSN or a query.
             logger.exception("tool %s failed", name)
+            done(audit.ERROR)
             return _result(
                 request_id,
                 _tool_result({"error": f"{name} failed. See the server log."}, is_error=True),
             )
+        done(audit.OK)
         return _result(request_id, _tool_result(payload))
 
     return _error(request_id, METHOD_NOT_FOUND, f"Unknown method {method!r}.")
 
 
-def serve(tenant_id: str, stdin: IO[str] = None, stdout: IO[str] = None) -> None:
+def serve(caller: Caller, stdin: IO[str] = None, stdout: IO[str] = None) -> None:
     """Read messages until the client closes the stream."""
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
@@ -151,7 +185,7 @@ def serve(tenant_id: str, stdin: IO[str] = None, stdout: IO[str] = None) -> None
             _write(stdout, _error(None, INVALID_REQUEST, "Expected a JSON-RPC object."))
             continue
         try:
-            response = handle(message, tenant_id)
+            response = handle(message, caller)
         except Exception:
             logger.exception("error handling %s", message.get("method"))
             response = _error(message.get("id"), INTERNAL_ERROR, "Internal error.")

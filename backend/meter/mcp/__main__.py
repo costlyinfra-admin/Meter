@@ -16,7 +16,7 @@ import sys
 
 from ..db import read_only
 from .server import serve
-from .session import NotAuthenticated, resolve_tenant
+from .session import NotAuthenticated, resolve_caller
 
 
 def main() -> int:
@@ -29,7 +29,7 @@ def main() -> int:
     # more than a server that merely does not.
     read_only()
     try:
-        tenant_id = resolve_tenant()
+        caller = resolve_caller()
     except NotAuthenticated as exc:
         print(f"meter-mcp: {exc}", file=sys.stderr)
         return 2
@@ -38,7 +38,7 @@ def main() -> int:
         # credential as RuntimeError from db.read_dsn().
         print(f"meter-mcp: {exc}", file=sys.stderr)
         return 2
-    serve(tenant_id)
+    serve(caller)
     return 0
 
 

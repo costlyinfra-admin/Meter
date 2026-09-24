@@ -8,11 +8,23 @@ the spend.
 It adds no analytics. Every number comes from the same functions the web app's
 endpoints call, so a figure here and a figure on a Meter screen cannot disagree.
 
+Two ways to reach it, one implementation behind both:
+
 ```
-Claude Code ──stdio──▶ meter.mcp ──▶ dashboard / optimize_measured / ai_reads ──▶ Postgres
-                        (tools)        (the same services api.py calls)        as meter_read
-                     token → tenant                                            SELECT only + RLS
+hosted    Claude Code ──HTTPS──▶ /api/mcp ─┐
+                        bearer token        │
+                                            ├─▶ tools ─▶ dashboard / optimize_measured / ai_reads
+local     Claude Code ──stdio──▶ meter.mcp ─┘             (the same services api.py calls)
+                        METER_MCP_TOKEN                              │
+                                                                     ▼
+                                                        Postgres as meter_read
+                                                        SELECT only, RLS per tenant
 ```
+
+**Use the hosted endpoint.** It needs nothing installed and no database
+credentials, which is the only option for a customer who does not run Meter
+themselves. The stdio server exists for people working on Meter itself, and for
+self-hosted installs that would rather not expose an endpoint at all.
 
 ## The three tools
 
@@ -53,26 +65,63 @@ exactly as it was, rather than whatever that lever says today.
   `app_user`, `hook_token` or `mcp_token`, and on `connector_credential` it has
   a column grant covering everything except the encrypted secret — enough to
   answer "is a GitHub connector configured", not enough to read it.
-- **It cannot cross tenants.** One process serves one tenant, fixed at startup
-  by its token. `meter_read` is a non-owner, so every RLS policy governs it
-  exactly as it governs the app; with no tenant set it sees nothing, never
-  everything. Passing another organization's feature id returns "no such
-  feature".
+- **It cannot cross tenants.** The tenant comes from the credential, never from
+  a message — over stdio it is fixed at startup, over HTTP it is resolved per
+  request, and in neither case can a client name it. `meter_read` is a
+  non-owner, so every RLS policy governs it exactly as it governs the app; with
+  no tenant set it sees nothing, never everything. Passing another
+  organization's feature id returns "no such feature".
 - **It cannot be hammered.** 120 tool calls per minute per organization, checked
   before the work rather than after, so a client stuck in a retry loop never
   reaches the database. Over the line comes back as a tool result telling the
   model to wait, not as a server error that would prompt a reconnect.
+- **It cannot be driven from a web page.** The hosted endpoint authenticates
+  with a bearer token and is deliberately blind to the browser session — if it
+  honoured the session cookie, any page a signed-in user visited could read
+  their organization's costs. An `Origin` header that is not the app's own is
+  refused outright, which is the DNS-rebinding protection the MCP specification
+  requires.
+- **It cannot act unobserved.** Every tool call is recorded against the token
+  that made it: the tool, its arguments, the outcome and how long it took. The
+  trail keeps the question and never the answer — results would be a second copy
+  of your cost data with its own retention story.
 - **It returns no content.** Meter stores no prompts, responses, tool arguments
   or retrieved documents, so there is nothing to leak. Repeated-request evidence
   is a salted one-way fingerprint and a count. Example runs carry the operation
   name, model and cost — the things that locate a call site — and deliberately
   not the customer reference.
 
-## Setting it up for Claude Code
+## Connecting to a hosted Meter
 
-You need a Python environment with the backend installed (`make install` gives
-you one at `backend/.venv`) and a database URL for the Meter instance you want to
-read — your local `make demo` database, or your deployed one.
+Open **Settings → Coding agents**, create a token, and paste the command it
+shows you:
+
+```bash
+claude mcp add --transport http meter https://meter.costlyinfra.com/api/mcp \
+  --scope user --header "Authorization: Bearer mtr_mcp_…"
+```
+
+`--scope user` keeps the credential out of any repository. The token is shown
+once — Meter stores only a hash — so if you lose it, revoke it and make another.
+
+That screen is also where you see what the agent has been doing: every tool call
+is listed with what it asked for, and every token shows when it was last used and
+how many calls it made this week. Revoking one takes effect immediately and does
+not disturb the others.
+
+### What a deployment needs
+
+| Variable | Why |
+| --- | --- |
+| `METER_READ_DB_PASSWORD` | The `meter_read` role's password. **`/api/mcp` answers 503 without it** — it narrows every call to that role rather than falling back to one that can write. |
+| `METER_APP_ORIGIN` | The only browser `Origin` the endpoint will answer. MCP clients are not browsers and send none. |
+
+## Setting it up locally, over stdio
+
+For working on Meter itself, or a self-hosted install. You need a Python
+environment with the backend installed (`make install` gives you one at
+`backend/.venv`) and a database URL for the Meter instance you want to read —
+your local `make demo` database, or your deployed one.
 
 ### 1. Give the read-only role a password
 
@@ -87,6 +136,9 @@ In production, set `METER_READ_DB_PASSWORD` and redeploy —
 [`deploy/release.sh`](../deploy/release.sh) applies it on every release.
 
 ### 2. Mint a token
+
+Settings → Coding agents does this from the app. From a shell, where there is no
+browser:
 
 ```bash
 cd backend && .venv/bin/python -m meter.mcp.mint create "Bipin's laptop"
@@ -141,7 +193,7 @@ Then, in Claude Code:
 | `PYTHONPATH` | no | `…/Meter/backend`. Not needed when the editable install is healthy; see above. |
 | `METER_LOG_LEVEL` | no | Defaults to `INFO`. Logs go to stderr — stdout carries the protocol. |
 
-There is no password here. Earlier versions took `METER_EMAIL` and
+There is no password in either setup. Earlier versions took `METER_EMAIL` and
 `METER_PASSWORD`, which meant a full Meter login sat in an agent's config with
 no way to revoke it short of changing the password. The token replaces it: one
 per machine, revocable on its own, and it records when it was last used so you
