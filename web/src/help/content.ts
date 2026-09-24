@@ -104,6 +104,9 @@ export const CATEGORIES: Category[] = [
           note(
             "The snapshot carries nothing that is not already on a screen — no prompt or response text, no customer identifiers, no credentials — and it is read under the same tenant isolation as every other query.",
           ),
+          p(
+            "To ask the same kinds of question from your editor instead, see [Coding agents](/help/trust/coding-agents).",
+          ),
         ],
       },
     ],
@@ -1225,6 +1228,35 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
           note(
             "Withdrawing consent deletes everything collected immediately and destroys the encryption key, so no copy that survives anywhere, including a backup, can be read.",
+          ),
+        ],
+      },
+      {
+        slug: "coding-agents",
+        title: "Coding agents (MCP)",
+        summary:
+          "Connect Claude Code, or another MCP client, to read your numbers from your editor.",
+        blocks: [
+          p(
+            "A coding agent — Claude Code, say — can ask Meter what a feature costs and what Meter has already found wrong with it, from inside the repository that produced the spend. That is the one place the answer is directly actionable: the agent can see the finding and the code at the same time.",
+          ),
+          p("Connect one under **Coding agents** in [Settings](/settings)."),
+          steps(
+            "Create a token and name it after the machine it is for. One per laptop, so you can turn one off without disturbing the others.",
+            "Copy the token. It is shown once — Meter stores only a hash of it — so if you lose it, revoke it and make another.",
+            "Paste the connection command the screen shows into Claude Code — or configure any other MCP client with the same URL and token.",
+          ),
+          p("What an agent can do with it is deliberately narrow:"),
+          list(
+            "**Read three things**: cost and token metrics over a period, the optimization opportunities Meter has already detected, and the evidence behind one of them.",
+            "**Nothing else, and nothing at all can be changed.** There is no way to apply an optimization, rename a feature, edit a setting or trigger a sync. The connection Meter opens to answer these questions cannot write, whatever it is asked.",
+            "**Only your organization.** The token identifies the organization, and the agent cannot name a different one.",
+          ),
+          p(
+            "**Where the numbers go.** An agent reads your feature names, spend and customer identifiers, and sends them to whichever model that agent runs on. That model is outside Meter, and Meter's promises do not cover it — connect an agent only where that is acceptable. It never receives prompts or responses, because Meter does not store any.",
+          ),
+          note(
+            'Every tool call is recorded and shown in the same place: what was asked for, by which token, and when. The trail keeps the question and never the answer. Revoking a token takes effect immediately and keeps its history, so "it was in use until Tuesday" stays answerable.',
           ),
         ],
       },

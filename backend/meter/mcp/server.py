@@ -36,6 +36,14 @@ logger = logging.getLogger("meter.mcp")
 
 SERVER_NAME = "meter"
 
+#: Where the product's own handbook is published. Named in `initialize` so an
+#: agent that needs a definition — what "modeled_ceiling" means, what lands in
+#: Unattributed — can read the same pages a customer reads, instead of inferring
+#: one from a field name. Cheaper and more honest than serving the handbook as
+#: MCP resources: it is one URL rather than a copy of the content inside this
+#: process, and it cannot fall out of step with what the app ships.
+DOCS_URL = "https://costlyinfra.com/docs"
+
 #: Protocol revisions this server implements. The client names one in
 #: `initialize`; we echo it when we know it, and otherwise answer with our own
 #: newest and let the client decide whether it can proceed.
@@ -104,7 +112,9 @@ def handle(message: dict, caller: Caller) -> Optional[dict]:
                     "application, and the optimization opportunities Meter has "
                     "detected. Build cost and inference cost are never summed. Check "
                     "an opportunity's savings_type and validation_guidance before "
-                    "acting on it."
+                    "acting on it. How Meter works, and what every number means, is "
+                    f"documented at {DOCS_URL} — fetch it rather than guessing at a "
+                    "definition."
                 ),
             },
         )

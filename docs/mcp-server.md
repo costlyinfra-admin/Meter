@@ -8,6 +8,10 @@ the spend.
 It adds no analytics. Every number comes from the same functions the web app's
 endpoints call, so a figure here and a figure on a Meter screen cannot disagree.
 
+This file is the engineering account of it. The customer-facing version lives in
+the handbook, under **Privacy & trust → Coding agents (MCP)**, which also
+publishes to costlyinfra.com/docs.
+
 Two ways to reach it, one implementation behind both:
 
 ```
@@ -84,7 +88,10 @@ exactly as it was, rather than whatever that lever says today.
 - **It cannot act unobserved.** Every tool call is recorded against the token
   that made it: the tool, its arguments, the outcome and how long it took. The
   trail keeps the question and never the answer — results would be a second copy
-  of your cost data with its own retention story.
+  of your cost data with its own retention story. Entries are kept for a year,
+  swept nightly; unlike trace retention this is fixed rather than per-tenant,
+  because an access log whose value is answering questions about the past should
+  not be configurable down to a day.
 - **It returns no content.** Meter stores no prompts, responses, tool arguments
   or retrieved documents, so there is nothing to leak. Repeated-request evidence
   is a salted one-way fingerprint and a count. Example runs carry the operation

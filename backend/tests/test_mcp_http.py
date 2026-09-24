@@ -411,3 +411,79 @@ def test_a_deploy_with_no_read_credential_says_so(client, token, monkeypatch):
     # One clear answer, not "get_cost_summary failed" on every call.
     assert reply.status_code == 503
     assert "not configured" in reply.text
+
+
+# ---------------------------------------------------------------------------
+# Retention
+# ---------------------------------------------------------------------------
+def _age_entries(admin_conn, days: int) -> None:
+    admin_conn.execute(
+        "UPDATE mcp_audit SET created_at = now() - make_interval(days => %s)", (days,)
+    )
+    admin_conn.commit()
+
+
+def test_the_trail_is_swept_once_it_is_older_than_the_window(client, token, admin_conn):
+    call(client, token, "get_cost_summary", {"start": MONTH})
+    _age_entries(admin_conn, audit.RETENTION_DAYS + 1)
+
+    tenant_id = tokens.resolve(token).tenant_id
+    swept = audit.purge_expired(tenant_id)
+    assert swept["deleted"] == 1
+    assert client.get("/api/mcp/activity").json() == []
+
+
+def test_an_entry_inside_the_window_is_kept(client, token, admin_conn):
+    call(client, token, "get_cost_summary", {"start": MONTH})
+    _age_entries(admin_conn, audit.RETENTION_DAYS - 1)
+
+    tenant_id = tokens.resolve(token).tenant_id
+    assert audit.purge_expired(tenant_id)["deleted"] == 0
+    assert len(client.get("/api/mcp/activity").json()) == 1
+
+
+def test_sweeping_the_trail_leaves_the_tokens_alone(client, token, admin_conn):
+    # A token's own history — made, last used, revoked — is not what expires.
+    call(client, token, "get_cost_summary", {"start": MONTH})
+    _age_entries(admin_conn, audit.RETENTION_DAYS + 1)
+
+    tenant_id = tokens.resolve(token).tenant_id
+    audit.purge_expired(tenant_id)
+    still_there = client.get("/api/mcp/tokens").json()
+    assert len(still_there) == 1
+    assert still_there[0]["last_used_at"]
+    # ...and it still works.
+    alive = rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token)
+    assert alive.status_code == 200
+
+
+def test_the_sweep_does_not_reach_across_tenants(client, token, admin_conn):
+    other = str(
+        admin_conn.execute("INSERT INTO tenant (name) VALUES ('Other') RETURNING id").fetchone()[0]
+    )
+    insert_sample_data(admin_conn, other)
+    admin_conn.commit()
+    theirs = tokens.create(other, "their laptop")
+    call(client, theirs["token"], "get_cost_summary", {"start": MONTH})
+    call(client, token, "get_cost_summary", {"start": MONTH})
+    _age_entries(admin_conn, audit.RETENTION_DAYS + 1)
+
+    mine = tokens.resolve(token).tenant_id
+    assert audit.purge_expired(mine)["deleted"] == 1
+    # Sweeping one organization must not touch another's record.
+    assert len(audit.recent(other)) == 1
+
+
+def test_the_cron_sweeps_every_tenant(client, token, admin_conn):
+    other = str(
+        admin_conn.execute("INSERT INTO tenant (name) VALUES ('Other') RETURNING id").fetchone()[0]
+    )
+    insert_sample_data(admin_conn, other)
+    admin_conn.commit()
+    call(client, tokens.create(other, "theirs")["token"], "get_cost_summary", {"start": MONTH})
+    call(client, token, "get_cost_summary", {"start": MONTH})
+    _age_entries(admin_conn, audit.RETENTION_DAYS + 1)
+
+    swept = audit.purge_all_tenants()
+    assert sum(entry["deleted"] for entry in swept) == 2
+    assert audit.recent(other) == []

@@ -81,6 +81,17 @@ def test_initialize_declares_tools_and_agrees_on_a_version():
     assert reply["serverInfo"]["name"] == "meter"
 
 
+def test_initialize_points_at_the_handbook_rather_than_carrying_it():
+    # An agent needing a definition should read the same pages a customer reads.
+    # Serving the handbook as MCP resources would put a second copy inside this
+    # process, free to fall out of step with what the app ships.
+    reply = server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, ANYONE
+    )["result"]
+    assert server.DOCS_URL in reply["instructions"]
+    assert "resources" not in reply["capabilities"]
+
+
 def test_initialize_falls_back_when_the_client_speaks_something_else():
     reply = server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",

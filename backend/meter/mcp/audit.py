@@ -21,11 +21,12 @@ rightly regard that as the worse bug.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 from typing import Optional
 
-from ..db import app_dsn, connect
+from ..db import app_dsn, connect, tenant_tx
 
 logger = logging.getLogger("meter.mcp")
 
@@ -36,6 +37,17 @@ MAX_ARGUMENTS = 500
 OK = "ok"
 ERROR = "error"
 RATE_LIMITED = "rate_limited"
+
+#: How long an entry is kept. Fixed, not a per-tenant setting like trace
+#: retention (0049): traces are bulky evidence whose value decays, while this is
+#: an access log whose whole value is being able to answer a question about the
+#: past. Making it configurable would mostly offer people a way to set it to a
+#: day, which defeats the point of having it.
+RETENTION_DAYS = 365
+
+#: Deleted in batches, so a tenant with a year of history behind them does not
+#: hold one long transaction open. Matches ai_reads.RETENTION_CHUNK.
+RETENTION_CHUNK = 1000
 
 
 def _arguments(arguments) -> Optional[str]:
@@ -79,8 +91,6 @@ def record(
 
 def recent(tenant_id: str, limit: int = 50) -> list:
     """The latest calls, newest first. For the Settings panel."""
-    from ..db import tenant_tx
-
     limit = max(1, min(int(limit), 200))
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         rows = conn.execute(
@@ -104,3 +114,53 @@ def recent(tenant_id: str, limit: int = 50) -> list:
         }
         for at, tool, args, outcome, ms, transport, label in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Retention
+# ---------------------------------------------------------------------------
+def purge_expired(tenant_id: str, now: Optional[dt.datetime] = None) -> dict:
+    """Delete one tenant's audit entries past the retention window.
+
+    Only the trail. The tokens themselves are untouched, revoked ones included:
+    a token's own history — when it was made, when it was last used, when it was
+    turned off — is not part of what expires here.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=RETENTION_DAYS)
+    deleted = 0
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        while True:
+            removed = conn.execute(
+                """
+                DELETE FROM mcp_audit WHERE id IN (
+                    SELECT id FROM mcp_audit WHERE created_at < %s LIMIT %s
+                ) RETURNING id
+                """,
+                (cutoff, RETENTION_CHUNK),
+            ).fetchall()
+            deleted += len(removed)
+            if len(removed) < RETENTION_CHUNK:
+                break
+    return {"deleted": deleted, "cutoff": cutoff.isoformat()}
+
+
+def purge_all_tenants(now: Optional[dt.datetime] = None) -> list:
+    """Retention sweep across every tenant. Cron entry point."""
+    from ..db import admin_dsn
+
+    with connect(admin_dsn()) as conn:
+        tenants = [str(r[0]) for r in conn.execute("SELECT id FROM tenant")]
+    out = []
+    for tenant_id in tenants:
+        result = purge_expired(tenant_id, now)
+        if result["deleted"]:
+            out.append({"tenant_id": tenant_id, **result})
+    return out
+
+
+if __name__ == "__main__":
+    swept = purge_all_tenants()
+    print(f"Expired MCP audit entries for {len(swept)} tenants.")
+    for entry in swept:
+        print(" ", entry)

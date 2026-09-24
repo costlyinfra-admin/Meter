@@ -6,7 +6,8 @@
  * and someone reading the panel learns where their data goes before they decide
  * to send it there.
  */
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render as renderBare, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { McpTokensCard } from "./McpTokensCard";
 import { api, type McpActivity, type McpToken } from "../api";
@@ -23,6 +24,9 @@ vi.mock("../api", async () => {
     },
   };
 });
+
+/** The card links into the handbook, so it needs a router around it. */
+const render = (ui: React.ReactElement) => renderBare(<MemoryRouter>{ui}</MemoryRouter>);
 
 const token = (over: Partial<McpToken> = {}): McpToken => ({
   id: "tok-1",
@@ -62,6 +66,11 @@ describe("before anything is connected", () => {
     expect(screen.getByText(/read-only/i)).toBeInTheDocument();
     expect(screen.getByText(/never receives prompts or responses/i)).toBeInTheDocument();
     expect(screen.getByText(/sent to whichever model that agent runs on/i)).toBeInTheDocument();
+    // ...and the long version, in the handbook the public docs also publish.
+    expect(screen.getByRole("link", { name: /coding agents/i })).toHaveAttribute(
+      "href",
+      "/help/trust/coding-agents",
+    );
   });
 
   it("does not offer a connection command until there is something to connect with", async () => {

@@ -18,6 +18,7 @@
  * deserves to read that before they do rather than after.
  */
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError, type McpActivity, type McpToken } from "../api";
 import { Snippet } from "./Snippet";
 
@@ -115,7 +116,8 @@ export function McpTokensCard({ appOrigin }: { appOrigin?: string }) {
         change a feature, a setting or an optimization. It never receives prompts or responses,
         because Meter does not store any. What it does receive — your feature names, spend and
         customer identifiers — is sent to whichever model that agent runs on, which is outside
-        Meter. Connect one only where that is acceptable.
+        Meter. Connect one only where that is acceptable.{" "}
+        <Link to="/help/trust/coding-agents">More about coding agents</Link>.
       </p>
 
       {created && (

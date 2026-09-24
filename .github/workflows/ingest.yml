@@ -68,6 +68,17 @@ jobs:
         # aggregates are untouched: what a month cost is a fact about the
         # month, not about how long we keep the traces explaining it.
         run: python -m meter.ai_reads
+      - name: Expire MCP access-log entries
+        working-directory: backend
+        # Same reasoning as the step above, for the other thing Meter keeps on
+        # a clock: the record of what a coding agent read. Independent of
+        # everything before it.
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+        run: python -m meter.mcp.audit
       - name: Expire captured prompts
         working-directory: backend
         # Consented prompt samples are kept 30 days, whatever else failed tonight:

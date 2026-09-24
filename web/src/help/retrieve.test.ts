@@ -58,3 +58,24 @@ describe("knowledge-base retrieval", () => {
     }
   });
 });
+
+describe("questions about coding agents", () => {
+  // The assistant answers from whatever these four passages contain, so a topic
+  // that exists but never gets retrieved may as well not exist. "Claude Code"
+  // is the trap: it is also an AI coding tool whose seat spend Meter tracks, so
+  // the build-cost topics compete for exactly the words a reader will type.
+  it.each([
+    "how do I connect Claude Code to Meter",
+    "set up the MCP server",
+    "can a coding agent change my data",
+    "revoke an agent token",
+    "what does an AI agent send outside Meter",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("trust/coding-agents");
+  });
+
+  it("leads with it, rather than with connecting a provider", () => {
+    const [first] = retrieve("how do I connect Claude Code to Meter");
+    expect(first.id).toBe("trust/coding-agents");
+  });
+});

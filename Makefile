@@ -10,7 +10,7 @@ PIP := $(VENV)/bin/pip
 
 .PHONY: help install install-backend install-web test test-backend test-web test-sdk \
         lint lint-backend lint-web format db-migrate db-seed db-reset api web docs clean \
-        ingest ingest-infra expire-traces
+        ingest ingest-infra expire-traces expire-mcp-audit
 
 help:
 	@echo "Meter make targets:"
@@ -106,6 +106,11 @@ ingest-infra:
 # Financial aggregates are never touched.
 expire-traces:
 	cd $(BACKEND) && .venv/bin/python -m meter.ai_reads
+
+# MCP access-log sweep: deletes audit entries past the fixed retention window.
+# The tokens and their own history are never touched.
+expire-mcp-audit:
+	cd $(BACKEND) && .venv/bin/python -m meter.mcp.audit
 
 # ---- run -----------------------------------------------------------------
 # Needs DATABASE_URL + APP_SECRET_KEY in the environment (see .env.example).
