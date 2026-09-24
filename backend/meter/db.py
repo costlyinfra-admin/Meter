@@ -25,6 +25,11 @@ import psycopg.conninfo
 #: The non-privileged role the application connects as (see migration 0002).
 APP_ROLE = "meter_app"
 
+#: The SELECT-only role (migration 0060). Same RLS policies as APP_ROLE — it is
+#: a non-owner too — but no INSERT, UPDATE or DELETE anywhere, and no privilege
+#: at all on credentials. Used by the MCP server, which must only read.
+READ_ROLE = "meter_read"
+
 #: Transaction-local Postgres setting that drives the RLS policies.
 TENANT_GUC = "app.current_tenant"
 
@@ -38,6 +43,7 @@ def app_dsn() -> str:
     """Connection string for the non-privileged application role.
 
     Resolution order:
+      0. The read-only role, if this process called read_only().
       1. DATABASE_APP_URL if set (explicit, used by tests and advanced setups).
       2. Otherwise, if METER_APP_DB_PASSWORD is set, derive from DATABASE_URL
          by swapping in the `meter_app` role + that password. This is the
@@ -45,6 +51,8 @@ def app_dsn() -> str:
          the app connects as the RLS-enforced role automatically.
       3. Otherwise fall back to DATABASE_URL (fine for single-user local dev).
     """
+    if _read_only:
+        return read_dsn()
     explicit = os.environ.get("DATABASE_APP_URL")
     if explicit:
         return explicit
@@ -55,6 +63,55 @@ def app_dsn() -> str:
         params["password"] = app_password
         return psycopg.conninfo.make_conninfo(**params)
     return os.environ["DATABASE_URL"]
+
+
+#: Set once, at startup, by a process that must never write (see read_only()).
+_read_only = False
+
+
+def read_only() -> None:
+    """Make every application connection in THIS process read-only.
+
+    Called by `python -m meter.mcp` before it serves anything. The alternative
+    was threading a DSN through `dashboard`, `optimize_measured` and `ai_reads`
+    and every function they call, so that one caller could ask for a different
+    role — which would put a "which role am I?" argument in the signature of
+    code that has no business knowing. The property belongs to the process, so
+    it is set on the process.
+
+    One-way on purpose: there is no matching `read_write()`. A process that has
+    declared itself read-only cannot talk itself back out of it.
+    """
+    global _read_only
+    _read_only = True
+
+
+def is_read_only() -> bool:
+    return _read_only
+
+
+def read_dsn() -> str:
+    """Connection string for the SELECT-only role.
+
+    Resolved like `app_dsn()`: an explicit DATABASE_READ_URL wins, otherwise
+    METER_READ_DB_PASSWORD swaps the role into DATABASE_URL. With neither set
+    there is no fallback to a writable role — a process that asked for
+    read-only gets an error rather than a connection that can write.
+    """
+    explicit = os.environ.get("DATABASE_READ_URL")
+    if explicit:
+        return explicit
+    password = os.environ.get("METER_READ_DB_PASSWORD")
+    if not password:
+        raise RuntimeError(
+            "Read-only database access needs DATABASE_READ_URL, or "
+            "METER_READ_DB_PASSWORD alongside DATABASE_URL. Refusing to fall "
+            f"back to a role that can write. See migration 0060 for {READ_ROLE}."
+        )
+    params = psycopg.conninfo.conninfo_to_dict(os.environ["DATABASE_URL"])
+    params["user"] = READ_ROLE
+    params["password"] = password
+    return psycopg.conninfo.make_conninfo(**params)
 
 
 def connect(conninfo: str | None = None, *, autocommit: bool = False) -> psycopg.Connection:

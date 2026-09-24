@@ -55,10 +55,17 @@ def app_conninfo(postgresql):
 
 
 @pytest.fixture
-def app_env(admin_conn, admin_conninfo, app_conninfo, monkeypatch):
+def read_conninfo(postgresql):
+    """Conninfo for the SELECT-only role (migration 0060). RLS applies to it too."""
+    return _conninfo(postgresql, user=db.READ_ROLE)
+
+
+@pytest.fixture
+def app_env(admin_conn, admin_conninfo, app_conninfo, read_conninfo, monkeypatch):
     """Wire the modules' env to the test DB (admin + app roles). Returns admin conn."""
     monkeypatch.setenv("DATABASE_URL", admin_conninfo)
     monkeypatch.setenv("DATABASE_APP_URL", app_conninfo)
+    monkeypatch.setenv("DATABASE_READ_URL", read_conninfo)
     monkeypatch.setenv("APP_SECRET_KEY", "unit-test-secret-key")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # force heuristic discovery
     return admin_conn

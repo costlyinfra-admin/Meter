@@ -43,13 +43,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
-from collections import defaultdict, deque
 from typing import Optional
 
 import httpx
 
-from . import assistant_facts
+from . import assistant_facts, ratelimit
 from .discovery_llm import DEFAULT_DISCOVERY_MODEL, env_llm_config, redact
 
 logger = logging.getLogger(__name__)
@@ -70,25 +68,26 @@ MAX_FACTS_CHARS = 6000
 TIMEOUT = 30.0
 
 #: Per-tenant sliding window. A person asks a handful of questions; anything past
-#: this is a script. In-process by design — this is abuse dampening, not a quota.
+#: this is a script.
 RATE_LIMIT = 30
 RATE_WINDOW = 300.0
 
-_recent: dict[str, deque] = defaultdict(deque)
+#: Re-exported so `except assistant.RateLimited` keeps working at every call site.
+RateLimited = ratelimit.RateLimited
 
-
-class RateLimited(Exception):
-    """Too many questions from one tenant in the window (maps to HTTP 429)."""
+_limiter = ratelimit.Limiter(
+    RATE_LIMIT, RATE_WINDOW, "Too many questions just now — give it a minute."
+)
 
 
 def check_rate(tenant_id: str, *, now: Optional[float] = None) -> None:
-    now = time.monotonic() if now is None else now
-    seen = _recent[tenant_id]
-    while seen and now - seen[0] > RATE_WINDOW:
-        seen.popleft()
-    if len(seen) >= RATE_LIMIT:
-        raise RateLimited("Too many questions just now — give it a minute.")
-    seen.append(now)
+    _limiter.check(tenant_id, now=now)
+
+
+def reset_rate() -> None:
+    """Forget every tenant's window. For tests, which must not inherit a window
+    from the test before them."""
+    _limiter.reset()
 
 
 SYSTEM = """You are Meter's assistant. Meter takes a company's blended AI bill \

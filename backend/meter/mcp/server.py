@@ -26,6 +26,8 @@ import sys
 from typing import IO, Any, Optional
 
 from .. import __version__
+from ..ratelimit import RateLimited
+from .session import check_rate
 from .tools import TOOLS, ToolError, call_tool
 
 logger = logging.getLogger("meter.mcp")
@@ -108,7 +110,14 @@ def handle(message: dict, tenant_id: str) -> Optional[dict]:
         if not isinstance(name, str):
             return _error(request_id, INVALID_REQUEST, "tools/call needs a tool name.")
         try:
+            # Before the work, not after: the point is to stop a client in a
+            # retry loop from reaching the database at all.
+            check_rate(tenant_id)
             payload = call_tool(name, params.get("arguments"), tenant_id)
+        except RateLimited as exc:
+            # A tool result, not a protocol error — the model should read this
+            # and wait, rather than see a broken server and reconnect.
+            return _result(request_id, _tool_result({"error": str(exc)}, is_error=True))
         except ToolError as exc:
             # The model's problem to fix, so it is told rather than the transport.
             return _result(request_id, _tool_result({"error": str(exc)}, is_error=True))

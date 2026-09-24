@@ -1,32 +1,45 @@
-"""Who the MCP server is acting as.
+"""Who the MCP server is acting as, and how hard it may ask.
 
-One process serves one tenant. That is deliberate: the server runs on a
-developer's machine next to their editor, and the alternative — a process that
-can reach several tenants and picks one per call — would put tenant selection in
-a tool argument, where a confused model could change it.
+One process serves one tenant, resolved once at startup from a token. That is
+deliberate: the server runs on a developer's machine next to their editor, and
+the alternative — a process that can reach several tenants and picks one per
+call — would put tenant selection in a tool argument, where a confused model
+could change it.
 
-The credential is the user's own Meter login, checked by `auth.login()` — the
-same bcrypt comparison the web app makes. No new authentication model, no new
-table, and no privilege that a person signing in does not already have.
+**The credential is an MCP token, not a person's login.** It is minted from the
+Meter account it belongs to (`python -m meter.mcp.mint`), scoped to one tenant,
+revocable on its own without disturbing anything else, and useless for signing
+in to Meter. Nothing about it can be used to write.
 
-That is also the known rough edge: a password in an environment variable is a
-worse secret than a scoped read-only token would be. Meter has no such token
-today (`hook_token` is write-scoped, for ingest, and widening it to reads would
-make a write credential more powerful), so this uses what exists. It is checked
-once, at startup, and neither the password nor the email is logged, returned by
-a tool, or kept after the tenant is resolved.
+**The connection is read-only.** The process runs as `meter_read` (migration
+0060), which holds SELECT and nothing else, so "this server cannot write" stops
+depending on nobody adding the wrong tool.
 """
 
 from __future__ import annotations
 
 import os
 
-from .. import auth
+from .. import ratelimit
+from . import tokens
 
-#: Where the server reads its credential from. Named for the product, not for
-#: MCP: the same two variables would serve any other headless Meter client.
-EMAIL_VAR = "METER_EMAIL"
-PASSWORD_VAR = "METER_PASSWORD"
+#: Where the server reads its credential from.
+TOKEN_VAR = "METER_MCP_TOKEN"
+
+#: Per-tenant sliding window. Generous for a person working with an agent —
+#: a question usually costs two or three calls — and low enough that a client
+#: stuck in a retry loop stops being the database's problem. Same mechanism as
+#: the assistant's, a bigger budget, because a tool call is cheaper than a
+#: model call.
+RATE_LIMIT = 120
+RATE_WINDOW = 60.0
+
+_limiter = ratelimit.Limiter(
+    RATE_LIMIT,
+    RATE_WINDOW,
+    f"Too many Meter tool calls in the last minute (limit {RATE_LIMIT}). "
+    "Wait a moment before retrying.",
+)
 
 
 class NotAuthenticated(Exception):
@@ -40,15 +53,25 @@ def resolve_tenant() -> str:
     that connects successfully and then fails every query looks like a Meter
     outage, when it is a missing environment variable.
     """
-    email = os.environ.get(EMAIL_VAR, "").strip()
-    password = os.environ.get(PASSWORD_VAR, "")
-    if not email or not password:
+    token = os.environ.get(TOKEN_VAR, "").strip()
+    if not token:
         raise NotAuthenticated(
-            f"Set {EMAIL_VAR} and {PASSWORD_VAR} to a Meter login. "
-            "The server reads your organization's data as that user."
+            f"Set {TOKEN_VAR} to a Meter MCP token. Mint one with "
+            "`python -m meter.mcp.mint`."
         )
-    user = auth.login(email, password)
-    if user is None:
-        # No detail about which half was wrong: this message can reach a log.
-        raise NotAuthenticated("Meter rejected those credentials.")
-    return user["tenant_id"]
+    tenant_id = tokens.resolve(token)
+    if tenant_id is None:
+        # No detail about why: this message can reach a log, and "expired"
+        # versus "never existed" is information a guesser can use.
+        raise NotAuthenticated("That MCP token is not valid. It may have been revoked.")
+    return tenant_id
+
+
+def check_rate(tenant_id: str) -> None:
+    """Raises ratelimit.RateLimited when a client is asking too fast."""
+    _limiter.check(tenant_id)
+
+
+def reset_rate() -> None:
+    """Forget the window. For tests."""
+    _limiter.reset()

@@ -33,7 +33,7 @@ def _byok_env(monkeypatch):
     monkeypatch.setenv("METER_DISCOVERY_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("METER_DISCOVERY_API_KEY", "sk-super-secret-key-value")
     monkeypatch.setenv("METER_DISCOVERY_MODEL", "llama-3.3-70b-versatile")
-    assistant._recent.clear()
+    assistant.reset_rate()
 
 
 def _client(handler) -> httpx.Client:

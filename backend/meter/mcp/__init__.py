@@ -11,12 +11,16 @@ functions the web app's endpoints call: `dashboard`, `optimize_measured` and
 — `api.py` maps HTTP to those functions, this maps MCP tool calls to them, and
 if the two ever disagreed about a number, one of them would be wrong.
 
-**Read-only.** There is no tool that applies an optimization, edits a feature,
-changes settings or triggers a sync. The surface is three read functions, and
-test_mcp.py asserts the whole of it, so a fourth tool cannot arrive quietly.
+**Read-only twice over.** There is no tool that applies an optimization, edits
+a feature, changes settings or triggers a sync; the surface is three read
+functions and test_mcp.py asserts the whole of it. And the process runs as
+`meter_read` (migration 0060), a role holding SELECT and nothing else — so the
+guarantee does not rest on nobody adding the wrong tool later.
 
 Layout:
-  session.py — who the server acts as (one tenant, resolved once)
+  tokens.py  — the credential: create, list, revoke, resolve
+  mint.py    — `python -m meter.mcp.mint`, which issues one
+  session.py — who the server acts as (one tenant, resolved once) and how fast
   tools.py   — the three tools: their schemas and their handlers
   server.py  — the stdio JSON-RPC loop
   __main__.py— `python -m meter.mcp`

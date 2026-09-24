@@ -17,12 +17,19 @@ import subprocess
 import sys
 
 import pytest
-from meter import dashboard, optimize_measured
-from meter.mcp import server, tools
+from meter import dashboard, optimize_measured, ratelimit
+from meter.mcp import server, session, tools
 from meter.sampledata import insert_sample_data
 
 PERIOD = dt.date(2026, 5, 1)  # sampledata's period
 MONTH = "2026-05"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_window():
+    """Each test starts with the full budget. The limiter is process-wide, so
+    without this a long file would fail on whichever test crossed the line."""
+    session.reset_rate()
 
 
 @pytest.fixture
@@ -445,18 +452,21 @@ def _run_server(env: dict, *messages: dict) -> tuple:
 
 
 @pytest.fixture
-def server_env(app_env, admin_conninfo, app_conninfo):
-    """A real login whose organization has data, plus the DB wiring for a subprocess."""
+def server_env(app_env, admin_conninfo, app_conninfo, read_conninfo):
+    """A token whose organization has data, plus the DB wiring for a subprocess."""
     from meter import auth
+    from meter.mcp import tokens
 
     user = auth.signup("mcp-user@example.com", "correct-horse-battery")
     insert_sample_data(app_env, user["tenant_id"], extended=True)
     app_env.commit()
+    made = tokens.create(user["tenant_id"], "test laptop")
     return {
         "DATABASE_URL": admin_conninfo,
         "DATABASE_APP_URL": app_conninfo,
-        "METER_EMAIL": "mcp-user@example.com",
-        "METER_PASSWORD": "correct-horse-battery",
+        # What the server actually connects with: SELECT and nothing else.
+        "DATABASE_READ_URL": read_conninfo,
+        "METER_MCP_TOKEN": made["token"],
     }
 
 
@@ -483,31 +493,58 @@ def test_the_process_speaks_the_protocol_over_stdio(server_env):
     assert "meter MCP server ready" in stderr
 
 
-def test_the_password_never_reaches_the_output(server_env):
+def test_the_token_never_reaches_the_output(server_env):
     replies, stderr, _code = _run_server(
         server_env, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     )
-    secret = server_env["METER_PASSWORD"]
+    secret = server_env["METER_MCP_TOKEN"]
     assert secret not in stderr
     assert secret not in json.dumps(replies)
 
 
 def test_it_refuses_to_start_without_a_credential(server_env):
-    without = {**server_env, "METER_PASSWORD": ""}
+    without = {**server_env, "METER_MCP_TOKEN": ""}
     replies, stderr, code = _run_server(without, {"jsonrpc": "2.0", "id": 1, "method": "ping"})
     # Exit, rather than start and fail every call — which looks like an outage.
     assert code == 2
     assert replies == []
-    assert "METER_PASSWORD" in stderr
+    assert "METER_MCP_TOKEN" in stderr
 
 
-def test_it_refuses_to_start_with_the_wrong_password(server_env):
-    wrong = {**server_env, "METER_PASSWORD": "not-the-password"}
+def test_it_refuses_to_start_with_a_token_that_is_not_valid(server_env):
+    wrong = {**server_env, "METER_MCP_TOKEN": "mtr_mcp_not-a-real-token"}
     _replies, stderr, code = _run_server(wrong, {"jsonrpc": "2.0", "id": 1, "method": "ping"})
     assert code == 2
-    assert "rejected" in stderr
-    # No hint about which half was wrong: this message can reach a log.
-    assert "mcp-user@example.com" not in stderr
+    assert "not valid" in stderr
+
+
+def test_it_refuses_to_start_with_no_read_only_credential(server_env):
+    # Falling back to a role that can write would quietly undo the guarantee.
+    # Blanked rather than dropped: the subprocess inherits this process's
+    # environment, so removing a key from the override leaves it set.
+    without = {**server_env, "DATABASE_READ_URL": "", "METER_READ_DB_PASSWORD": ""}
+    _replies, stderr, code = _run_server(without, {"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert code == 2
+    assert "read-only" in stderr.lower()
+
+
+def test_a_revoked_token_stops_working(server_env, app_env):
+    from meter.mcp import tokens
+
+    tenant = tokens.resolve(server_env["METER_MCP_TOKEN"])
+    only = tokens.list_tokens(tenant)[0]
+    tokens.revoke(tenant, only["id"])
+
+    _replies, stderr, code = _run_server(server_env, {"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert code == 2
+    assert "revoked" in stderr
+
+
+def test_using_a_token_records_that_it_was_used(server_env):
+    from meter.mcp import tokens
+
+    tenant = tokens.resolve(server_env["METER_MCP_TOKEN"])
+    assert tokens.list_tokens(tenant)[0]["last_used_at"] is not None
 
 
 def test_a_feature_id_returns_more_than_the_ranked_shortlist(seeded):
@@ -549,3 +586,44 @@ def test_an_unknown_feature_id_is_refused_by_the_opportunity_tool(seeded):
     )
     assert got["is_error"]
     assert "No feature" in got["payload"]["error"]
+
+
+def test_a_flood_of_calls_is_slowed_down(seeded):
+    # An agent in a retry loop should be told to wait, not allowed to hammer
+    # the database until something else breaks.
+    for _ in range(session.RATE_LIMIT):
+        assert not _call(seeded, "get_cost_summary", {"start": MONTH})["is_error"]
+
+    stopped = _call(seeded, "get_cost_summary", {"start": MONTH})
+    assert stopped["is_error"]
+    assert "Too many" in stopped["payload"]["error"]
+
+
+def test_the_limit_is_checked_before_the_work(seeded, monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise AssertionError("a rate-limited call must not reach the database")
+
+    for _ in range(session.RATE_LIMIT):
+        _call(seeded, "get_cost_summary", {"start": MONTH})
+    # Patched where server.py LOOKS IT UP, not where it is defined: server.py
+    # imported the name, so patching tools.call_tool would change nothing and
+    # this test would pass whatever the order was.
+    monkeypatch.setattr(server, "call_tool", explode)
+    stopped = _call(seeded, "get_cost_summary", {"start": MONTH})
+    # The rate-limit message, specifically. `is_error` alone would also be true
+    # if the call had run and blown up, which is the thing being ruled out.
+    assert "Too many" in stopped["payload"]["error"]
+
+
+def test_being_rate_limited_is_a_tool_result_not_a_broken_server(seeded):
+    for _ in range(session.RATE_LIMIT):
+        _call(seeded, "get_cost_summary", {"start": MONTH})
+    reply = server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "get_cost_summary", "arguments": {}}},
+        seeded,
+    )
+    # A JSON-RPC error would read as a server fault and prompt a reconnect.
+    assert "error" not in reply
+    assert reply["result"]["isError"] is True
+    assert ratelimit.RateLimited  # the exception the server caught

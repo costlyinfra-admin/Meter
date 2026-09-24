@@ -9,8 +9,9 @@ It adds no analytics. Every number comes from the same functions the web app's
 endpoints call, so a figure here and a figure on a Meter screen cannot disagree.
 
 ```
-Claude Code ──stdio──▶ meter.mcp ──▶ dashboard / optimize_measured / ai_reads ──▶ Postgres (RLS)
-                        (tools)        (the same services api.py calls)
+Claude Code ──stdio──▶ meter.mcp ──▶ dashboard / optimize_measured / ai_reads ──▶ Postgres
+                        (tools)        (the same services api.py calls)        as meter_read
+                     token → tenant                                            SELECT only + RLS
 ```
 
 ## The three tools
@@ -42,14 +43,25 @@ exactly as it was, rather than whatever that lever says today.
 
 ## What it will not do
 
-- **It cannot write.** There is no tool that applies an optimization, renames a
-  feature, changes settings or triggers a sync — the whole surface is three
-  read functions, and a test asserts exactly that, so a fourth tool cannot
-  arrive quietly.
-- **It cannot cross tenants.** One process serves one tenant, resolved once at
-  startup. Every query runs through the service layer, which opens `tenant_tx()`,
-  so Postgres row-level security enforces the boundary — the same way it does for
-  the API. Passing another organization's feature id returns "no such feature".
+- **It cannot write.** Twice over. The surface is three read functions and a
+  test asserts the whole of it — but more importantly the process connects as
+  `meter_read` (migration 0060), a database role holding `SELECT` and nothing
+  else. "This server does not write" is a claim about the code; "this server
+  cannot write" is a property of the connection, and that is the one worth
+  having.
+- **It cannot read a credential.** `meter_read` has no privilege at all on
+  `app_user`, `hook_token` or `mcp_token`, and on `connector_credential` it has
+  a column grant covering everything except the encrypted secret — enough to
+  answer "is a GitHub connector configured", not enough to read it.
+- **It cannot cross tenants.** One process serves one tenant, fixed at startup
+  by its token. `meter_read` is a non-owner, so every RLS policy governs it
+  exactly as it governs the app; with no tenant set it sees nothing, never
+  everything. Passing another organization's feature id returns "no such
+  feature".
+- **It cannot be hammered.** 120 tool calls per minute per organization, checked
+  before the work rather than after, so a client stuck in a retry loop never
+  reaches the database. Over the line comes back as a tool result telling the
+  model to wait, not as a server error that would prompt a reconnect.
 - **It returns no content.** Meter stores no prompts, responses, tool arguments
   or retrieved documents, so there is nothing to leak. Repeated-request evidence
   is a salted one-way fingerprint and a count. Example runs carry the operation
@@ -62,12 +74,39 @@ You need a Python environment with the backend installed (`make install` gives
 you one at `backend/.venv`) and a database URL for the Meter instance you want to
 read — your local `make demo` database, or your deployed one.
 
+### 1. Give the read-only role a password
+
+The role exists after migrations but cannot log in until it has one. Locally,
+where Postgres trusts you, this is enough:
+
+```bash
+psql "$DATABASE_URL" -c "ALTER ROLE meter_read WITH LOGIN PASSWORD 'choose-one'"
+```
+
+In production, set `METER_READ_DB_PASSWORD` and redeploy —
+[`deploy/release.sh`](../deploy/release.sh) applies it on every release.
+
+### 2. Mint a token
+
+```bash
+cd backend && .venv/bin/python -m meter.mcp.mint create "Bipin's laptop"
+```
+
+It asks for your Meter password at the prompt, authenticates you the ordinary
+way, and prints a token **once**. Meter stores only its SHA-256 hash, so it
+cannot be read back — if you lose it, mint another and revoke the old one.
+
+`list` shows every token with when it was last used; `revoke <id>` turns one off
+without touching the others.
+
+### 3. Point Claude Code at it
+
 ```bash
 claude mcp add meter \
   --scope user \
   --env DATABASE_URL="postgresql://…" \
-  --env METER_EMAIL="you@example.com" \
-  --env METER_PASSWORD="…" \
+  --env METER_READ_DB_PASSWORD="choose-one" \
+  --env METER_MCP_TOKEN="mtr_mcp_…" \
   --env PYTHONPATH="/absolute/path/to/Meter/backend" \
   -- /absolute/path/to/Meter/backend/.venv/bin/python -m meter.mcp
 ```
@@ -96,19 +135,20 @@ Then, in Claude Code:
 
 | Variable | Required | What it is |
 | --- | --- | --- |
+| `METER_MCP_TOKEN` | yes | The token from step 2. Scoped to one organization, revocable, useless for signing in. |
 | `DATABASE_URL` | yes | The Meter database. |
-| `METER_EMAIL` | yes | Your Meter login. Its organization is the one served. |
-| `METER_PASSWORD` | yes | That login's password, checked once at startup. |
-| `METER_APP_DB_PASSWORD` | no | Connect as the RLS-enforced `meter_app` role rather than the owner. Recommended; see [deploy.md](deploy.md). |
+| `METER_READ_DB_PASSWORD` | yes | The `meter_read` password from step 1. `DATABASE_READ_URL` replaces both if you prefer a full connection string. |
 | `PYTHONPATH` | no | `…/Meter/backend`. Not needed when the editable install is healthy; see above. |
 | `METER_LOG_LEVEL` | no | Defaults to `INFO`. Logs go to stderr — stdout carries the protocol. |
 
-**On the password.** Meter authenticates browsers with a session cookie, and its
-only token (`hook_token`) is write-scoped for SDK ingest; reusing that for reads
-would make a write credential more powerful. So the server signs in the way a
-person does, through `auth.login()`, with no new authentication model and no
-privilege you do not already have. A scoped read-only API token is the obvious
-next step, and would replace these two variables with one.
+There is no password here. Earlier versions took `METER_EMAIL` and
+`METER_PASSWORD`, which meant a full Meter login sat in an agent's config with
+no way to revoke it short of changing the password. The token replaces it: one
+per machine, revocable on its own, and it records when it was last used so you
+can tell whether anything still depends on it before turning it off.
+
+If the server cannot get a read-only connection it **exits** rather than falling
+back to a role that can write.
 
 ## Checking it works
 
@@ -132,7 +172,10 @@ and failing every call.
 the transport and knows nothing about Meter. A new tool is an entry in `TOOLS`, a
 handler that calls an existing service, and a test. Keep the read-only property:
 `test_the_server_offers_nothing_that_writes` asserts the whole surface, so a
-fourth tool has to be added deliberately.
+fourth tool has to be added deliberately — and if it reads a table nobody has
+granted `meter_read`, `test_every_tool_runs_as_the_read_only_role` fails with
+the table's name. Add the grant to a new migration rather than widening the
+role.
 
 The transport is hand-rolled because the official `mcp` package needs Python
 3.10 and this backend supports 3.9. If that floor moves, `server.py` can be
