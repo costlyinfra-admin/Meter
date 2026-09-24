@@ -487,3 +487,14 @@ def test_the_cron_sweeps_every_tenant(client, token, admin_conn):
     swept = audit.purge_all_tenants()
     assert sum(entry["deleted"] for entry in swept) == 2
     assert audit.recent(other) == []
+
+
+def test_the_provider_slice_never_calls_dollars_tokens(client, token):
+    # `token_total` in dashboard.spend_by_provider is a sum of DOLLARS. Passing
+    # it through under that name told an agent 801.79 tokens, which is both
+    # wrong and plausible-looking — the worst combination on a cost tool.
+    got = call(client, token, "get_cost_summary", {"start": MONTH, "group_by": "provider"})
+    payload = got["payload"]
+    assert "token_total" not in payload
+    for row in payload["spend_by_token_type"]:
+        assert set(row) >= {"token_type", "label", "amount", "tokens"}

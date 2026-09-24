@@ -912,9 +912,21 @@ select {
   margin-bottom: 0.4rem;
 }
 
-/* Administrative settings fields (Organization, Privacy & data). */
+/* Settings cards.
+   640px suited a page that was only ever short forms, and every input inside
+   still caps itself at 340px — so the extra width goes to the cards that carry
+   something wide: the Coding agents token table, its shell snippet and its
+   activity log, which at 640px wrapped into an unreadable column with half the
+   screen empty beside it.
+   Prose caps itself separately, because a paragraph 1000px wide is hard to read
+   however much room there is. */
 .settings-page .settings-card {
-  max-width: 640px;
+  max-width: min(100%, 64rem);
+}
+
+.settings-page .settings-card > p,
+.settings-page .settings-card > .hint {
+  max-width: 68ch;
 }
 
 /* The tablist sits under the page title rather than above a table, so it needs

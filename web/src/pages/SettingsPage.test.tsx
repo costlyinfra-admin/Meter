@@ -113,7 +113,7 @@ describe("SettingsPage", () => {
       "Organization",
       "Budgets",
       "Bring your own key",
-      "Coding agents",
+      "Coding agents (MCP)",
       "Privacy & data",
     ]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");

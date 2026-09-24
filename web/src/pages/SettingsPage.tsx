@@ -26,7 +26,7 @@ const TABS = [
   { id: "organization", label: "Organization" },
   { id: "budgets", label: "Budgets" },
   { id: "byok", label: "Bring your own key" },
-  { id: "agents", label: "Coding agents" },
+  { id: "agents", label: "Coding agents (MCP)" },
   { id: "privacy", label: "Privacy & data" },
 ] as const;
 

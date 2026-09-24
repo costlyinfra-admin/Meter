@@ -4,7 +4,7 @@ Run where Meter's database is reachable, by someone who can already sign in to
 Meter. It is the bootstrap: the MCP server authenticates with a token, and this
 is what produces the first one.
 
-  python -m meter.mcp.mint create "Bipin's laptop"
+  python -m meter.mcp.mint create "Office laptop"
   python -m meter.mcp.mint list
   python -m meter.mcp.mint revoke <token-id>
 
@@ -61,7 +61,7 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--email", help="Meter login. Also read from METER_EMAIL.")
     sub = parser.add_subparsers(dest="command", required=True)
     made = sub.add_parser("create", help="Mint a token.")
-    made.add_argument("label", help="What it is for, e.g. \"Bipin's laptop\".")
+    made.add_argument("label", help="What it is for, e.g. \"Office laptop\".")
     sub.add_parser("list", help="Show this organization's tokens.")
     gone = sub.add_parser("revoke", help="Turn one token off.")
     gone.add_argument("token_id", help="From `list`.")

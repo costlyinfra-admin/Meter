@@ -148,7 +148,7 @@ Settings → Coding agents does this from the app. From a shell, where there is 
 browser:
 
 ```bash
-cd backend && .venv/bin/python -m meter.mcp.mint create "Bipin's laptop"
+cd backend && .venv/bin/python -m meter.mcp.mint create "Office laptop"
 ```
 
 It asks for your Meter password at the prompt, authenticates you the ordinary

@@ -141,7 +141,7 @@ export function McpTokensCard({ appOrigin }: { appOrigin?: string }) {
             id="mcp-label"
             value={label}
             maxLength={100}
-            placeholder="What it is for, e.g. Bipin's laptop"
+            placeholder="What it is for, e.g. Office laptop"
             onChange={(e) => setLabel(e.target.value)}
           />
           <button type="submit" disabled={!label.trim() || busy === "create"}>

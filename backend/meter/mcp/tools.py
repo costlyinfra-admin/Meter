@@ -171,7 +171,12 @@ def _by_provider(tenant_id: str, window: tuple, limit: int) -> dict:
     return {
         "group_by": "provider",
         "inference_total": data["total"],
-        "token_total": data["token_total"],
+        # What the money was spent ON: input, output, cache read, cache write.
+        # Each row carries dollars AND the provider's own token count, because
+        # the service's `token_total` is a total of DOLLARS — returning that
+        # under a name starting "token" invited exactly the wrong reading, and
+        # it is the same figure as inference_total anyway.
+        "spend_by_token_type": data["by_token_type"][:limit],
         "providers": [
             {
                 "provider": p["provider"],

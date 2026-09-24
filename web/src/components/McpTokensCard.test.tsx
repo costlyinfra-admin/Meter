@@ -30,7 +30,7 @@ const render = (ui: React.ReactElement) => renderBare(<MemoryRouter>{ui}</Memory
 
 const token = (over: Partial<McpToken> = {}): McpToken => ({
   id: "tok-1",
-  label: "Bipin's laptop",
+  label: "Office laptop",
   created_at: "2026-09-20T10:00:00Z",
   last_used_at: "2026-09-23T10:00:00Z",
   revoked_at: null,
@@ -46,7 +46,7 @@ const activity = (over: Partial<McpActivity> = {}): McpActivity => ({
   outcome: "ok",
   duration_ms: 12,
   transport: "http",
-  token_label: "Bipin's laptop",
+  token_label: "Office laptop",
   ...over,
 });
 
@@ -84,15 +84,15 @@ describe("creating a token", () => {
   it("shows it once, and says that is the only time", async () => {
     vi.mocked(api.createMcpToken).mockResolvedValue({
       id: "tok-1",
-      label: "Bipin's laptop",
+      label: "Office laptop",
       created_at: "2026-09-23T10:00:00Z",
       token: "mtr_mcp_secret-value",
     });
     vi.mocked(api.mcpTokens).mockResolvedValue([token()]);
 
     render(<McpTokensCard />);
-    await screen.findByText(/No tokens yet|Bipin's laptop/);
-    fireEvent.change(screen.getByLabelText(/Add a token/), { target: { value: "Bipin's laptop" } });
+    await screen.findByText(/No tokens yet|Office laptop/);
+    fireEvent.change(screen.getByLabelText(/Add a token/), { target: { value: "Office laptop" } });
     fireEvent.click(screen.getByRole("button", { name: /Create token/ }));
 
     expect(await screen.findByText("mtr_mcp_secret-value")).toBeInTheDocument();
@@ -139,7 +139,7 @@ describe("living with tokens", () => {
     vi.mocked(api.mcpTokens).mockResolvedValue([token()]);
     render(<McpTokensCard />);
 
-    const row = (await screen.findByText("Bipin's laptop")).closest("tr")!;
+    const row = (await screen.findByText("Office laptop")).closest("tr")!;
     // "Is anything still using this?" is the question, every time.
     expect(within(row).getByText("14")).toBeInTheDocument();
     expect(within(row).getByText("Active")).toBeInTheDocument();
@@ -171,7 +171,7 @@ describe("living with tokens", () => {
   it("does not offer a command when every token is revoked", async () => {
     vi.mocked(api.mcpTokens).mockResolvedValue([token({ active: false })]);
     render(<McpTokensCard />);
-    await screen.findByText("Bipin's laptop");
+    await screen.findByText("Office laptop");
     expect(screen.queryByText(/claude mcp add/)).not.toBeInTheDocument();
   });
 });
@@ -184,7 +184,7 @@ describe("the activity trail", () => {
 
     const entry = await screen.findByText(/get_cost_summary/);
     expect(entry).toHaveTextContent('{"group_by": "feature"}');
-    expect(entry).toHaveTextContent("Bipin's laptop");
+    expect(entry).toHaveTextContent("Office laptop");
   });
 
   it("marks a call that failed", async () => {
