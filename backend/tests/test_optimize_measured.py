@@ -210,19 +210,23 @@ def test_prefix_below_threshold_is_not_flagged(tenant_id):
 
 def test_combines_measured_and_estimated_tiers(tenant_id):
     triage = features.add_feature(tenant_id, "AI threat triage")
+    # The metered traffic has to be able to account for the signals: a prefix
+    # summary describing 1,000 calls on a feature billed for two is a
+    # contradiction, and _bound_by_spend now treats it as one. 2 x 10M input
+    # tokens on Sonnet is $60 of spend, comfortably above what is claimed here.
     hook.ingest_events(
         tenant_id,
         [
-            _dup_event(triage["id"], "fp-a", 1_000_000),
-            _dup_event(triage["id"], "fp-a", 1_000_000),
+            _dup_event(triage["id"], "fp-a", 10_000_000),
+            _dup_event(triage["id"], "fp-a", 10_000_000),
             _prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000,
                           measured=True, windows=20),
         ],
     )
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
 
-    # Measured total is prompt caching alone, $10.80. The repeated-request
-    # finding is a ceiling, not a measured saving, so it is not in here.
+    # Measured total is prompt caching alone. The repeated-request finding is a
+    # ceiling, not a measured saving, so it is not in here.
     assert result["totals"]["measured"] == 10.52
     measured = [o for o in result["opportunities"] if o["savings_type"] == "measured"]
     assert measured[0]["lever"] == "prompt_caching"
@@ -234,8 +238,8 @@ def test_combines_measured_and_estimated_tiers(tenant_id):
     dup = _opp(result, "duplicate_calls")
     assert dup["overlaps"] == "Prompt caching"
     assert set(result["totals"]) == {"measured", "modeled_ceiling", "directional"}
-    # Only the right-sizing ceiling remains ($6 × 0.733 = $4.40).
-    assert result["totals"]["modeled_ceiling"] == 4.4
+    # Only the right-sizing ceiling remains ($60 × 0.733 = $44.00).
+    assert result["totals"]["modeled_ceiling"] == 44.0
 
 
 def test_no_signals_no_cost_yields_no_opportunities(tenant_id):
@@ -878,3 +882,113 @@ def test_a_prefix_caching_would_cost_money_on_cannot_fund_another_one(tenant_id)
     )
     assert prefix["projected_monthly_savings"] == 10.52  # the good prefix, undiluted
     assert [t["fingerprint"] for t in prefix["trail"]] == ["fp-good"]
+
+
+# ---------------------------------------------------------------------------
+# Nothing saves more than the bill (design invariant 5)
+# ---------------------------------------------------------------------------
+
+
+def test_a_saving_larger_than_the_bill_is_capped_at_the_bill(tenant_id):
+    """Signals are self-reported client state; the invoice is not.
+
+    A double-reported flush, an SDK left pointed at the wrong feature, or a
+    prefix summary whose call count outruns what was metered all produce a
+    finding bigger than the month it claims to be about. Seeded here: 50,000
+    calls with an 8,000-token prefix says $1,080 of savings on a feature the
+    connector billed $40 for, and it said it in the headline "Measured
+    savings" figure.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-huge", 50_000, 8000, 0, 400_000_000,
+                          measured=True, windows=500)
+        ],
+    )
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        _cost_row(conn, tenant_id, triage["id"], amount=40.00,
+                  tokens_in=400_000, tokens_out=10_000)
+
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    prefix = _opp(result, "prompt_caching")
+    assert prefix["projected_monthly_savings"] == 40.0
+    assert prefix["projected_annual_savings"] == 480.0
+    # A number that had to be bounded by the bill is not a counted saving, and
+    # the signals behind it are suspect for every other number too.
+    assert prefix["savings_type"] == "modeled_ceiling"
+    assert prefix["confidence"] == "med"  # down one step from high
+    assert "capped at this feature's $40.00 of billed spend" in prefix["evidence"]
+    # ...so it lands in the ceiling total, not the guaranteed one.
+    assert result["totals"]["measured"] == 0.0
+
+
+def test_a_saving_within_the_bill_is_left_alone(tenant_id):
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20)
+        ],
+    )
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        _cost_row(conn, tenant_id, triage["id"], amount=500.00,
+                  tokens_in=4_000_000, tokens_out=100_000)
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["projected_monthly_savings"] == 10.52
+    assert prefix["savings_type"] == "measured"
+    assert prefix["confidence"] == "high"
+    assert "capped at" not in prefix["evidence"]
+
+
+def test_the_cap_reads_the_bill_on_the_same_reconciled_basis(tenant_id):
+    """The bound is only as good as the spend figure behind it.
+
+    Read without the counting rule, a provider running both a connector and the
+    SDK looks twice as expensive as it is, and the cap lets through twice what
+    the feature actually cost.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-huge", 50_000, 8000, 0, 400_000_000,
+                          measured=True, windows=500)
+        ],
+    )
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        _cost_row(conn, tenant_id, triage["id"], amount=40.00, source="cost_api")
+        _cost_row(conn, tenant_id, triage["id"], amount=40.00, source="hook")
+        _cost_row(conn, tenant_id, triage["id"], amount=900.00, environment="ignore")
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["projected_monthly_savings"] == 40.0
+
+
+def test_a_feature_with_no_recorded_spend_is_not_capped_to_nothing(tenant_id):
+    """No bill is not a bill of zero.
+
+    Capping to zero where cost data is simply absent would delete real findings
+    to punish a gap in a different pipeline.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20)
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["projected_monthly_savings"] == 10.52
+    assert prefix["savings_type"] == "measured"

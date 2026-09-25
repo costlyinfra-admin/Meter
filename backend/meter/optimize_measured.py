@@ -224,6 +224,68 @@ _LEVER_GUIDANCE = {
 }
 
 
+# One step down, for a finding the bill contradicts.
+_CONFIDENCE_DOWN = {"high": "med", "med": "low", "low": "low"}
+
+
+def _feature_spend(conn, feature_id: str, start: dt.date) -> float:
+    """What this feature actually cost in this period, on the reconciled basis."""
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(amount), 0) FROM inference_cost
+        WHERE feature_id = %s AND period = %s
+          AND {dashboard._ACTIVE_ENV} {dashboard._NOT_DOUBLE_COUNTED}
+        """,  # noqa: S608
+        (feature_id, start, dashboard._connector_providers(conn, start)),
+    ).fetchone()
+    return float(row[0]) if row else 0.0
+
+
+def _bound_by_spend(unified: list, spend: float) -> None:
+    """No fix saves more than the thing it is fixing costs (design invariant 5).
+
+    Savings are computed from SDK signals and priced from the price book; the
+    bill is the connector's. The two are independent, so nothing stopped a
+    finding claiming more than the feature spent — and nothing did. A feature
+    billed $40 in a month was offered $1,080 of "measured savings", in the
+    headline figure, on the screen a CFO reads. Signals are self-reported
+    client state: a flush that double-reports, an SDK left running against the
+    wrong feature, or a prefix summary whose call count outruns what was
+    actually metered all produce exactly this.
+
+    Provider cost APIs are authoritative on dollars, so the bill wins. The
+    saving is bounded by it, and a bounded saving is no longer a counted one —
+    the signals behind it disagree with the invoice, which makes every number
+    derived from them suspect, not just the one that overflowed. It degrades to
+    a ceiling, loses a step of confidence, and says so in its own evidence
+    rather than being quietly reduced.
+
+    Only applied when there IS a bill. A feature with no recorded spend has
+    nothing to be measured against, and clamping to zero would delete real
+    findings to punish missing cost data — a different problem, surfaced
+    elsewhere.
+    """
+    if spend <= 0:
+        return
+    for o in unified:
+        if o["savings_type"] == "directional":
+            continue  # a rule of thumb is already labelled as not a number
+        if o["projected_monthly_savings"] <= spend:
+            continue
+        o["projected_monthly_savings"] = round(spend, 2)
+        o["projected_annual_savings"] = round(spend * 12, 2)
+        o["savings_type"] = "modeled_ceiling"
+        o["confidence"] = _CONFIDENCE_DOWN.get(o["confidence"], "low")
+        o["evidence"] += (
+            f" — capped at this feature's ${spend:,.2f} of billed spend, which "
+            "the finding exceeded. The reported traffic does not agree with the "
+            "bill, so treat the whole finding as an upper bound"
+        )
+        o["priority_score"] = _priority(
+            o["projected_monthly_savings"], o["confidence"], o["engineering_effort"]
+        )
+
+
 def _unify_measured(opp: dict) -> dict:
     """Normalize a measured/ceiling detector output into the unified shape (§18)."""
     meta = _LEVER_META[opp["lever"]]
@@ -793,6 +855,9 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date) -> dict:
 
     unified = [_unify_measured(o) for o in measured]
     unified += [_unify_directional(o) for o in estimated["opportunities"]]
+
+    # Before anything is ranked or totalled: nothing saves more than the bill.
+    _bound_by_spend(unified, _feature_spend(conn, feature_id, start))
 
     # Reconciliation reads the CURRENT avoidable spend per applied lever.
     by_lever = {

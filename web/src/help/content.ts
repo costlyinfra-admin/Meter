@@ -871,6 +871,55 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         ],
       },
       {
+        slug: "prompt-caching",
+        title: "Prompt caching",
+        summary:
+          "What Meter counts before it tells you to cache a prompt — including what caching costs.",
+        blocks: [
+          p(
+            "Most of what an AI feature sends is the same every call: a system prompt, tool definitions, a policy block. Providers will keep that static head in a cache and charge a fraction of the input rate to read it back. Meter looks for prefixes big enough and repeated often enough to be worth caching, and prices the change.",
+          ),
+          p("What goes into that number:"),
+          list(
+            "**How many calls shared the prefix**, and how many of them were already served from cache. Both are counts, not estimates.",
+            "**How big the prefix is.** Where the provider reports the size of what it cached, that is the figure used. Where it does not, the SDK estimates from the request length and the finding says so — an estimated size is a ceiling, not a measured saving.",
+            "**What caching would cost.** This is the part that decides whether there is a saving at all.",
+          ),
+          p(
+            "Caching is not a discount, it is a trade. Reading a cached prefix is cheap; **writing** one costs more than sending it uncached — around a quarter more on a five-minute entry. Only the reads that follow pay that back. So Meter counts how many times the entry would have to be written: once for the first call, and again after every gap long enough for the provider to have dropped it.",
+          ),
+          note(
+            "This is why a feature called a few times an hour gets no caching recommendation. The entry would expire before the next call, so every call would write and none would read, and turning caching on would raise the bill rather than lower it. A tool that priced only the discount would tell you to do it.",
+          ),
+          p(
+            "It is also why a feature that **already** caches gets no recommendation. The calls that refresh a live cache report a cache write, and those are the cost of keeping it warm — not an opportunity to switch on something that is evidently already on.",
+          ),
+          table(
+            ["You see", "It means"],
+            [
+              [
+                "**Measured**, high confidence",
+                "The provider reported the prefix size and your SDK counted the writes. Both sides of the trade are counted",
+              ],
+              [
+                "**Up to**, med confidence",
+                "Something is estimated rather than counted — usually the prefix size, or an SDK too old to count the writes. Upgrading it turns this into a measured figure",
+              ],
+              [
+                "**Capped at your billed spend**",
+                "The finding came out larger than the feature's bill. That should not happen, so the number is bounded by the invoice and the whole finding is treated as an upper bound",
+              ],
+            ],
+          ),
+          p(
+            "Savings are priced from published list rates, not read off your invoice. If you have negotiated pricing, treat the figure as proportional rather than exact.",
+          ),
+          note(
+            "Repeated requests and uncached prefixes often describe the same tokens, so Meter counts whichever is larger and drops the other rather than adding both.",
+          ),
+        ],
+      },
+      {
         slug: "applying",
         title: "Applying and verifying a change",
         summary: "Projected, then realized, then verified against your actual bill.",

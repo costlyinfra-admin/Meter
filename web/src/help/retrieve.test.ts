@@ -96,3 +96,24 @@ describe("questions about FOCUS", () => {
     expect(retrieve("can I import a FOCUS export")[0].id).toBe("cost-sources/focus");
   });
 });
+
+describe("questions about prompt caching", () => {
+  // "cache" is everywhere in this product — the alert on a falling cache hit
+  // rate, the Overview's token-type split, the repeated-request finding that
+  // is literally about response caching. A reader asking why Meter did or did
+  // not tell them to cache something has to land on the topic that explains
+  // the arithmetic, not on one that merely uses the word.
+  it.each([
+    "should I turn on prompt caching",
+    "why is Meter not recommending caching for this feature",
+    "how is the prompt caching saving calculated",
+    "does caching a prompt cost anything",
+    "what is a cache write",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("optimize/prompt-caching");
+  });
+
+  it("leads with it, rather than with the cache-hit-rate alert", () => {
+    expect(retrieve("should I turn on prompt caching")[0].id).toBe("optimize/prompt-caching");
+  });
+});
