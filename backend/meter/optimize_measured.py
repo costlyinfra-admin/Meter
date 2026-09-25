@@ -45,7 +45,10 @@ from .db import app_dsn, connect, tenant_tx
 
 # Detection thresholds (opt spec §7). Kept deliberately conservative so a surfaced
 # opportunity is always worth acting on.
-_MIN_PREFIX_TOKENS = 1000  # a prefix worth caching is large
+# A prefix worth the trouble. NOT the same question as whether the provider
+# will cache it at all — pricing.MIN_CACHEABLE_TOKENS answers that, per model,
+# and every published minimum is above this number. Both gates apply.
+_MIN_PREFIX_TOKENS = 1000
 _MIN_CACHEABLE_CALLS = 100  # ...and repeated enough to matter
 _MIN_SAVINGS = 1.0  # ignore sub-dollar noise, like the heuristic tier
 _MAX_TRAIL = 25  # cap the evidence trail payload
@@ -415,6 +418,20 @@ def _duplicate_opportunity(rows: list, legacy_repeats: int = 0) -> Optional[dict
     }
 
 
+# How you actually turn this on, which is not one instruction. Anthropic caches
+# the blocks you mark. OpenAI and Gemini 2.5+ cache automatically, so a prefix
+# going uncached there is a prompt-SHAPE problem — something variable sits ahead
+# of the static head, or it changes between calls — and telling those customers
+# to set cache_control sends them looking for a parameter their API does not
+# have.
+_CACHING_FIX_EXPLICIT = "Enable prompt caching (set cache_control on the static system block)."
+_CACHING_FIX_AUTOMATIC = (
+    "This provider caches automatically, so the prefix is not being matched: move the "
+    "static content to the very start of the request and keep it byte-identical between "
+    "calls."
+)
+
+
 def _prefix_opportunity(rows: list) -> Optional[dict]:
     """Rows: (provider, model, fingerprint, call_count, prefix_tokens, cached_count,
     prefix_measured, write_calls, cache_windows).
@@ -447,6 +464,7 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
     total_uncached = 0
     total_writes = 0
     max_prefix = 0
+    automatic = False  # does any of this run on a provider that caches unasked?
     estimated_calls = 0
     unpriced_writes = 0  # calls whose write side could not be priced
     trail = []
@@ -469,7 +487,12 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         # that could be made cheaper by enabling what is evidently enabled.
         cacheable = int(call_count) - int(cached_count) - written
         p_tokens = int(prefix_tokens or 0)
-        if cacheable < _MIN_CACHEABLE_CALLS or p_tokens < _MIN_PREFIX_TOKENS:
+        # Below the provider's own minimum there is no cache to read from, so
+        # the finding would not be a cautious estimate — it would be an
+        # instruction that cannot be carried out. Unknown models fall back to
+        # Meter's floor rather than to a guess.
+        floor = max(_MIN_PREFIX_TOKENS, pricing.min_cacheable_tokens(model, provider) or 0)
+        if cacheable < _MIN_CACHEABLE_CALLS or p_tokens < floor:
             continue
         input_rate = pricing.rate_in(model, provider)
         unit = Decimal(p_tokens) * input_rate
@@ -507,6 +530,8 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         max_prefix = max(max_prefix, p_tokens)
         if not prefix_measured:
             estimated_calls += cacheable
+        if pricing.cache_is_automatic(provider):
+            automatic = True
         trail.append(
             {
                 "fingerprint": _fp(fingerprint),
@@ -548,7 +573,7 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
             f"a {max_prefix:,}-token static prefix repeated across "
             f"{total_uncached:,} uncached calls, {cost_side} — {basis}"
         ),
-        "fix": "Enable prompt caching (set cache_control on the static system block).",
+        "fix": _CACHING_FIX_AUTOMATIC if automatic else _CACHING_FIX_EXPLICIT,
         "trail": trail[:_MAX_TRAIL],
     }
 

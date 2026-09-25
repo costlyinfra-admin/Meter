@@ -266,15 +266,28 @@ wrong number), `CACHE_WRITE_MULT` / `CACHE_WRITE_1H_MULT` (Anthropic 1.25 and
 2.0; 1.0 for providers that bill a write as ordinary input), and a `BATCH_MULT`
 (≈ 0.50) reserved for the batch-eligibility detector in a later tier.
 
-**Still missing, and known.** The price book has no model of what a provider can
-actually cache, so the detector's `P ≥ 1 000` is a Meter-invented threshold
-rather than a provider fact. Real minimum cacheable prefix lengths differ by
-model and are higher for the small ones, so a prefix above Meter's threshold and
-below the provider's is recommended and cannot be cached at all. Nor does the
-book carry Google's per-hour cache STORAGE charge, which a Gemini recommendation
-would have to net off, or the fact that OpenAI's caching is automatic — its fix
-is reordering the prompt, not setting `cache_control`, which is what every
-finding currently tells you to do whatever the provider.
+`MIN_CACHEABLE_TOKENS` carries the smallest prefix each model will cache, taken
+from the providers' published tables. It is a different question from the
+detector's own `P ≥ 1 000`, which is only "worth the trouble": every published
+minimum is *above* that number and Haiku's is four times it, so a prefix could
+clear Meter's floor and still be one the provider would not cache a byte of.
+Both gates apply, and a model absent from the table falls back to Meter's floor
+rather than to an invented figure.
+
+`CACHE_IS_AUTOMATIC` records which providers cache without being asked. Anthropic
+caches the blocks you mark; OpenAI and Gemini 2.5+ cache by themselves. So an
+uncached prefix on those providers is a prompt-SHAPE problem — something variable
+sits ahead of the static head — and the fix says to move the static content to
+the front and keep it byte-identical, not to set a `cache_control` their API does
+not have.
+
+**Still missing, and known.** Anthropic's cache-read multiplier is per MODEL, not
+per provider — most models are 0.10 but some newer ones are lower. Every Anthropic
+model currently in the price book is 0.10, so the provider-level constant is right
+today and wrong in shape; it needs a per-model override the moment one of those
+models is priced. Explicit Gemini caches also carry a per-hour storage charge that
+nothing models — it does not apply to the implicit caching this detector
+recommends, but it would if an explicit-cache lever were ever added.
 
 ## 8. Connector-only complement (Tier A, no SDK)
 

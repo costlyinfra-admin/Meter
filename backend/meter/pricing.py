@@ -132,10 +132,42 @@ _DOWNGRADE_TARGET: dict[str, str] = {
 # prompt caching we can price; others are left out so the measured optimizer never
 # claims a caching saving we can't stand behind (drift shows up as a recon gap).
 CACHE_READ_MULT: dict[str, Decimal] = {
-    "anthropic": Decimal("0.10"),  # cache reads ~10% of input
-    "openai": Decimal("0.50"),  # cached input ~50% of input
-    "google": Decimal("0.25"),  # context cache ~25% of input
+    "anthropic": Decimal("0.10"),  # cache reads 10% of input
+    "openai": Decimal("0.50"),  # gpt-4o-era cached input: 50% of input
+    # Checked against the published table rather than recalled: gemini-2.5-flash
+    # is $0.30 in and $0.03 cached, 2.5-pro $1.25 and $0.125. Both are a tenth,
+    # not the quarter this said, which understated every Google caching finding.
+    "google": Decimal("0.10"),
 }
+
+# The smallest prefix a provider will cache AT ALL, per model. Below it there is
+# no cache to read from, so a finding is not a conservative estimate — it is an
+# instruction that cannot be carried out.
+#
+# Meter's own _MIN_PREFIX_TOKENS is a "worth the trouble" floor and was doing
+# duty as both. It is 1,000, under every real minimum here, and Haiku's is four
+# times it: a 1,200-token Haiku prefix was being offered as a saving when the
+# provider would not have cached a byte of it.
+#
+# A model absent from this table has no published minimum we have checked, so
+# the detector falls back to its own floor rather than inventing one.
+MIN_CACHEABLE_TOKENS: dict[str, int] = {
+    "claude-opus-4-8": 1024,
+    "claude-sonnet-4-6": 1024,
+    "claude-haiku-4-5": 4096,  # the small models need a BIGGER prefix, not a smaller one
+    # OpenAI's pre-5.6 family varies with tools and images; 1,024 is the
+    # documented floor and the safe reading of it.
+    "gpt-4o": 1024,
+    "gpt-4o-mini": 1024,
+    "gemini-2.5-pro": 2048,
+    "gemini-2.5-flash": 2048,
+}
+
+# How a customer turns caching on, which is not the same question everywhere.
+# Anthropic caches what you mark; OpenAI and Gemini 2.5+ cache automatically,
+# so a prefix going uncached there is a prompt-shape problem and "set
+# cache_control" is advice for a different API.
+CACHE_IS_AUTOMATIC = {"openai", "google"}
 # Reserved for the later batch-eligibility detector (opt spec §12): async/
 # non-latency-sensitive calls run ~50% cheaper on batch APIs.
 BATCH_MULT = Decimal("0.50")
@@ -151,6 +183,16 @@ CACHE_WRITE_MULT: dict[str, Decimal] = {
 CACHE_WRITE_1H_MULT: dict[str, Decimal] = {
     "anthropic": Decimal("2.0"),  # 1-hour TTL
 }
+
+
+def min_cacheable_tokens(model: str, provider: Optional[str] = None) -> Optional[int]:
+    """Smallest prefix `model` will cache, or None when we have not checked."""
+    return MIN_CACHEABLE_TOKENS.get(model)
+
+
+def cache_is_automatic(provider: Optional[str]) -> bool:
+    """True where the provider caches without being asked."""
+    return provider in CACHE_IS_AUTOMATIC
 
 
 def cache_read_mult(provider: Optional[str]) -> Optional[Decimal]:

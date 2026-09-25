@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 from meter import pricing
 
 
@@ -92,3 +93,47 @@ def test_open_source_model_without_provider_is_unknown():
     # The bare model name (no host) has no canonical price -> 0, not a guess.
     assert pricing.price("meta-llama-3.1-70b-instruct", 1_000_000, 0) == Decimal("0")
     assert not pricing.is_priced("meta-llama-3.1-70b-instruct")
+
+
+# ---------------------------------------------------------------------------
+# The cache model, checked against published rates rather than recalled
+# ---------------------------------------------------------------------------
+#: (provider, model, input $/M, cached-read $/M) as the providers publish them.
+#: The multiplier is a RATIO, so it belongs next to the two prices it comes
+#: from — "google is about a quarter" was wrong for two years and nothing said so.
+_PUBLISHED_CACHE_RATES = [
+    ("anthropic", "claude-sonnet-4-6", "3", "0.30"),
+    ("google", "gemini-2.5-flash", "0.30", "0.03"),
+    ("google", "gemini-2.5-pro", "1.25", "0.125"),
+]
+
+
+@pytest.mark.parametrize("provider, model, rate_in, cached", _PUBLISHED_CACHE_RATES)
+def test_the_cache_read_multiplier_is_the_published_ratio(provider, model, rate_in, cached):
+    assert pricing.cache_read_mult(provider) == Decimal(cached) / Decimal(rate_in)
+
+
+def test_a_small_model_needs_a_bigger_prefix_before_it_is_cached_at_all():
+    # The intuition runs the wrong way, which is why this is pinned: Haiku's
+    # minimum is four times Sonnet's, and four times Meter's own floor.
+    assert pricing.min_cacheable_tokens("claude-haiku-4-5") == 4096
+    assert pricing.min_cacheable_tokens("claude-sonnet-4-6") == 1024
+    assert pricing.min_cacheable_tokens("gemini-2.5-pro") == 2048
+    # An unchecked model reports no minimum rather than a guessed one.
+    assert pricing.min_cacheable_tokens("mistral-large-latest") is None
+
+
+def test_which_providers_cache_without_being_asked():
+    # Anthropic caches what you mark; the other two cache by themselves. The
+    # fix a finding recommends depends entirely on which of those it is.
+    assert pricing.cache_is_automatic("openai")
+    assert pricing.cache_is_automatic("google")
+    assert not pricing.cache_is_automatic("anthropic")
+
+
+def test_a_cache_write_costs_more_than_not_caching():
+    # 5-minute and 1-hour entries price differently, and a provider with no
+    # separate write charge bills it as ordinary input.
+    assert pricing.cache_write_mult("anthropic") == Decimal("1.25")
+    assert pricing.cache_write_mult("anthropic", "1h") == Decimal("2.0")
+    assert pricing.cache_write_mult("openai") == Decimal("1")

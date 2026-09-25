@@ -992,3 +992,74 @@ def test_a_feature_with_no_recorded_spend_is_not_capped_to_nothing(tenant_id):
     )
     assert prefix["projected_monthly_savings"] == 10.52
     assert prefix["savings_type"] == "measured"
+
+
+def test_a_prefix_the_provider_will_not_cache_is_not_offered(tenant_id):
+    """Haiku needs 4,096 tokens before Anthropic caches anything.
+
+    Meter's own floor is 1,000, which is below every published minimum. A
+    1,200-token Haiku prefix cleared it and was offered as $43/mo of savings —
+    for a change the provider would have ignored.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-haiku", 50_000, 1200, 0, 60_000_000,
+                          measured=True, windows=500, model="claude-haiku-4-5")
+        ],
+    )
+
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    assert "prompt_caching" not in _measured_levers(result)
+
+
+def test_the_same_prefix_is_offered_on_a_model_that_would_cache_it(tenant_id):
+    """The gate is the model's minimum, not the size of the prefix alone."""
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-sonnet", 50_000, 1200, 0, 60_000_000,
+                          measured=True, windows=500, model="claude-sonnet-4-6")
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["projected_monthly_savings"] > 0
+
+
+def test_a_provider_that_caches_unasked_is_told_something_it_can_act_on(tenant_id):
+    """OpenAI and Gemini 2.5+ cache automatically.
+
+    "Set cache_control on the static system block" sends those customers
+    looking for a parameter their API does not have. An uncached prefix there
+    is a prompt-shape problem, and that is what the fix has to say.
+    """
+    report = features.add_feature(tenant_id, "Report generator")
+    event = _prefix_event(report["id"], "fp-oai", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20, model="gpt-4o")
+    event["provider"] = "openai"
+    hook.ingest_events(tenant_id, [event])
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, report["id"], PERIOD), "prompt_caching"
+    )
+    assert "cache_control" not in prefix["fix"]
+    assert "caches automatically" in prefix["fix"]
+
+
+def test_anthropic_is_still_told_to_mark_the_block(tenant_id):
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000,
+                       measured=True, windows=20)],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert "cache_control" in prefix["fix"]
