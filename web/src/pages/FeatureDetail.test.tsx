@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api, type Opportunity } from "../api";
+import { api, type OptimizationAction, type Opportunity } from "../api";
 import { AuthProvider } from "../auth/AuthContext";
 import { FeatureDetail } from "./FeatureDetail";
 
@@ -88,14 +88,7 @@ const OPPORTUNITIES = {
   ],
   totals: { measured: 633.79, modeled_ceiling: 0, directional: 70 },
   cache_utilization: 0.08,
-  actions: [] as {
-    lever: string;
-    applied_on: string;
-    projected_monthly: number;
-    current_avoidable: number;
-    realized_monthly: number | null;
-    status: "pending" | "measured";
-  }[],
+  actions: [] as OptimizationAction[],
 };
 
 const DETAIL = {
@@ -320,18 +313,88 @@ describe("FeatureDetail", () => {
           current_avoidable: 369,
           realized_monthly: 131,
           status: "verified",
-        },
+          unit_cost_before: 0.42,
+          unit_cost_now: 0.31,
+          unit_cost_unit: "call",
+          bill_agrees: true,
+          verification_note: null,
+        } as OptimizationAction,
       ],
     });
     renderDetail();
     expect(await screen.findByText("Applied optimizations")).toBeInTheDocument();
     expect(screen.getByText("$500/mo")).toBeInTheDocument(); // projected
     expect(screen.getByText("$131/mo")).toBeInTheDocument(); // realized
-    // Held for 2 periods -> the terminal Prove state, verified.
+    // Held for 2 periods AND the bill agrees -> the terminal Prove state.
     expect(screen.getByText(/✓ Verified/)).toBeInTheDocument();
+    // The independent half, shown rather than merely consulted: what the
+    // connector says a call cost then, and what it costs now.
+    expect(screen.getByText(/\$0\.42/)).toBeInTheDocument();
+    expect(screen.getByText("$0.31")).toBeInTheDocument();
     // The matching measured card shows an "Applied" chip and an Undo control.
     expect(screen.getByText(/✓ Applied Mar 2026/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  });
+
+  it("says when the bill would not confirm a realized saving", async () => {
+    // Everything the telemetry can show is satisfied — two periods elapsed, a
+    // positive realized figure — and cost per call is unchanged. Fewer calls
+    // at the same price each is not money saved, so this must not read as
+    // verified, and it must say which half was missing.
+    vi.mocked(api.featureOpportunities).mockResolvedValue({
+      ...OPPORTUNITIES,
+      actions: [
+        {
+          lever: "duplicate_calls",
+          applied_on: "2026-03-01",
+          projected_monthly: 500,
+          current_avoidable: 369,
+          realized_monthly: 131,
+          status: "measured",
+          unit_cost_before: 0.42,
+          unit_cost_now: 0.42,
+          unit_cost_unit: "call",
+          bill_agrees: false,
+          verification_note:
+            "Not verified against the bill: the feature's cost per unit of work did not fall.",
+        } as OptimizationAction,
+      ],
+    });
+    renderDetail();
+    expect(await screen.findByText("Applied optimizations")).toBeInTheDocument();
+    expect(screen.queryByText(/✓ Verified/)).not.toBeInTheDocument();
+    expect(screen.getByText(/not confirmed by the bill/)).toHaveAttribute(
+      "title",
+      expect.stringContaining("cost per unit of work did not fall"),
+    );
+  });
+
+  it("shows a dash where there is no bill to compare against", async () => {
+    vi.mocked(api.featureOpportunities).mockResolvedValue({
+      ...OPPORTUNITIES,
+      actions: [
+        {
+          lever: "duplicate_calls",
+          applied_on: "2026-03-01",
+          projected_monthly: 500,
+          current_avoidable: 369,
+          realized_monthly: 131,
+          status: "measured",
+          unit_cost_before: null,
+          unit_cost_now: null,
+          unit_cost_unit: null,
+          bill_agrees: null,
+          verification_note:
+            "Not verified against the bill: no billed cost to compare in one of the two periods.",
+        } as OptimizationAction,
+      ],
+    });
+    renderDetail();
+    expect(await screen.findByText("Applied optimizations")).toBeInTheDocument();
+    // A dash, not a zero: nothing was measured, which is not a cost of nothing.
+    const row = document.querySelector(".opt-applied tbody tr") as HTMLElement;
+    expect(row.querySelectorAll("td")[4]?.textContent).toBe("—");
+    expect(screen.queryByText(/✓ Verified/)).not.toBeInTheDocument();
   });
 
   it("marks a directional estimate superseded by a measured finding", async () => {

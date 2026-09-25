@@ -491,13 +491,37 @@ function MeasuredRow({
   );
 }
 
+/** What the connector says a unit of work cost, then and now.
+ *
+ *  The realized figure beside it is derived from the same signals that produced
+ *  the projection, so on its own it cannot tell a fix from a quiet month. This
+ *  column is the independent half: fewer calls at the same price each is not a
+ *  saving, and only this number can say which happened. */
+function UnitCost({ action }: { action: OptimizationAction }) {
+  const { unit_cost_before: before, unit_cost_now: now, unit_cost_unit: unit } = action;
+  if (before === null || now === null || unit === null) {
+    return (
+      <span className="muted" title={action.verification_note ?? "No billed cost to compare."}>
+        —
+      </span>
+    );
+  }
+  return (
+    <span title={`Per ${unit}, from your provider's own billing data`}>
+      {money(before)} → <strong>{money(now)}</strong>
+      <span className="section-sub muted"> /{unit === "call" ? "call" : "1M in"}</span>
+    </span>
+  );
+}
+
 function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
   if (actions.length === 0) return null;
   return (
     <div className="opt-applied">
       <h4 className="opt-applied-title">Applied optimizations</h4>
       <span className="section-sub muted">
-        Projected savings frozen at apply time, reconciled against the measured drop since.
+        Projected savings frozen at apply time, reconciled against the measured drop since —
+        and confirmed only where the bill agrees that a unit of work got cheaper.
       </span>
       <table className="mini-table">
         <thead>
@@ -506,6 +530,7 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
             <th>Applied</th>
             <th className="num">Projected</th>
             <th className="num">Realized</th>
+            <th className="num">Cost per unit</th>
           </tr>
         </thead>
         <tbody>
@@ -529,8 +554,20 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
                         can&apos;t verify
                       </span>
                     )}
+                    {a.verification_note && (
+                      // Everything the telemetry can show is satisfied and this
+                      // still did not advance. Saying which half the invoice
+                      // would not confirm is the difference between a cautious
+                      // number and an unexplained one.
+                      <span className="muted opt-unconfirmed" title={a.verification_note}>
+                        not confirmed by the bill
+                      </span>
+                    )}
                   </>
                 )}
+              </td>
+              <td className="num">
+                <UnitCost action={a} />
               </td>
             </tr>
           ))}

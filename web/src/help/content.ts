@@ -928,11 +928,17 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "When you act on a measured finding, mark it applied. Meter then tracks it through three states:",
           ),
           steps(
-            "**Projected** — what the finding estimated before you changed anything.",
-            "**Realized** — the change measured against the following period's actual spend.",
-            "**Verified** — the reduction held across more than one period, so it was not a quiet month.",
+            "**Projected** — what the finding estimated before you changed anything. Frozen at the moment you marked it applied, so later months cannot quietly rewrite it.",
+            "**Realized** — the projection minus whatever this lever can still find. It says the opportunity shrank. On its own it cannot say why.",
+            "**Verified** — the reduction held for more than one period **and** your provider's own billing shows a unit of this feature's work got cheaper.",
           ),
           p(
+            "That last condition is the one doing the work. Realized savings are computed from the same telemetry that produced the projection, so a feature whose traffic simply fell has a smaller opportunity and looks like a success. Fewer calls at the same price each is not money saved.",
+          ),
+          p(
+            "So Meter asks your billing data a separate question: what did one call cost then, and what does it cost now? Both figures are shown next to the realized number. Where they cannot be compared — no billed cost in one of the two months, or the two measured differently — the change stays at **Realized** and says which half was missing, rather than being promoted on the strength of the half that checked out.",
+          ),
+          note(
             "This is the part most cost tools skip. An estimate that is never checked against the invoice is a guess with a dollar sign on it.",
           ),
         ],

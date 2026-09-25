@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
 from meter import features, hook, optimize_measured
 from meter.db import app_dsn, connect, tenant_tx
 
@@ -304,7 +305,91 @@ def test_applied_action_shows_projected_vs_realized(tenant_id):
 
 def test_realized_saving_verifies_after_two_periods(tenant_id):
     # opt spec §20: applied in April, viewed in June (2 periods later) with a
-    # positive realized drop -> the action and its opportunity are VERIFIED.
+    # positive realized drop AND a bill that agrees -> VERIFIED.
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_dup_event(triage["id"], "fp-a", 1_000_000), _dup_event(triage["id"], "fp-a", 1_000_000)],
+    )  # June: 2 calls, $6 billed -> $3 a call
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        # April: 10 calls for $60 -> $6 a call. Work got cheaper per unit, which
+        # is the part the signals cannot tell you and the invoice can.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, request_count,
+                                        source, confidence)
+            VALUES (%s, %s, 'anthropic', 'claude-sonnet-4-6', 60.00, %s,
+                    20000000, 0, 10, 'cost_api', 'high')
+            """,
+            (tenant_id, triage["id"], dt.date(2026, 4, 1)),
+        )
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "duplicate_calls", 100.0, dt.date(2026, 4, 1)
+    )
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)  # June
+    action = next(a for a in result["actions"] if a["lever"] == "duplicate_calls")
+    assert action["status"] == "verified"  # 2 periods, realized > 0, bill agrees
+    assert action["realized_monthly"] == 94.0
+    assert action["bill_agrees"] is True
+    assert (action["unit_cost_before"], action["unit_cost_now"]) == (6.0, 3.0)
+    assert action["unit_cost_unit"] == "call"
+    assert action["verification_note"] is None
+    # The opportunity's lifecycle status reflects the verified action.
+    assert _opp(result, "duplicate_calls")["status"] == "verified"
+
+
+def test_traffic_falling_for_its_own_reasons_is_not_a_verified_saving(tenant_id):
+    """The failure this gate exists for.
+
+    `realized` is a projection minus a projection — both sides come from the
+    same signals, neither has touched an invoice. A feature whose traffic
+    halves for reasons that have nothing to do with the fix has a smaller
+    avoidable spend, and that read as a realized saving that turned VERIFIED
+    two periods later. Cost per call is unchanged here: fewer calls at the same
+    price each is not money saved.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_dup_event(triage["id"], "fp-a", 1_000_000), _dup_event(triage["id"], "fp-a", 1_000_000)],
+    )  # June: 2 calls, $6 -> $3 a call
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        # April: 20 calls for $60 -> $3 a call. Twice the traffic, same price.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, request_count,
+                                        source, confidence)
+            VALUES (%s, %s, 'anthropic', 'claude-sonnet-4-6', 60.00, %s,
+                    20000000, 0, 20, 'cost_api', 'high')
+            """,
+            (tenant_id, triage["id"], dt.date(2026, 4, 1)),
+        )
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "duplicate_calls", 100.0, dt.date(2026, 4, 1)
+    )
+    action = next(
+        a
+        for a in optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)["actions"]
+        if a["lever"] == "duplicate_calls"
+    )
+    # Everything the signals can show is satisfied — two periods, a positive
+    # realized figure — and it still does not advance.
+    assert action["realized_monthly"] == 94.0
+    assert action["status"] == "measured"
+    assert action["bill_agrees"] is False
+    assert "cost per unit of work did not fall" in action["verification_note"]
+
+
+def test_a_saving_with_no_bill_to_check_it_against_is_not_verified(tenant_id):
+    """No billed cost in the applied period.
+
+    The signals still say the avoidable spend fell, and that is still worth
+    showing — but "verified" is the terminal Prove state, and promoting an
+    action on the strength of the only half that could be checked is how a
+    number nobody can audit ends up in front of a CFO.
+    """
     triage = features.add_feature(tenant_id, "AI threat triage")
     hook.ingest_events(
         tenant_id,
@@ -313,12 +398,97 @@ def test_realized_saving_verifies_after_two_periods(tenant_id):
     optimize_measured.mark_applied(
         tenant_id, triage["id"], "duplicate_calls", 100.0, dt.date(2026, 4, 1)
     )
-    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)  # June
-    action = next(a for a in result["actions"] if a["lever"] == "duplicate_calls")
-    assert action["status"] == "verified"  # 2 periods elapsed, realized > 0
-    assert action["realized_monthly"] == 94.0
-    # The opportunity's lifecycle status reflects the verified action.
-    assert _opp(result, "duplicate_calls")["status"] == "verified"
+    action = next(
+        a
+        for a in optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)["actions"]
+        if a["lever"] == "duplicate_calls"
+    )
+    assert action["status"] == "measured"
+    assert action["bill_agrees"] is None  # the question could not be asked
+    assert "no billed cost to compare" in action["verification_note"]
+
+
+def test_cost_per_unit_falls_back_to_tokens_when_calls_are_not_reported(tenant_id):
+    """Connector rows often carry no request count. Tokens are the next unit.
+
+    A prefix summary is a flushed client-side count that is never re-costed, so
+    this feature's only billed rows are the connector's — which is the shape
+    almost every real tenant is in.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, windows=20)],
+    )
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        for period, amount in ((dt.date(2026, 4, 1), 60.00), (PERIOD, 10.00)):
+            # 10M input tokens both months: $6 per 1M, then $1 per 1M.
+            conn.execute(
+                """
+                INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                            period, tokens_in, tokens_out, source, confidence)
+                VALUES (%s, %s, 'openai', 'gpt-4o', %s, %s, 10000000, 0, 'cost_api', 'high')
+                """,
+                (tenant_id, triage["id"], amount, period),
+            )
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "prompt_caching", 100.0, dt.date(2026, 4, 1)
+    )
+    action = next(
+        a
+        for a in optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)["actions"]
+        if a["lever"] == "prompt_caching"
+    )
+    assert action["unit_cost_unit"] == "1M input tokens"
+    assert (action["unit_cost_before"], action["unit_cost_now"]) == (6.0, 1.0)
+    assert action["status"] == "verified"
+
+
+def test_two_periods_measured_in_different_units_are_not_compared(tenant_id):
+    """Cost per call and cost per million tokens are not the same number.
+
+    A connector that starts reporting request counts mid-year would otherwise
+    look like a collapse in unit cost, and verify everything outstanding.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, windows=20)],
+    )
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, source, confidence)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 60.00, %s, 10000000, 0, 'cost_api', 'high')
+            """,
+            (tenant_id, triage["id"], dt.date(2026, 4, 1)),
+        )
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, request_count,
+                                        source, confidence)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 10.00, %s, 10000000, 0, 500,
+                    'cost_api', 'high')
+            """,
+            (tenant_id, triage["id"], PERIOD),
+        )
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "prompt_caching", 100.0, dt.date(2026, 4, 1)
+    )
+    action = next(
+        a
+        for a in optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)["actions"]
+        if a["lever"] == "prompt_caching"
+    )
+    # Two periods elapsed and a positive realized figure — everything the
+    # signals can show — and it still does not advance.
+    assert action["realized_monthly"] > 0
+    assert action["status"] == "measured"
+    assert action["bill_agrees"] is None
+    assert action["unit_cost_unit"] is None
+    assert "different units" in action["verification_note"]
 
 
 def test_applied_this_period_is_pending_until_next(tenant_id):
@@ -1063,3 +1233,208 @@ def test_anthropic_is_still_told_to_mark_the_block(tenant_id):
         optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
     )
     assert "cache_control" in prefix["fix"]
+
+
+def test_the_bill_check_reads_spend_the_way_the_rest_of_the_product_does(tenant_id):
+    """The gate is only as good as the spend figure behind it.
+
+    Two ways to get that wrong, both of which make a real saving look like a
+    rise in unit cost and quietly withhold a verification the customer earned:
+    counting a provider's connector rows and its SDK rows as separate money,
+    and counting spend the customer marked ignore.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, windows=20)],
+    )
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        # April: $60 over 10M tokens -> $6 per million.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, source, confidence)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 60.00, %s, 10000000, 0, 'cost_api', 'high')
+            """,
+            (tenant_id, triage["id"], dt.date(2026, 4, 1)),
+        )
+        # June: $10 over 10M tokens -> $1 per million. Work got cheaper.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, source, confidence)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 10.00, %s, 10000000, 0, 'cost_api', 'high')
+            """,
+            (tenant_id, triage["id"], PERIOD),
+        )
+        # The SDK's description of those same June calls. It carries a request
+        # count the connector does not, so counting it would switch June to
+        # cost-per-CALL and leave the two periods incomparable.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, request_count,
+                                        source, confidence)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 10.00, %s, 10000000, 0, 500,
+                    'hook', 'high')
+            """,
+            (tenant_id, triage["id"], PERIOD),
+        )
+        # ...and spend excluded from every other total in the product, which
+        # would otherwise read as June costing nine times what April did.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, source, confidence,
+                                        environment)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 900.00, %s, 1000, 0, 'cost_api', 'high',
+                    'ignore')
+            """,
+            (tenant_id, triage["id"], PERIOD),
+        )
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "prompt_caching", 100.0, dt.date(2026, 4, 1)
+    )
+    action = next(
+        a
+        for a in optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)["actions"]
+        if a["lever"] == "prompt_caching"
+    )
+    assert action["unit_cost_unit"] == "1M input tokens"
+    assert (action["unit_cost_before"], action["unit_cost_now"]) == (6.0, 1.0)
+    assert action["status"] == "verified"
+
+
+# ---------------------------------------------------------------------------
+# The directional tier splits dollars, not token counts
+# ---------------------------------------------------------------------------
+
+
+def _directional(result, title):
+    return next(
+        (o for o in result["opportunities"] if o["title"] == title and o["source"] == "heuristic"),
+        None,
+    )
+
+
+def test_the_directional_split_prices_tokens_rather_than_counting_them(tenant_id):
+    """An input token and an output token do not cost the same.
+
+    gpt-4o is $2.50 in and $10 out. A month with equal token counts is 20%
+    input cost — splitting the bill by COUNT called it 50%, so the caching and
+    context estimates were inflated two and a half times and the output-token
+    estimate was understated. The two biggest levers move in opposite
+    directions, so the error did not cancel out either.
+    """
+    report = features.add_feature(tenant_id, "Report generator")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        # 10M in + 10M out on gpt-4o = $25.00 + $100.00 = $125.00 billed.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, request_count,
+                                        source, confidence)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 125.00, %s, 10000000, 10000000, 1000,
+                    'cost_api', 'high')
+            """,
+            (tenant_id, report["id"], PERIOD),
+        )
+
+    result = optimize_measured.opportunities(tenant_id, report["id"], PERIOD)
+    # Priced: input is $25 of the $125, output $100.
+    assert _directional(result, "Output token reduction")["projected_monthly_savings"] == 8.0
+    assert _directional(result, "Context reduction")["projected_monthly_savings"] == 1.25
+    # Counted, the old way, input would have been $62.50 — so output reduction
+    # would have read $5.00, context $3.13, and prompt caching would have fired
+    # at all, because its gate is a 50% input SHARE it only reached by counting.
+    assert _directional(result, "Prompt caching") is None
+
+
+def test_an_input_heavy_month_is_still_recognised_as_input_heavy(tenant_id):
+    """The correction must not simply suppress the input levers."""
+    report = features.add_feature(tenant_id, "Report generator")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        # 10M in, 100k out on gpt-4o = $25.00 + $1.00 = $26.00.
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, request_count,
+                                        source, confidence)
+            VALUES (%s, %s, 'openai', 'gpt-4o', 26.00, %s, 10000000, 100000, 5000,
+                    'cost_api', 'high')
+            """,
+            (tenant_id, report["id"], PERIOD),
+        )
+
+    result = optimize_measured.opportunities(tenant_id, report["id"], PERIOD)
+    caching = _directional(result, "Prompt caching")
+    # $25 of $26 is input, so this clears the 70% bar for high confidence.
+    assert caching is not None and caching["confidence"] == "high"
+    assert caching["projected_monthly_savings"] == 3.0  # 12% of $25.00
+
+
+@pytest.mark.parametrize(
+    "model, tokens_in, tokens_out, why",
+    [
+        # A connector row that reports dollars but no token counts.
+        ("gpt-4o", 0, 0, "no counts to price"),
+        # A model the price book does not know: real counts, no rates, so the
+        # split cannot be computed from them either.
+        ("some-unreleased-model", 10_000_000, 10_000_000, "no rates to price with"),
+    ],
+)
+def test_a_split_that_cannot_be_priced_keeps_the_stated_fallback(
+    tenant_id, model, tokens_in, tokens_out, why
+):
+    """70/30 is the documented guess, and it stays a guess.
+
+    It must not become a division by zero, and it must not become a silent
+    50/50 from counting tokens nobody can put a price on.
+    """
+    report = features.add_feature(tenant_id, "Report generator")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                        period, tokens_in, tokens_out, request_count,
+                                        source, confidence)
+            VALUES (%s, %s, 'openai', %s, 100.00, %s, %s, %s, 1000, 'cost_api', 'high')
+            """,
+            (tenant_id, report["id"], model, PERIOD, tokens_in, tokens_out),
+        )
+
+    result = optimize_measured.opportunities(tenant_id, report["id"], PERIOD)
+    caching = _directional(result, "Prompt caching")
+    assert caching is not None, why
+    assert caching["projected_monthly_savings"] == 8.4  # 12% of 70% of $100
+
+
+def test_each_model_is_split_at_its_own_rates(tenant_id):
+    """One feature, two models with opposite cost shapes.
+
+    A single feature-wide ratio would average them into a number that
+    describes neither.
+    """
+    report = features.add_feature(tenant_id, "Report generator")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        for provider, model, amount, tin, tout in (
+            # gpt-4o-mini: $0.15 in / $0.60 out. 10M in, 1M out = $1.50 + $0.60.
+            ("openai", "gpt-4o-mini", 2.10, 10_000_000, 1_000_000),
+            # claude-opus-4-8: $5 in / $25 out. 1M in, 10M out = $5 + $250.
+            ("anthropic", "claude-opus-4-8", 255.00, 1_000_000, 10_000_000),
+        ):
+            conn.execute(
+                """
+                INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                            period, tokens_in, tokens_out, request_count,
+                                            source, confidence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 500, 'cost_api', 'high')
+                """,
+                (tenant_id, report["id"], provider, model, amount, PERIOD, tin, tout),
+            )
+
+    result = optimize_measured.opportunities(tenant_id, report["id"], PERIOD)
+    # Input cost is $1.50 of the mini row and $5.00 of the opus row = $6.50 of
+    # $257.10. Output is $250.60, so output reduction is 8% of that.
+    out = _directional(result, "Output token reduction")
+    assert out is not None and out["projected_monthly_savings"] == 20.05

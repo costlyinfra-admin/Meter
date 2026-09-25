@@ -1092,6 +1092,21 @@ export interface OptimizationAction {
    *  arriving, so there is nothing to compare the projection with. Absence of
    *  evidence is reported as absence, never as a realized saving. */
   status: "pending" | "measured" | "verified" | "unverifiable";
+  /** What a unit of this feature's work cost, on the connector's own numbers,
+   *  in the month the fix was applied and in this one. This is the BILL —
+   *  `realized_monthly` is a projection minus a projection, and neither side
+   *  of it has ever touched an invoice. */
+  unit_cost_before: number | null;
+  unit_cost_now: number | null;
+  /** "call" or "1M input tokens", and null when the two months were not
+   *  measured the same way and so cannot be compared at all. */
+  unit_cost_unit: string | null;
+  /** true when unit cost fell, false when it did not, null when the question
+   *  could not be asked. Verification requires true. */
+  bill_agrees: boolean | null;
+  /** Set when everything the signals can show is satisfied and the bill still
+   *  would not confirm it. Says which part was missing. */
+  verification_note: string | null;
 }
 
 export interface FeatureOpportunities {

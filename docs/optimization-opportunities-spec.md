@@ -731,6 +731,37 @@ realized (already built) → **verified** (a new terminal status once realized s
 hold for N periods within tolerance). *Accept:* an applied opportunity advances
 `detected → applied → verified`, and verified savings roll up in the Overview (§21).
 
+> **Amended: verified now requires the bill to agree.**
+>
+> `realized = frozen projection − the lever's current avoidable spend` is a
+> projection minus a projection. Both sides come from the same signals and
+> neither has ever touched an invoice, so the figure cannot tell a fix from a
+> quiet month: a feature whose traffic halves for reasons unrelated to the
+> change has a smaller avoidable spend, and that read as a realized saving that
+> turned **verified** — the terminal Prove state — two periods later.
+>
+> Verification now asks the connector's own numbers a separate question: did a
+> unit of this feature's work get cheaper between the month the fix was applied
+> and this one? Cost per call where the provider reports a request count, else
+> cost per million input tokens, on the reconciled basis (one dollar counted
+> once, nothing marked `ignore`). Fewer calls at the same price each is not
+> money saved, and invariant 5 says the cost API decides.
+>
+> ```
+> verified  ⟺  elapsed ≥ _VERIFY_PERIODS
+>              ∧ realized > 0
+>              ∧ observable[lever]          # the telemetry is still arriving
+>              ∧ unit_cost(now) < unit_cost(applied_on)
+> ```
+>
+> Where the last clause cannot be evaluated — no billed cost in one of the two
+> periods, or the two measured in different units — the action stays `measured`
+> and carries a `verification_note` naming the missing half, rather than being
+> promoted on the strength of the part that could be checked. Both unit costs
+> are returned (`unit_cost_before`, `unit_cost_now`, `unit_cost_unit`,
+> `bill_agrees`) and shown in the Applied-optimizations table, because a Prove
+> state nobody can audit is the thing this product exists not to ship.
+
 ## 21. Copilot Overview (M-opt-12) ✅ Done
 
 Shipped. `optimize_measured.copilot_overview()` aggregates the per-feature

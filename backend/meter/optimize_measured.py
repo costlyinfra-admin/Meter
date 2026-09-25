@@ -792,6 +792,57 @@ def _months_between(a: dt.date, b: dt.date) -> int:
 _VERIFY_PERIODS = 2
 
 
+def _unit_cost(conn, feature_id: str, period: dt.date) -> Optional[tuple[float, str]]:
+    """What a unit of this feature's work cost in one period, and what the unit is.
+
+    Cost per call where the provider reports a request count, else cost per
+    1,000 input tokens. None when neither is available, which is a real answer:
+    without it there is nothing to compare a claimed saving against.
+
+    Read on the reconciled basis, so this is the BILL — the connector's number
+    where there is one — not a figure derived from the same signals that
+    produced the projection.
+    """
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(amount), 0),
+               COALESCE(SUM(request_count), 0),
+               COALESCE(SUM(tokens_in), 0)
+        FROM inference_cost
+        WHERE feature_id = %s AND period = %s
+          AND {dashboard._ACTIVE_ENV} {dashboard._NOT_DOUBLE_COUNTED}
+        """,  # noqa: S608
+        (feature_id, period, dashboard._connector_providers(conn, period)),
+    ).fetchone()
+    if not row:
+        return None
+    amount, calls, tokens_in = float(row[0]), int(row[1]), int(row[2])
+    if amount <= 0:
+        return None
+    if calls > 0:
+        return round(amount / calls, 6), "call"
+    if tokens_in > 0:
+        # Per MILLION, the unit every provider quotes and the price book uses.
+        return round(amount / tokens_in * 1_000_000, 6), "1M input tokens"
+    return None
+
+
+def _corroborated(before, after) -> tuple[Optional[bool], Optional[str]]:
+    """Did the bill move the way a realized saving says it did?
+
+    Returns (verdict, why-not). None means the question could not be asked at
+    all, which is not the same as a no.
+    """
+    if before is None or after is None:
+        return None, "no billed cost to compare in one of the two periods"
+    if before[1] != after[1]:
+        # Cost per call and cost per 1,000 tokens are not the same measurement.
+        return None, "the two periods are measured in different units"
+    if after[0] < before[0]:
+        return True, None
+    return False, "the feature's cost per unit of work did not fall"
+
+
 def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict) -> list:
     """Applied optimizations, reconciled projected → realized → verified (opt spec §20).
 
@@ -807,6 +858,18 @@ def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict)
     and, after two periods, "verified". Meter would be reporting a success it
     had simply stopped being able to look for. A lever with no input this period
     reconciles to nothing and says so.
+
+    VERIFIED additionally requires the bill to agree. `realized` is a projection
+    minus a projection: both sides come from the same signals, and neither has
+    ever touched an invoice. Traffic halving for reasons that have nothing to do
+    with the fix halves the lever's current avoidable spend, and that read as a
+    realized saving which turned "verified" — the terminal Prove state — two
+    periods later. So verification asks the connector's own numbers a separate
+    question: did a unit of this feature's work get cheaper? Fewer calls at the
+    same price each is not a saving, and invariant 5 says the provider's cost
+    API is what decides. Where that question cannot be asked, the action stays
+    `measured` and says which part was missing rather than being promoted on
+    the strength of the half that could be checked.
     """
     rows = conn.execute(
         """
@@ -818,11 +881,19 @@ def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict)
         (feature_id,),
     ).fetchall()
     out = []
+    # The bill, once per period rather than once per action.
+    now_cost = _unit_cost(conn, feature_id, start)
+    before_cache: dict[dt.date, Optional[tuple[float, str]]] = {}
     for lever, applied_on, projected in rows:
         projected = round(float(projected), 2)
         current = round(float(measured_by_lever.get(lever, 0.0)), 2)
         elapsed = _months_between(applied_on, start)
         seen = observable.get(lever, True)
+        if applied_on not in before_cache:
+            before_cache[applied_on] = _unit_cost(conn, feature_id, applied_on)
+        before = before_cache[applied_on]
+        agrees, why_not = _corroborated(before, now_cost)
+        note = None
         if elapsed <= 0:
             realized, status = None, "pending"  # applied this period, nothing to reconcile
         elif not seen:
@@ -831,7 +902,15 @@ def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict)
             realized, status = None, "unverifiable"
         else:
             realized = round(projected - current, 2)
-            status = "verified" if elapsed >= _VERIFY_PERIODS and realized > 0 else "measured"
+            status = "measured"
+            if elapsed >= _VERIFY_PERIODS and realized > 0:
+                if agrees:
+                    status = "verified"
+                else:
+                    # Everything the signals can show is satisfied. Say what
+                    # the bill would not confirm, rather than leaving the
+                    # reader to wonder why this one never advanced.
+                    note = f"Not verified against the bill: {why_not}."
         out.append(
             {
                 "lever": lever,
@@ -840,6 +919,17 @@ def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict)
                 "current_avoidable": current if seen else None,
                 "realized_monthly": realized,
                 "status": status,
+                # The billed side, shown rather than merely consulted: a Prove
+                # state nobody can audit is the thing this product exists not
+                # to ship.
+                "unit_cost_before": before[0] if before else None,
+                "unit_cost_now": now_cost[0] if now_cost else None,
+                # Only where the two are the same measurement. Naming one unit
+                # for a pair that does not share it invites the reader to
+                # compare two numbers that cannot be compared.
+                "unit_cost_unit": before[1] if agrees is not None else None,
+                "bill_agrees": agrees,
+                "verification_note": note,
             }
         )
     return out

@@ -994,29 +994,55 @@ def heuristic_optimization(conn, feature_id: str, start: dt.date) -> dict:
     """
     opt_rows = conn.execute(
         f"""
-        SELECT model,
+        SELECT provider, model,
                SUM(amount),
                SUM(COALESCE(tokens_in, 0)),
                SUM(COALESCE(tokens_out, 0)),
                SUM(COALESCE(request_count, 0))
         FROM inference_cost
         WHERE feature_id = %s AND period = %s {_NOT_DOUBLE_COUNTED}
-        GROUP BY model
+        GROUP BY provider, model
         """,  # noqa: S608
         (feature_id, start, _connector_providers(conn, start)),
     ).fetchall()
 
-    opt_total = sum(float(a) for _m, a, _ti, _to, _r in opt_rows)
-    in_tokens = sum(int(ti) for _m, _a, ti, _to, _r in opt_rows)
-    out_tokens = sum(int(to) for _m, _a, _ti, to, _r in opt_rows)
-    requests = sum(int(r) for _m, _a, _ti, _to, r in opt_rows)
-    # Split spend into input/output by token share (fallback 70/30 when tokens
-    # are unknown, e.g. connector-only rows that don't report token counts).
-    token_sum = in_tokens + out_tokens
-    input_share = (in_tokens / token_sum) if token_sum else 0.7
-    input_cost = opt_total * input_share
-    output_cost = opt_total - input_cost
-    return optimize.estimate(opt_total, input_cost, output_cost, requests)
+    opt_total = 0.0
+    input_cost = 0.0
+    requests = 0
+    for provider, model, amount, tin, tout, count in opt_rows:
+        amount = float(amount)
+        opt_total += amount
+        requests += int(count)
+        input_cost += amount * _input_share(provider, model, int(tin), int(tout))
+    return optimize.estimate(opt_total, input_cost, opt_total - input_cost, requests)
+
+
+#: Where the token split is unknowable — a connector row with no token counts,
+#: or a model with no price — input is the larger half of a typical AI workload.
+_DEFAULT_INPUT_SHARE = 0.7
+
+
+def _input_share(provider: Optional[str], model: Optional[str], tin: int, tout: int) -> float:
+    """What fraction of this row's SPEND was input.
+
+    Priced, not counted. Splitting dollars by token COUNT assumes an input
+    token and an output token cost the same, and they never do: on gpt-4o
+    output is four times input, so a call with equal counts is 20% input cost
+    and was being reported as 50%. Every directional finding derived from that
+    split — prompt caching, context reduction, output reduction — inherited the
+    error, and the two biggest ones move in opposite directions, so it did not
+    even cancel out.
+    """
+    if not model:
+        return _DEFAULT_INPUT_SHARE
+    priced_in = Decimal(tin) * pricing.rate_in(model, provider)
+    priced_out = Decimal(tout) * pricing.rate_out(model, provider)
+    total = priced_in + priced_out
+    # Zero covers both cases that cannot be priced and needs no separate test
+    # for each: a row with no token counts, and a model with no rate.
+    if total <= 0:
+        return _DEFAULT_INPUT_SHARE
+    return float(priced_in / total)
 
 
 def feature_detail(
