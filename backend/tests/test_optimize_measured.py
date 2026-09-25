@@ -34,23 +34,42 @@ def _dup_event(feature_id, fingerprint, tokens_in, version="v2", scope="explicit
 
 
 def _prefix_event(
-    feature_id, fingerprint, count, prefix_tokens, cached_count, tokens_in, measured=False
+    feature_id,
+    fingerprint,
+    count,
+    prefix_tokens,
+    cached_count,
+    tokens_in,
+    measured=False,
+    write_calls=0,
+    windows=0,
+    model="claude-sonnet-4-6",
 ):
+    """A flushed prefix summary as the current SDK sends one.
+
+    `windows` is how many cache writes enabling caching would take. Pass None
+    for a summary from an SDK too old to count them — the write side then
+    cannot be priced and the finding is a ceiling, not a saving.
+    """
+    signal = {
+        "kind": "prefix",
+        "fingerprint": fingerprint,
+        "count": count,
+        "prefix_tokens": prefix_tokens,
+        "cached_count": cached_count,
+        "tokens_in": tokens_in,
+        "tokens_out": 0,
+        "prefix_measured": measured,
+        "write_calls": write_calls,
+    }
+    if windows is not None:
+        signal["cache_windows"] = windows
     return {
         "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": model,
         "feature_id": feature_id,
         "occurred_at": "2026-06-16T10:00:00Z",
-        "signal": {
-            "kind": "prefix",
-            "fingerprint": fingerprint,
-            "count": count,
-            "prefix_tokens": prefix_tokens,
-            "cached_count": cached_count,
-            "tokens_in": tokens_in,
-            "tokens_out": 0,
-            "prefix_measured": measured,
-        },
+        "signal": signal,
     }
 
 
@@ -105,19 +124,23 @@ def test_duplicate_savings_match_the_price_book(tenant_id):
 
 def test_prefix_caching_savings_match_the_price_book(tenant_id):
     triage = features.add_feature(tenant_id, "AI threat triage")
-    # A 4,000-token static prefix across 1,000 uncached calls.
+    # A 4,000-token static prefix across 1,000 uncached calls in 20 TTL windows.
     hook.ingest_events(
         tenant_id,
-        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000)],
+        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, windows=20)],
     )
 
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
     prefix = _opp(result, "prompt_caching")
 
-    # 1,000 calls * 4,000 tokens * $3/M * (1 - 0.10 cache-read) = $10.80.
-    assert prefix["projected_monthly_savings"] == 10.8
+    # 4,000 tokens * $3/M = $0.012 a call.
+    #   reads:  1,000 * (1 - 0.10)    =  900 call-equivalents saved
+    #   writes:    20 * (1.25 - 0.10) =   23 call-equivalents spent
+    # (900 - 23) * $0.012 = $10.524, to $10.52.
+    assert prefix["projected_monthly_savings"] == 10.52
     assert "4,000-token static prefix" in prefix["evidence"]
     assert "1,000 uncached calls" in prefix["evidence"]
+    assert "net of the 20 cache writes" in prefix["evidence"]
     # The provider reported no prefix size here, so 4,000 is the SDK's
     # characters-over-four estimate. Priced, but not called a measurement.
     assert prefix["confidence"] == "med"
@@ -136,14 +159,19 @@ def test_a_prefix_the_provider_measured_is_reported_as_measured(tenant_id):
     triage = features.add_feature(tenant_id, "AI threat triage")
     hook.ingest_events(
         tenant_id,
-        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, measured=True)],
+        [
+            _prefix_event(
+                triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, measured=True, windows=20
+            )
+        ],
     )
 
     prefix = _opp(
         optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
     )
-    assert prefix["projected_monthly_savings"] == 10.8
+    assert prefix["projected_monthly_savings"] == 10.52
     assert prefix["confidence"] == "high"
+    assert prefix["savings_type"] == "measured"
     assert "measured by the provider" in prefix["evidence"]
     assert prefix["trail"][0]["prefix_measured"] is True
 
@@ -154,8 +182,12 @@ def test_one_estimated_prefix_keeps_the_whole_finding_off_measured(tenant_id):
     hook.ingest_events(
         tenant_id,
         [
-            _prefix_event(triage["id"], "fp-real", 1000, 4000, 0, 4_000_000, measured=True),
-            _prefix_event(triage["id"], "fp-guess", 1000, 4000, 0, 4_000_000, measured=False),
+            _prefix_event(
+                triage["id"], "fp-real", 1000, 4000, 0, 4_000_000, measured=True, windows=20
+            ),
+            _prefix_event(
+                triage["id"], "fp-guess", 1000, 4000, 0, 4_000_000, measured=False, windows=20
+            ),
         ],
     )
 
@@ -183,14 +215,15 @@ def test_combines_measured_and_estimated_tiers(tenant_id):
         [
             _dup_event(triage["id"], "fp-a", 1_000_000),
             _dup_event(triage["id"], "fp-a", 1_000_000),
-            _prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000),
+            _prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20),
         ],
     )
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
 
     # Measured total is prompt caching alone, $10.80. The repeated-request
     # finding is a ceiling, not a measured saving, so it is not in here.
-    assert result["totals"]["measured"] == 10.8
+    assert result["totals"]["measured"] == 10.52
     measured = [o for o in result["opportunities"] if o["savings_type"] == "measured"]
     assert measured[0]["lever"] == "prompt_caching"
 
@@ -390,7 +423,10 @@ def test_measured_finding_supersedes_directional_estimate(tenant_id):
             (tenant_id, triage["id"], PERIOD),
         )
     # ...and a measured prompt-caching finding from the SDK.
-    hook.ingest_events(tenant_id, [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000)])
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000, windows=20)],
+    )
 
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
     measured_pc = _opp(result, "prompt_caching")
@@ -621,3 +657,224 @@ def test_cache_utilization_is_read_from_the_billed_rows_only(tenant_id):
 
     result = optimize_measured.opportunities(tenant_id, report["id"], PERIOD)
     assert result["cache_utilization"] == 0.8  # 800k / 1M
+
+
+# ---------------------------------------------------------------------------
+# Caching costs something (opt spec §7.1)
+# ---------------------------------------------------------------------------
+
+
+def test_sparse_traffic_that_would_only_ever_write_is_not_a_saving(tenant_id):
+    """150 calls a month, one every few hours, is one cache write per call.
+
+    A 5-minute entry is gone before the next call arrives, so caching this
+    prefix means paying 1.25x the input rate every time and never reading it
+    back — a 25% INCREASE. Pricing the read discount alone reported $8.10 of
+    savings for making the bill worse.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-sparse", 150, 20_000, 0, 3_000_000, windows=150)],
+    )
+
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    assert "prompt_caching" not in _measured_levers(result)
+
+
+def test_a_prefix_the_provider_is_already_writing_is_not_an_opportunity(tenant_id):
+    """Caching on, working, and the recommendation was to turn it on.
+
+    Steady traffic on a 5-minute TTL writes the entry back thousands of times a
+    month. Each of those calls reports a cache CREATION and no cache read, so
+    every one of them was counted as an uncached call — and a creation is also
+    the only source of a provider-measured prefix size, so those same calls
+    pushed the finding to HIGH confidence. Meter told customers who had already
+    done this to do it, and was most certain about it for exactly them.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hits, writes = 100_000, 8_640
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(
+                triage["id"], "fp-live", hits + writes, 4000, hits,
+                (hits + writes) * 4000, measured=True, write_calls=writes, windows=writes,
+            )
+        ],
+    )
+
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    assert "prompt_caching" not in _measured_levers(result)
+
+
+def test_an_sdk_that_cannot_count_writes_yields_a_ceiling_not_a_saving(tenant_id):
+    """Rows written before 0062 have no window count.
+
+    The read side is still real, so the finding stands — but half the trade is
+    unpriced, and an unpriced cost side is exactly what turns a saving into an
+    upper bound.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(
+                triage["id"], "fp-old", 1000, 4000, 0, 4_000_000, measured=True, windows=None
+            )
+        ],
+    )
+
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    prefix = _opp(result, "prompt_caching")
+    assert prefix["savings_type"] == "modeled_ceiling"
+    assert prefix["confidence"] == "med"
+    assert prefix["projected_monthly_savings"] == 10.8  # reads only, no write premium
+    assert "too old to count" in prefix["evidence"]
+    # A ceiling never lands in the guaranteed total.
+    assert result["totals"]["measured"] == 0.0
+    assert result["totals"]["modeled_ceiling"] == 10.8
+
+
+def test_the_write_premium_follows_the_provider_price_book(tenant_id):
+    """Only Anthropic charges a separate write premium; the rest bill it as input.
+
+    OpenAI has no cache-write charge, so there is no cost side to net off and
+    the whole read discount stands.
+    """
+    report = features.add_feature(tenant_id, "Report generator")
+    event = _prefix_event(report["id"], "fp-oai", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20, model="gpt-4o")
+    event["provider"] = "openai"
+    hook.ingest_events(tenant_id, [event])
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, report["id"], PERIOD), "prompt_caching"
+    )
+    # OpenAI bills a write as ordinary input, so a write costs no PREMIUM —
+    # but it still forgoes the discount the read would have had:
+    #   (1,000 * (1 - 0.50) - 20 * (1 - 0.50)) * 4,000 * $2.50/M = $4.90.
+    assert prefix["projected_monthly_savings"] == 4.9
+    assert prefix["savings_type"] == "measured"
+
+
+def test_a_prefix_written_as_often_as_it_is_read_is_not_offered(tenant_id):
+    """Windows are counted per process; a provider's cache is account-wide.
+
+    Replicas each open their own window for an entry the account wrote once, so
+    the count can exceed the calls it is meant to explain. Capped at one write
+    per call, that is a prefix rewritten every time it is used — which is what
+    caching costs money for, so there is no finding rather than a big one.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-fanout", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=50_000)
+        ],
+    )
+
+    result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
+    assert "prompt_caching" not in _measured_levers(result)
+
+
+def test_window_counts_from_several_processes_add_up(tenant_id):
+    """Each replica flushes its own summary for the same prefix fingerprint."""
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-p", 500, 4000, 0, 2_000_000,
+                          measured=True, windows=8),
+            _prefix_event(triage["id"], "fp-p", 500, 4000, 0, 2_000_000,
+                          measured=True, windows=12),
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert "net of the 20 cache writes" in prefix["evidence"]
+
+
+def test_one_reporter_without_a_window_count_leaves_the_whole_finding_a_ceiling(tenant_id):
+    """An old SDK on one replica and a current one on another.
+
+    Summing them would price part of the write side and silently drop the
+    rest, which reads as a smaller cost than was incurred. The finding degrades
+    instead — the same rule prefix_measured already follows.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(triage["id"], "fp-new", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20),
+            _prefix_event(triage["id"], "fp-old", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=None),
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["savings_type"] == "modeled_ceiling"
+    assert prefix["confidence"] == "med"
+
+
+def test_calls_already_written_to_cache_are_left_out_of_the_saving(tenant_id):
+    """A partly-cached prefix: reads, writes, and calls doing neither.
+
+    On a 1-hour TTL a live cache is rewritten rarely, so the writes and the
+    genuinely uncached calls are different populations and both are visible.
+    Only the second is an opportunity; counting the writes in it charges the
+    customer's own cache maintenance back to them as a saving.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            _prefix_event(
+                triage["id"], "fp-partial", 100_000, 4000, 90_000, 400_000_000,
+                measured=True, write_calls=1_000, windows=1_000,
+            )
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    # 100,000 - 90,000 read - 1,000 written = 9,000 uncached, at $0.012 a call:
+    #   (9,000 * 0.90 - 1,000 * 1.15) * $0.012 = $83.40.
+    # Counting the 1,000 writes as uncached would offer $94.20.
+    assert prefix["projected_monthly_savings"] == 83.4
+    assert prefix["trail"][0]["already_written"] == 1_000
+
+
+def test_a_prefix_caching_would_cost_money_on_cannot_fund_another_one(tenant_id):
+    """Two prefixes, one worth caching and one not.
+
+    Caching them is two independent decisions: you would enable it on the first
+    and leave the second alone. Letting the loss-maker net off against the
+    winner reports a smaller saving than taking the advice would produce, and
+    hides the fact that one of the two should not be touched.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            # Dense traffic: 1,000 calls, 20 windows. Worth caching.
+            _prefix_event(triage["id"], "fp-good", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20),
+            # Sparse traffic: every call would write and none would read.
+            _prefix_event(triage["id"], "fp-bad", 500, 20_000, 0, 10_000_000,
+                          measured=True, windows=500),
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    assert prefix["projected_monthly_savings"] == 10.52  # the good prefix, undiluted
+    assert [t["fingerprint"] for t in prefix["trail"]] == ["fp-good"]

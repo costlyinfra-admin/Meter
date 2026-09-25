@@ -212,18 +212,49 @@ duplicates are legitimate (idempotent retries, different users asking the same
 thing) — we surface the ceiling and let the user judge.
 
 **Cacheable prompt prefix**
-```
-for each ('prefix') row with call_count C, prefix_tokens P, cached_count K:
-  cacheable_calls   = C − K                       # not already cached
-  if cacheable_calls ≥ threshold (default 100) and P ≥ 1 000:
-    input_rate      = price_in(model, provider)   # $ / token
-    cached_rate     = input_rate × CACHE_READ_MULT # e.g. 0.10 for Anthropic
-    savings        += cacheable_calls × P × (input_rate − cached_rate)
-```
-Evidence: "a P-token static prefix repeated across C calls, currently uncached."
-Confidence **high** when P and C are large.
 
-Both numbers are computed from measured counts × price-book rates. No fixed
+> **Amended.** The original formula below priced the read discount and stopped
+> there, as if the only effect of enabling caching were a discount. Writing a
+> prefix into a provider's cache costs MORE than sending it uncached — a
+> 5-minute Anthropic write is 1.25× the input rate — and only the reads that
+> follow pay that back. With the write side missing, traffic sparse enough that
+> every call would write and none would read was reported as a saving when
+> enabling caching would *raise* the bill. Calls the provider had already
+> written to cache were counted as uncached, so the finding also told customers
+> who had enabled caching to enable it — at `high` confidence, because a cache
+> creation is the only source of a provider-measured prefix size.
+
+```
+for each ('prefix') row with call_count C, prefix_tokens P, cached_count K,
+                          write_calls W_done, cache_windows W (may be NULL):
+  cacheable_calls   = C − K − W_done       # neither read from nor written to cache
+  if cacheable_calls ≥ threshold (default 100) and P ≥ 1 000:
+    input_rate      = price_in(model, provider)      # $ / token
+    read_mult       = CACHE_READ_MULT[provider]      # e.g. 0.10 for Anthropic
+    write_mult      = CACHE_WRITE_MULT[provider]     # e.g. 1.25 for Anthropic
+    saving          = P × input_rate × ( cacheable_calls × (1 − read_mult)
+                                         − W × (write_mult − read_mult) )
+    if saving > 0: savings += saving       # per prefix: caching each is its own call
+```
+
+`W` — how many times the entry would have to be created — is counted by the SDK
+as the number of provider-TTL windows the prefix was called in, because only the
+client sees the call timestamps. The write is priced against the READ it
+replaces, not against an uncached call: the writing call pays `write_mult`
+where it would otherwise have paid `read_mult`.
+
+A per-prefix loss is dropped rather than netted off a profitable one — caching
+each prefix is an independent decision, and you would simply not take the bad one.
+
+Evidence: "a P-token static prefix repeated across C uncached calls, net of the
+W cache writes it would take to serve them."
+
+Confidence and `savings_type` follow the inputs, not the size of the number:
+**measured/high** only when the provider reported the prefix size *and* the SDK
+counted the windows; **modeled_ceiling/med** when either is missing, since an
+unpriced cost side makes the figure an upper bound.
+
+All of it is computed from measured counts × price-book rates. No fixed
 percentages anywhere.
 
 ### 7.1 Pricing additions
@@ -231,8 +262,19 @@ percentages anywhere.
 `pricing.py` gains a small, transparent cache/batch model (versioned like the
 rest): per-provider `CACHE_READ_MULT` (Anthropic ≈ 0.10, OpenAI ≈ 0.50 — list
 values, kept current; drift shows up as a reconciliation gap, never a silent
-wrong number) and a `BATCH_MULT` (≈ 0.50) reserved for the batch-eligibility
-detector in a later tier.
+wrong number), `CACHE_WRITE_MULT` / `CACHE_WRITE_1H_MULT` (Anthropic 1.25 and
+2.0; 1.0 for providers that bill a write as ordinary input), and a `BATCH_MULT`
+(≈ 0.50) reserved for the batch-eligibility detector in a later tier.
+
+**Still missing, and known.** The price book has no model of what a provider can
+actually cache, so the detector's `P ≥ 1 000` is a Meter-invented threshold
+rather than a provider fact. Real minimum cacheable prefix lengths differ by
+model and are higher for the small ones, so a prefix above Meter's threshold and
+below the provider's is recommended and cannot be cached at all. Nor does the
+book carry Google's per-hour cache STORAGE charge, which a Gemini recommendation
+would have to net off, or the fact that OpenAI's caching is automatic — its fix
+is reordering the prompt, not setting `cache_control`, which is what every
+finding currently tells you to do whatever the provider.
 
 ## 8. Connector-only complement (Tier A, no SDK)
 

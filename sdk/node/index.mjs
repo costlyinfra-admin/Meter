@@ -79,6 +79,21 @@ const PREFIX_CAPACITY = 512;
  *  and never extended, so steady traffic cannot keep one supposed cached
  *  response alive forever. See the Python SDK for the full note. */
 const DUPLICATE_WINDOW_MS = 600_000;
+/**
+ * How long a provider keeps a prompt prefix cached after it is written.
+ *
+ * Caching is not free: writing a prefix into the cache costs MORE than sending
+ * it uncached, and only the reads that follow pay that back. So the number of
+ * writes decides whether caching this prefix saves money at all, and the only
+ * place that can be counted is here, next to the call timestamps.
+ *
+ * A window opens when a prefix is seen after a gap longer than this — the point
+ * at which a provider would have evicted it and the next call would have to
+ * write it again. Five minutes is the shortest TTL the priced providers offer
+ * and their default, so counting windows at five minutes counts the MOST writes
+ * caching could incur, and the resulting saving is the most conservative one.
+ */
+const CACHE_WINDOW_MS = 300_000;
 
 const CAPTURE_PATHS = [
   ["anthropic", "messages.create"],
@@ -415,6 +430,7 @@ export class Meter {
           prefixChars: options.prefixChars ?? PREFIX_CHARS,
           flushIntervalMs: options.optimizeFlushIntervalMs ?? OPTIMIZE_FLUSH_INTERVAL_MS,
           windowMs: options.optimizeWindowMs ?? DUPLICATE_WINDOW_MS,
+          cacheWindowMs: options.cacheWindowMs ?? CACHE_WINDOW_MS,
         })
       : null;
   }
@@ -1241,8 +1257,14 @@ class Optimizer {
     this._dupCapacity = options.dupCapacity ?? DUP_CAPACITY;
     this._prefixCapacity = options.prefixCapacity ?? PREFIX_CAPACITY;
     this._windowMs = options.windowMs ?? DUPLICATE_WINDOW_MS;
+    this._cacheWindowMs = options.cacheWindowMs ?? CACHE_WINDOW_MS;
     this._seen = new Map();
     this._prefixes = new Map();
+    // Last time each prefix was seen, kept OUTSIDE this._prefixes because it
+    // must survive the flush that empties it. A window count restarted every
+    // flush interval would report one write per minute of traffic and call
+    // caching a loss.
+    this._prefixLast = new Map();
     this._lastFlush = Date.now();
   }
 
@@ -1314,6 +1336,8 @@ class Optimizer {
         featureId: feature,
         count: 0,
         cached: 0,
+        writes: 0,
+        windows: 0,
         tin: 0,
         tout: 0,
         estimated: 0,
@@ -1327,6 +1351,26 @@ class Optimizer {
     entry.estimated = Math.max(entry.estimated, estimated);
     if (measured) entry.measured = Math.max(entry.measured, measured);
     if (cacheRead) entry.cached += 1;
+    // The provider says it WROTE this prefix, so caching is already on here and
+    // this call is the unavoidable cost of keeping it warm — not an opportunity
+    // to enable something.
+    if (measured) entry.writes += 1;
+    // How many times a cache would have had to be written if one were in use:
+    // once per gap longer than the provider's TTL. Counted per process, and a
+    // provider's cache is account-wide, so replicas each count a window the
+    // account only paid for once — an OVERCOUNT of writes, which understates
+    // the saving rather than inflating it.
+    const lastSeen = this._prefixLast.get(prefixFp);
+    // >=, not >: at exactly the TTL the entry is on the boundary, and assuming
+    // it survived would be assuming a saving. Assume the write.
+    if (lastSeen === undefined || now - lastSeen >= this._cacheWindowMs) {
+      entry.windows += 1;
+    }
+    this._prefixLast.delete(prefixFp);
+    this._prefixLast.set(prefixFp, now);
+    while (this._prefixLast.size > this._prefixCapacity) {
+      this._prefixLast.delete(this._prefixLast.keys().next().value);
+    }
 
     return duplicate
       ? {
@@ -1383,6 +1427,11 @@ class Optimizer {
             tokens_out: entry.tout,
             prefix_tokens: measured ? entry.measured : entry.estimated,
             prefix_measured: measured,
+            // What caching costs, not just what it saves: calls the provider
+            // already wrote to cache, and the number of writes enabling it
+            // would need.
+            write_calls: entry.writes,
+            cache_windows: entry.windows,
           },
         }),
       );

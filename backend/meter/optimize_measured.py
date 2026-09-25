@@ -16,9 +16,11 @@ detectors differ in exactly that:
     aggregate cannot tell how much of that input was already cache-served at a
     tenth of the rate. Classified `modeled_ceiling`, never `measured`.
   * **Cacheable prompt prefix** — a large static prefix repeated across many
-    uncached calls; savings is the repeated prefix tokens priced at
-    (input rate − cached-read rate) from the price book. `measured` where the
-    provider reported the prefix size, `modeled_ceiling` where it is an estimate.
+    uncached calls. Savings is the repeated prefix tokens priced at
+    (input rate − cached-read rate), MINUS the premium on the cache writes
+    serving them would require, both from the price book. `measured` only when
+    the provider reported the prefix size and the SDK counted the writes;
+    `modeled_ceiling` when either is missing.
 
 The two overlap — the same input tokens counted two ways — so they are mutually
 exclusive in the totals rather than summed.
@@ -77,8 +79,13 @@ _LEVER_META = {
     "prompt_caching": {
         "title": "Prompt caching",
         "source": "sdk",
+        # The default. The detector overrides it per finding: an estimated
+        # prefix size, or a write side it could not price, makes this a ceiling.
         "savings_type": "measured",
-        "confidence_reason": "Measured uncached prefix tokens priced at the cache-read discount.",
+        "confidence_reason": (
+            "Uncached prefix tokens priced at the cache-read discount, net of "
+            "what writing the cache would cost."
+        ),
     },
     "provider_switch": {
         "title": "Cheaper provider",
@@ -221,13 +228,17 @@ def _unify_measured(opp: dict) -> dict:
     """Normalize a measured/ceiling detector output into the unified shape (§18)."""
     meta = _LEVER_META[opp["lever"]]
     savings = opp["savings"]
+    # Most levers have one savings_type for all time. Prompt caching does not:
+    # whether it is a guaranteed saving or a ceiling depends on whether this
+    # tenant's telemetry priced both sides of the trade, so the detector says.
+    savings_type = opp.get("savings_type") or meta["savings_type"]
     effort = _LEVER_EFFORT.get(opp["lever"], _DEFAULT_EFFORT)
     guidance = _LEVER_GUIDANCE.get(opp["lever"], _DIRECTIONAL_GUIDANCE)
     return {
         "lever": opp["lever"],
         "title": meta["title"],
         "source": meta["source"],
-        "savings_type": meta["savings_type"],
+        "savings_type": savings_type,
         "confidence": opp["confidence"],
         "confidence_reason": meta["confidence_reason"],
         "projected_monthly_savings": savings,
@@ -344,21 +355,38 @@ def _duplicate_opportunity(rows: list, legacy_repeats: int = 0) -> Optional[dict
 
 def _prefix_opportunity(rows: list) -> Optional[dict]:
     """Rows: (provider, model, fingerprint, call_count, prefix_tokens, cached_count,
-    prefix_measured).
+    prefix_measured, write_calls, cache_windows).
 
-    The dollars here are `uncached calls x prefix tokens x input rate x the
-    cache discount`. Three of those four are counted exactly; the prefix size is
-    only exact when the provider reported it (Anthropic returns
-    `cache_creation_input_tokens` — the size of the prefix it actually cached).
-    Where it did not, the SDK's figure is characters over four, and this is an
-    estimate wearing a measurement's clothes unless it says so. So the
-    confidence follows the input: `high` only when every priced row carried a
-    real count, `med` otherwise, and the evidence names which.
+    Caching is not a discount, it is a trade: reads are cheap and WRITES cost
+    more than sending the prefix uncached. So the saving for one prefix is
+
+        prefix_tokens x input_rate x [ uncached x (1 - read_mult)
+                                       - writes x (write_mult - 1) ]
+
+    where `writes` is how many times the entry would have to be created — once
+    per gap longer than the provider's TTL, which is what the SDK counts as
+    `cache_windows`. Leave that term out and sparse traffic reads as a saving
+    when enabling caching would raise its bill: at fewer than about one read
+    per write, there is nothing here to win.
+
+    Calls the provider already wrote to cache are not an opportunity either.
+    They are what keeping a live cache warm costs, so they come off the
+    uncached count rather than being offered back as savings.
+
+    Three inputs are counted exactly: the call counts, the cache discount and
+    the write premium. The prefix SIZE is exact only when the provider reported
+    it (Anthropic returns `cache_creation_input_tokens` — the size of the prefix
+    it actually cached); otherwise the SDK's figure is characters over four. And
+    a row from an SDK too old to count windows cannot have its write side
+    priced at all. Either one moves the finding off a measured saving, and the
+    evidence names which.
     """
     total_savings = Decimal("0")
     total_uncached = 0
+    total_writes = 0
     max_prefix = 0
     estimated_calls = 0
+    unpriced_writes = 0  # calls whose write side could not be priced
     trail = []
     for (
         provider,
@@ -368,18 +396,52 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         prefix_tokens,
         cached_count,
         prefix_measured,
+        write_calls,
+        cache_windows,
     ) in rows:
         mult = pricing.cache_read_mult(provider)
         if mult is None:  # provider has no priced cache discount -> don't claim one
             continue
-        cacheable = int(call_count) - int(cached_count)
+        written = int(write_calls or 0)
+        # A cache creation is already cached. It is neither a saving nor a call
+        # that could be made cheaper by enabling what is evidently enabled.
+        cacheable = int(call_count) - int(cached_count) - written
         p_tokens = int(prefix_tokens or 0)
         if cacheable < _MIN_CACHEABLE_CALLS or p_tokens < _MIN_PREFIX_TOKENS:
             continue
         input_rate = pricing.rate_in(model, provider)
-        saving = Decimal(cacheable) * Decimal(p_tokens) * input_rate * (Decimal("1") - mult)
+        unit = Decimal(p_tokens) * input_rate
+        # If all of them became reads. The writes are taken back out below —
+        # a call that writes the entry is not also reading it.
+        read_gain = Decimal(cacheable) * (Decimal("1") - mult)
+        if cache_windows is None:
+            # No window count: the write side is unknown. Price the reads alone
+            # and mark the row, so the finding degrades to a ceiling instead of
+            # quietly assuming writes are free.
+            writes = 0
+            unpriced_writes += cacheable
+        else:
+            # Not capped at the call count, though windows can exceed it:
+            # they are counted per process and over every call sharing the
+            # prefix, while `cacheable` excludes the ones already served from
+            # cache. A count that high means the entry would be rewritten as
+            # often as it is used, which is a loss for every provider in the
+            # price book and is dropped below on its own.
+            writes = int(cache_windows)
+        # What a write costs RELATIVE TO THE READ it replaces, not relative to
+        # an uncached call: the write call pays the write rate instead of the
+        # cached rate, so the gap is (write_mult - read_mult). Against 1 it
+        # would be 1.25 - 1 = 0.25 for Anthropic, understating the cost of a
+        # write by more than four times and making sparse traffic — which
+        # writes on every call and never reads — look like a saving.
+        forgone = pricing.cache_write_mult(provider) - mult
+        saving = unit * (read_gain - Decimal(writes) * forgone)
+        if saving <= 0:
+            # Caching this prefix costs more than it saves. Not a finding.
+            continue
         total_savings += saving
         total_uncached += cacheable
+        total_writes += writes
         max_prefix = max(max_prefix, p_tokens)
         if not prefix_measured:
             estimated_calls += cacheable
@@ -392,25 +454,37 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
                 "prefix_tokens": p_tokens,
                 "prefix_measured": bool(prefix_measured),
                 "cached": int(cached_count),
+                "already_written": written,
+                "cache_writes_needed": None if cache_windows is None else writes,
             }
         )
     if float(total_savings) < _MIN_SAVINGS:
         return None
-    measured = estimated_calls == 0
+    sized = estimated_calls == 0
+    priced_writes = unpriced_writes == 0
     basis = (
         "measured by the provider's own cache-creation token count"
-        if measured
+        if sized
         else "prefix size estimated from request length"
     )
+    if priced_writes:
+        cost_side = f"net of the {total_writes:,} cache writes it would take to serve them"
+    else:
+        cost_side = (
+            "before the cost of writing the cache, which the reporting SDK is too old "
+            "to count — upgrade it to turn this ceiling into a measured saving"
+        )
     return {
         "lever": "prompt_caching",
+        # A saving is only guaranteed when both sides of the trade were counted.
+        # An estimated prefix size or an unpriced write side makes it a ceiling,
+        # and a ceiling does not belong in the measured total.
+        "savings_type": "measured" if (sized and priced_writes) else "modeled_ceiling",
         "savings": round(float(total_savings), 2),
-        # The call counts and the cache discount are exact either way; what
-        # moves this off "high" is pricing an estimated number of tokens.
-        "confidence": "high" if measured else "med",
+        "confidence": "high" if (sized and priced_writes) else "med",
         "evidence": (
             f"a {max_prefix:,}-token static prefix repeated across "
-            f"{total_uncached:,} uncached calls — {basis}"
+            f"{total_uncached:,} uncached calls, {cost_side} — {basis}"
         ),
         "fix": "Enable prompt caching (set cache_control on the static system block).",
         "trail": trail[:_MAX_TRAIL],
@@ -573,7 +647,8 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
         """
         SELECT signal_kind, provider, model, fingerprint,
                call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
-               prefix_measured, fingerprint_version, scope_kind
+               prefix_measured, fingerprint_version, scope_kind,
+               write_calls, cache_windows
         FROM usage_signal
         WHERE feature_id = %s AND period = %s
         """,
@@ -591,7 +666,11 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
         if r[0] == "duplicate" and r[10] == "v2"
     ]
     legacy_dups = sum(int(r[4]) for r in rows if r[0] == "duplicate" and r[10] != "v2")
-    pfx_rows = [(r[1], r[2], r[3], r[4], r[5], r[8], r[9]) for r in rows if r[0] == "prefix"]
+    pfx_rows = [
+        (r[1], r[2], r[3], r[4], r[5], r[8], r[9], r[12], r[13])
+        for r in rows
+        if r[0] == "prefix"
+    ]
 
     opportunities = [
         opp

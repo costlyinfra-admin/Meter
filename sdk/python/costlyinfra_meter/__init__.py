@@ -99,6 +99,19 @@ PREFIX_CAPACITY = 512
 #: steady repeating traffic cannot keep one supposed cached response alive
 #: forever.
 DUPLICATE_WINDOW = 600.0
+#: How long a provider keeps a prompt prefix cached after it is written.
+#:
+#: Caching is not free: writing a prefix into the cache costs MORE than sending
+#: it uncached, and only the reads that follow pay that back. So the number of
+#: writes decides whether caching this prefix saves money at all, and the only
+#: place that can be counted is here, next to the call timestamps.
+#:
+#: A window opens when a prefix is seen after a gap longer than this — the point
+#: at which a provider would have evicted it and the next call would have to
+#: write it again. Five minutes is the shortest TTL the priced providers offer
+#: and their default, so counting windows at five minutes counts the MOST writes
+#: caching could incur, and the resulting saving is the most conservative one.
+CACHE_WINDOW = 300.0
 #: How long the server's answer to "is capture open for this feature" is trusted.
 #: A withdrawal takes effect within this window at the latest, and on the very
 #: next sample, because the server re-checks consent every time.
@@ -1532,6 +1545,7 @@ class _Optimizer:
         dup_capacity: int = DUP_CAPACITY,
         prefix_capacity: int = PREFIX_CAPACITY,
         window: float = DUPLICATE_WINDOW,
+        cache_window: float = CACHE_WINDOW,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._m = meter
@@ -1540,6 +1554,7 @@ class _Optimizer:
         self._dup_capacity = int(dup_capacity)
         self._prefix_capacity = int(prefix_capacity)
         self._window = float(window)
+        self._cache_window = float(cache_window)
         # Injected so a test can move time without patching the stdlib clock,
         # which `mock.patch` would do process-wide — the delivery threads read
         # `time.monotonic` too, and handing them a frozen clock makes flushes
@@ -1547,6 +1562,11 @@ class _Optimizer:
         self._clock = clock
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._prefixes: dict = {}
+        # Last time each prefix was seen, kept OUTSIDE self._prefixes because it
+        # must survive the flush that empties it. A window count restarted every
+        # flush interval would report one write per minute of traffic and call
+        # caching a loss.
+        self._prefix_last: OrderedDict = OrderedDict()
         self._last_flush = time.monotonic()
         self._lock = threading.Lock()
 
@@ -1607,8 +1627,8 @@ class _Optimizer:
             entry = self._prefixes.setdefault(
                 (prefix_fp, feature),
                 {"provider": provider, "model": model, "feature_id": feature,
-                 "count": 0, "cached": 0, "tin": 0, "tout": 0,
-                 "estimated": 0, "measured": 0},
+                 "count": 0, "cached": 0, "writes": 0, "windows": 0,
+                 "tin": 0, "tout": 0, "estimated": 0, "measured": 0},
             )
             entry["count"] += 1
             entry["tin"] += int(usage.get("tokens_in") or 0)
@@ -1618,6 +1638,25 @@ class _Optimizer:
                 entry["measured"] = max(entry["measured"], measured)
             if cache_read:
                 entry["cached"] += 1
+            if measured:
+                # The provider says it WROTE this prefix, so caching is already
+                # on here and this call is the unavoidable cost of keeping it
+                # warm — not an opportunity to enable something.
+                entry["writes"] += 1
+            # How many times a cache would have had to be written if one were
+            # in use: once per gap longer than the provider's TTL. Counted per
+            # process, and a provider's cache is account-wide, so replicas each
+            # count a window the account only paid for once — an OVERCOUNT of
+            # writes, which understates the saving rather than inflating it.
+            last = self._prefix_last.get(prefix_fp)
+            # >=, not >: at exactly the TTL the entry is on the boundary, and
+            # assuming it survived would be assuming a saving. Assume the write.
+            if last is None or (now - last) >= self._cache_window:
+                entry["windows"] += 1
+            self._prefix_last[prefix_fp] = now
+            self._prefix_last.move_to_end(prefix_fp)
+            while len(self._prefix_last) > self._prefix_capacity:
+                self._prefix_last.popitem(last=False)
         if duplicate:
             return {
                 "kind": "duplicate",
@@ -1672,6 +1711,11 @@ class _Optimizer:
                         "tokens_out": entry["tout"],
                         "prefix_tokens": entry["measured"] if measured else entry["estimated"],
                         "prefix_measured": measured,
+                        # What caching costs, not just what it saves: calls the
+                        # provider already wrote to cache, and the number of
+                        # writes enabling it would need.
+                        "write_calls": entry["writes"],
+                        "cache_windows": entry["windows"],
                     },
                 )
             )

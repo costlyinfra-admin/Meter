@@ -208,6 +208,87 @@ def test_the_prefix_size_is_declared_an_estimate_when_the_provider_gives_none():
     assert 0 < signal["prefix_tokens"] < 400
 
 
+def test_a_call_the_provider_cached_for_is_counted_as_a_write_not_an_opportunity():
+    """cache_creation_input_tokens means caching is already ON for this prefix.
+
+    Those calls are the unavoidable cost of keeping the entry warm. Counting
+    them as uncached tells a customer to enable what they already enabled.
+    """
+    t = Captured("pepper")
+    m = meter(t, optimize=True, salt="pepper")
+    client = client_for(m, Response(cache_write=4242))
+    client.messages.create(model="m", system="static block", messages=[{"role": "user"}])
+    drain(m)
+
+    signal = t.signals("prefix")[0]
+    assert signal["write_calls"] == 1
+    assert signal["cached_count"] == 0  # a write is not a read
+
+
+def test_how_many_times_a_cache_would_have_to_be_written_is_counted():
+    """Caching pays only if reads outnumber writes, so the writes are counted.
+
+    A window opens on the first call and again after any gap longer than the
+    provider's TTL: those are the calls that would have had to write the prefix
+    back in.
+    """
+    from costlyinfra_meter import _Optimizer
+
+    now = [1000.0]
+    collector = _Optimizer(
+        meter(Captured("pepper"), salt="pepper"),
+        cache_window=300.0,
+        clock=lambda: now[0],
+    )
+    request = {"system": "static", "messages": [{"role": "user"}]}
+    for step in (0, 10, 10, 10_000, 10, 10_000):  # two long gaps
+        now[0] += step
+        collector.on_call("anthropic", "m", request, {})
+
+    (event,) = collector.due_summaries(force=True)
+    signal = event["signal"]
+    assert signal["count"] == 6
+    # First call, plus one after each gap that outlived the cache.
+    assert signal["cache_windows"] == 3
+
+
+def test_the_window_count_survives_the_flush_that_empties_the_counters():
+    """Counters flush every 60 seconds; a 5-minute cache does not.
+
+    If the last-seen time went out with them, every flush would open a new
+    window, report one write per minute of traffic, and price steady traffic as
+    a reason not to cache.
+    """
+    from costlyinfra_meter import _Optimizer
+
+    now = [1000.0]
+    collector = _Optimizer(
+        meter(Captured("pepper"), salt="pepper"),
+        cache_window=300.0,
+        clock=lambda: now[0],
+    )
+    request = {"system": "static", "messages": [{"role": "user"}]}
+    windows = 0
+    for _ in range(5):
+        now[0] += 60
+        collector.on_call("anthropic", "m", request, {})
+        (event,) = collector.due_summaries(force=True)
+        windows += event["signal"]["cache_windows"]
+
+    assert windows == 1  # the first call, and nothing since has outlived a window
+
+
+def test_the_last_seen_map_cannot_grow_with_traffic_either():
+    from costlyinfra_meter import _Optimizer
+
+    collector = _Optimizer(
+        meter(Captured("pepper"), salt="pepper"), prefix_capacity=10
+    )
+    for i in range(400):
+        collector.on_call("anthropic", "m", {"system": f"static {i}"}, {})
+    assert len(collector._prefix_last) == 10
+
+
 # --- the privacy boundary --------------------------------------------------
 def test_no_part_of_a_request_or_reply_is_transmitted():
     t = Captured("pepper")

@@ -197,6 +197,57 @@ test("the prefix size is the provider's own count when the provider gives one", 
   assert.equal(signal.prefix_measured, true);
 });
 
+test("a call the provider cached for is counted as a write, not an opportunity", async () => {
+  // cache_creation_input_tokens means caching is already ON for this prefix.
+  // Those calls are the unavoidable cost of keeping the entry warm; counting
+  // them as uncached tells a customer to enable what they already enabled.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  await clientFor(m, response({ cache_creation_input_tokens: 4242 })).messages.create({
+    model: "m",
+    system: "static block",
+    messages: [{ content: "hi" }],
+  });
+  await flush(m);
+
+  const signal = t.signals("prefix")[0];
+  assert.equal(signal.write_calls, 1);
+  assert.equal(signal.cached_count, 0); // a write is not a read
+});
+
+test("how many times a cache would have to be written is counted", async () => {
+  // Caching pays only if reads outnumber writes, so the writes are counted. A
+  // window of zero expires between every call: each one would have to write
+  // the prefix back in.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper", cacheWindowMs: 0 });
+  const client = clientFor(m);
+  for (let i = 0; i < 4; i += 1) {
+    await client.messages.create({ model: "m", system: "static", messages: [{ c: i }] });
+  }
+  await flush(m);
+
+  const windows = t.signals("prefix").reduce((sum, p) => sum + p.cache_windows, 0);
+  assert.equal(windows, 4);
+});
+
+test("the window count survives the flush that empties the counters", async () => {
+  // Counters flush every 60 seconds; a 5-minute cache does not. If the
+  // last-seen time went out with them, every flush would open a new window,
+  // report one write per minute of traffic, and price steady traffic as a
+  // reason not to cache. This meter flushes on EVERY call.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper", cacheWindowMs: 3_600_000 });
+  const client = clientFor(m);
+  for (let i = 0; i < 4; i += 1) {
+    await client.messages.create({ model: "m", system: "static", messages: [{ c: i }] });
+  }
+  await flush(m);
+
+  const windows = t.signals("prefix").reduce((sum, p) => sum + p.cache_windows, 0);
+  assert.equal(windows, 1); // the first call, and nothing since has outlived it
+});
+
 test("the prefix size is declared an estimate when the provider gives none", async () => {
   const t = capture();
   const m = meter(t, { optimize: true, salt: "pepper" });

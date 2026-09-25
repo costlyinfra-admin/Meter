@@ -280,6 +280,8 @@ def _add_usage_signal(
     tokens_out=0,
     prefix_tokens=None,
     cached_count=0,
+    write_calls=0,
+    cache_windows=None,
     # The demo seeds v2 signals: a v1 row is a LEGACY row by definition, and the
     # detector excludes those, so seeding v1 would leave the demo's repeated-
     # request finding permanently empty.
@@ -297,8 +299,9 @@ def _add_usage_signal(
         INSERT INTO usage_signal (tenant_id, feature_id, provider, model, period,
                                   signal_kind, fingerprint, call_count, prefix_tokens,
                                   tokens_in, tokens_out, cached_count,
-                                  fingerprint_version, scope_kind)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                  fingerprint_version, scope_kind,
+                                  write_calls, cache_windows)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             tenant_id,
@@ -315,6 +318,8 @@ def _add_usage_signal(
             cached_count,
             fingerprint_version,
             scope_kind,
+            write_calls,
+            cache_windows,
         ),
     )
 
@@ -1169,7 +1174,14 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
             tokens_in=tin,
             tokens_out=tout,
         )
-    # A 4,100-token static system prompt across 26,000 calls, ~8% already cached.
+    # A 4,100-token static system prompt across 26,000 calls, 2,080 of them
+    # already served from cache.
+    #
+    # The window count is what makes this a SAVING rather than a ceiling: dense
+    # traffic keeps one entry alive, so serving 23,920 uncached calls from cache
+    # would take ~700 writes, not 23,920 of them. A demo seeded without it would
+    # show the lever permanently degraded, which is not what a customer running
+    # a current SDK sees.
     _add_usage_signal(
         conn,
         tenant_id,
@@ -1179,6 +1191,7 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         26_000,
         prefix_tokens=4100,
         cached_count=2080,
+        cache_windows=700,
         tokens_in=106_600_000,
         tokens_out=5_200_000,
     )

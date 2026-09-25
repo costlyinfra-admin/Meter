@@ -303,6 +303,10 @@ def accumulate_signal(
             "cached": 0,
             "prefix_tokens": None,
             "prefix_measured": False,
+            "write_calls": 0,
+            # None, not 0: an SDK too old to count windows has not counted zero
+            # of them. The detector must be able to tell those apart.
+            "cache_windows": None,
             "fingerprint_version": version,
             "scope_kind": None,
         },
@@ -329,6 +333,10 @@ def accumulate_signal(
         # One measured report is enough to stop calling the batch an estimate.
         if sig.get("prefix_measured"):
             entry["prefix_measured"] = True
+        entry["write_calls"] += int(sig.get("write_calls") or 0)
+        windows = sig.get("cache_windows")
+        if windows is not None:
+            entry["cache_windows"] = (entry["cache_windows"] or 0) + int(windows)
 
 
 def upsert_signal(
@@ -354,6 +362,12 @@ def upsert_signal(
                 tokens_in = tokens_in + %s,
                 tokens_out = tokens_out + %s,
                 cached_count = cached_count + %s,
+                write_calls = write_calls + %s,
+                -- Summed like the other counters, but NULL is preserved: a row
+                -- only some of whose reporters could count windows must not
+                -- read as if the rest counted none.
+                cache_windows = CASE WHEN %s::bigint IS NULL THEN cache_windows
+                                     ELSE COALESCE(cache_windows, 0) + %s::bigint END,
                 -- Cast, because a duplicate signal carries no prefix size and
                 -- Postgres cannot infer a type for an untyped NULL parameter
                 -- compared against NULL. Without it, the SECOND batch carrying
@@ -376,6 +390,9 @@ def upsert_signal(
                 entry["tin"],
                 entry["tout"],
                 entry["cached"],
+                entry.get("write_calls", 0),
+                entry.get("cache_windows"),
+                entry.get("cache_windows"),
                 entry["prefix_tokens"],
                 entry["prefix_tokens"],
                 entry.get("prefix_measured", False),
@@ -390,8 +407,9 @@ def upsert_signal(
             INSERT INTO usage_signal
                 (tenant_id, feature_id, provider, model, period, signal_kind, fingerprint,
                  call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
-                 prefix_measured, fingerprint_version, scope_kind)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 prefix_measured, fingerprint_version, scope_kind,
+                 write_calls, cache_windows)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 tenant_id,
@@ -409,6 +427,8 @@ def upsert_signal(
                 entry.get("prefix_measured", False),
                 version,
                 entry.get("scope_kind"),
+                entry.get("write_calls", 0),
+                entry.get("cache_windows"),
             ),
         )
 
