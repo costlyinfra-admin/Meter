@@ -137,6 +137,39 @@ def _min_confidence(current: Optional[str], candidate: Optional[str]) -> Optiona
     return candidate if _CONFIDENCE_RANK[candidate] < _CONFIDENCE_RANK[current] else current
 
 
+# ---------------------------------------------------------------------------
+# Counting the same dollar once
+# ---------------------------------------------------------------------------
+# A provider with both connector and hook rows has described the same spend
+# twice: the connector reports what it billed, the SDK reports the calls behind
+# it. Summing both doubles the money. The rule everywhere is the one
+# _inference_rollup applies — the connector total IS the bill, hook rows give
+# the per-feature attribution underneath it — so a sum keeps the connector rows
+# (they also carry the workspace, API-key and environment identity) and drops
+# that provider's hook rows.
+#
+# A hook-only provider keeps its rows: self-hosted spend, or a provider metered
+# before its connector was added, has no second observation to prefer.
+#
+# It lives here, as one definition, because it was written inline twice and
+# every query added since has re-introduced the double count.
+_NOT_DOUBLE_COUNTED = "AND NOT (source = 'hook' AND provider = ANY(%s))"
+
+
+def _connector_providers(conn, start: dt.date, end: Optional[dt.date] = None) -> list:
+    """Providers a connector already reports for this window."""
+    end = end or start
+    return [
+        provider
+        for provider, has_connector in conn.execute(
+            "SELECT provider, bool_or(source <> 'hook') FROM inference_cost "
+            f"WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} GROUP BY provider",  # noqa: S608
+            (start, end),
+        ).fetchall()
+        if has_connector
+    ]
+
+
 def _resolve_period(conn, period: Optional[dt.date]) -> dt.date:
     """Use the given month, or the latest month that has any cost/usage data.
 
@@ -272,8 +305,8 @@ def dashboard(
         prev_inference = float(
             conn.execute(
                 "SELECT COALESCE(SUM(amount), 0) FROM inference_cost "
-                f"WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV}",  # noqa: S608
-                (prev_start, prev_end),
+                f"WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} {_NOT_DOUBLE_COUNTED}",  # noqa: S608
+                (prev_start, prev_end, _connector_providers(conn, prev_start, prev_end)),
             ).fetchone()[0]
         )
         # The estimated (not-yet-billed) portion already included in inference_cost
@@ -298,8 +331,9 @@ def dashboard(
 
         tok = conn.execute(
             "SELECT COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
-            f"FROM inference_cost WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV}",  # noqa: S608
-            (start, end),
+            f"FROM inference_cost WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} "  # noqa: S608
+            f"{_NOT_DOUBLE_COUNTED}",
+            (start, end, _connector_providers(conn, start, end)),
         ).fetchone()
         tokens_in, tokens_out = int(tok[0]), int(tok[1])
 
@@ -408,22 +442,10 @@ def _insight_facts(conn, start: dt.date, end: dt.date) -> dict:
     Everything here is a plain SUM over stored rows — the insights layer does no
     modelling of its own, so every sentence stays traceable to the numbers.
     """
-    # Where a provider has BOTH connector and hook rows they describe the same
-    # spend, and _inference_rollup reconciles them so the bill is never counted
-    # twice. These breakdowns must use the same basis or a share could exceed
-    # 100%: keep the connector rows (they carry the workspace / API-key / env
-    # identity) and drop that provider's hook rows. A hook-only provider — self
-    # hosted, or metered before its connector was added — keeps its rows.
-    connector_providers = [
-        p
-        for p, has_connector in conn.execute(
-            "SELECT provider, bool_or(source <> 'hook') FROM inference_cost "
-            f"WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} GROUP BY provider",  # noqa: S608
-            (start, end),
-        ).fetchall()
-        if has_connector
-    ]
-    reconciled = "AND NOT (source = 'hook' AND provider = ANY(%s))"
+    # These breakdowns must use the same basis as the totals, or a share could
+    # exceed 100%. See _NOT_DOUBLE_COUNTED.
+    connector_providers = _connector_providers(conn, start, end)
+    reconciled = _NOT_DOUBLE_COUNTED
     args = (start, end, connector_providers)
 
     env = {
@@ -760,8 +782,8 @@ def _monthly_trend(conn, start: dt.date, end: dt.date) -> list[dict]:
             "SELECT period, COALESCE(SUM(amount), 0), COALESCE(SUM(tokens_in), 0), "
             "COALESCE(SUM(cached_tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
             f"FROM inference_cost WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} "  # noqa: S608
-            "GROUP BY period",
-            (start, end),
+            f"{_NOT_DOUBLE_COUNTED} GROUP BY period",
+            (start, end, _connector_providers(conn, start, end)),
         ).fetchall()
     }
     out, month = [], start
@@ -803,8 +825,9 @@ def _provider_spend(conn, start: dt.date, end: dt.date) -> list[dict]:
 
     for provider, amount in conn.execute(
         "SELECT provider, COALESCE(SUM(amount), 0) FROM inference_cost "
-        f"WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} GROUP BY provider",  # noqa: S608
-        (start, end),
+        f"WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} {_NOT_DOUBLE_COUNTED} "  # noqa: S608
+        "GROUP BY provider",
+        (start, end, _connector_providers(conn, start, end)),
     ).fetchall():
         add(provider or "unknown", "inference_cost", float(amount))
 
@@ -969,17 +992,17 @@ def heuristic_optimization(conn, feature_id: str, start: dt.date) -> dict:
     *measured* tier (optimize_measured) sits above it when the SDK is installed.
     """
     opt_rows = conn.execute(
-        """
+        f"""
         SELECT model,
                SUM(amount),
                SUM(COALESCE(tokens_in, 0)),
                SUM(COALESCE(tokens_out, 0)),
                SUM(COALESCE(request_count, 0))
         FROM inference_cost
-        WHERE feature_id = %s AND period = %s
+        WHERE feature_id = %s AND period = %s {_NOT_DOUBLE_COUNTED}
         GROUP BY model
-        """,
-        (feature_id, start),
+        """,  # noqa: S608
+        (feature_id, start, _connector_providers(conn, start)),
     ).fetchall()
 
     opt_total = sum(float(a) for _m, a, _ti, _to, _r in opt_rows)
@@ -1034,8 +1057,9 @@ def feature_detail(
         ).fetchone()[0]
         inference_range = conn.execute(
             "SELECT COALESCE(SUM(amount), 0) FROM inference_cost "
-            f"WHERE feature_id = %s AND period BETWEEN %s AND %s AND {_ACTIVE_ENV}",  # noqa: S608
-            (feature_id, start, end),
+            f"WHERE feature_id = %s AND period BETWEEN %s AND %s AND {_ACTIVE_ENV} "  # noqa: S608
+            f"{_NOT_DOUBLE_COUNTED}",
+            (feature_id, start, end, _connector_providers(conn, start, end)),
         ).fetchone()[0]
         # Active users is a point-in-time count -> the range's latest month.
         active_users = conn.execute(
@@ -1192,14 +1216,16 @@ def feature_inference(
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         start, end = _resolve_range(conn, range_token, start, end)
 
+        billed_by = _connector_providers(conn, start, end)
         model_rows = conn.execute(
             f"""
             SELECT model, SUM(amount), SUM(request_count)
             FROM inference_cost
             WHERE feature_id = %s AND period BETWEEN %s AND %s AND {_ACTIVE_ENV}
+              {_NOT_DOUBLE_COUNTED}
             GROUP BY model ORDER BY SUM(amount) DESC
             """,  # noqa: S608
-            (feature_id, start, end),
+            (feature_id, start, end, billed_by),
         ).fetchall()
         total = sum(float(amount) for _model, amount, _req in model_rows) or 0.0
         by_model = [
@@ -1218,9 +1244,10 @@ def feature_inference(
                 SELECT period, SUM(amount)
                 FROM inference_cost
                 WHERE feature_id = %s AND period BETWEEN %s AND %s AND {_ACTIVE_ENV}
+                  {_NOT_DOUBLE_COUNTED}
                 GROUP BY period ORDER BY period
                 """,  # noqa: S608
-                (feature_id, start, end),
+                (feature_id, start, end, billed_by),
             ).fetchall()
         ]
 
@@ -1604,14 +1631,17 @@ def spend_by_provider(
         start, end = _resolve_range(conn, range_token, start, end)
 
         # ---- Inference: by provider + trend ----
+        # The same dollar must not appear under both its connector and its hook
+        # row — see _NOT_DOUBLE_COUNTED.
+        billed_by = _connector_providers(conn, start, end)
         provider_rows = conn.execute(
             f"""
             SELECT provider, SUM(amount), SUM(request_count)
             FROM inference_cost
-            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV}
+            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} {_NOT_DOUBLE_COUNTED}
             GROUP BY provider ORDER BY SUM(amount) DESC
             """,  # noqa: S608
-            (start, end),
+            (start, end, billed_by),
         ).fetchall()
         total = sum(float(amount) for _p, amount, _req in provider_rows) or 0.0
 
@@ -1620,10 +1650,10 @@ def spend_by_provider(
             f"""
             SELECT provider, model, SUM(amount)
             FROM inference_cost
-            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV}
+            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} {_NOT_DOUBLE_COUNTED}
             GROUP BY provider, model ORDER BY SUM(amount) DESC
             """,  # noqa: S608
-            (start, end),
+            (start, end, billed_by),
         ).fetchall()
         models_by_provider: dict[str, list] = {}
         for provider, model, amount in model_rows:
@@ -1655,10 +1685,10 @@ def spend_by_provider(
             f"""
             SELECT period, COALESCE(environment, 'unclassified') AS env, SUM(amount)
             FROM inference_cost
-            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV}
+            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} {_NOT_DOUBLE_COUNTED}
             GROUP BY period, env ORDER BY period
             """,  # noqa: S608
-            (start, end),
+            (start, end, billed_by),
         ).fetchall()
         trend_by_period: dict[str, dict] = {}
         for p, env, amount in trend_rows:
@@ -1731,7 +1761,9 @@ def spend_by_provider(
                 )
         daily_trend = sorted(daily_by_day.values(), key=lambda t: t["period"])
 
-        # Same workspace split for the MONTHLY trend points.
+        # Same workspace split for the MONTHLY trend points. No hook exclusion
+        # needed here or in the workspace/API-key table below: hook rows carry
+        # neither identity, so the NOT NULL filter already drops them.
         for p, ws, amount in conn.execute(
             f"""
             SELECT period, COALESCE(workspace_name, workspace_id) AS ws, SUM(amount)
@@ -1995,10 +2027,10 @@ def spend_by_provider(
                    SUM(cached_tokens_in), SUM(cache_write_tokens),
                    SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens)
             FROM inference_cost
-            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV}
+            WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} {_NOT_DOUBLE_COUNTED}
             GROUP BY provider, model
             """,  # noqa: S608
-            (start, end),
+            (start, end, billed_by),
         ).fetchall()
         token_dollars: dict[str, float] = defaultdict(float)
         token_counts: dict[str, int] = {}
