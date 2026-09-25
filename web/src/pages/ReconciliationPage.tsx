@@ -1,11 +1,14 @@
 /**
  * Provider invoice reconciliation — the module's screens.
  *
- * Four views behind one route: the summary of past runs, the import workflow,
- * one run in detail, and the import history. Nothing here is imported by any
- * existing page, and every request it makes returns 404 unless this
- * organization has switched the module on — so a disabled module renders
- * nothing and asks for nothing.
+ * Five views behind one route. The default is the connected-provider
+ * comparison, which needs no upload because both numbers are already synced;
+ * the statement path — its past runs, the import workflow, one run in detail,
+ * and the import history — remains for what that cannot reach.
+ *
+ * Nothing here is imported by any existing page. The statement views return 404
+ * unless this organization has switched the module on, so a disabled module
+ * renders nothing and asks for nothing.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -18,6 +21,7 @@ import {
   type ReconSettings,
 } from "../api";
 import { money } from "../format";
+import { BillingComparison } from "../components/BillingComparison";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "Calculating",
@@ -113,14 +117,16 @@ export function ReconciliationPage() {
         <h1>Reconciliation</h1>
       </div>
       <p className="muted recon-intro">
-        Compare an official provider billing export against the spend Meter tracked, and see
-        what explains the difference. Nothing here changes your cost data — a statement is evidence,
-        not a correction.
+        Meter compares tracked spend with billing data from your connected providers, helping you
+        find missing or unexplained costs.
       </p>
 
       <div className="tabs" role="tablist" aria-label="Reconciliation views">
         <TabLink to="/reconciliation" active={!view}>
-          Summary
+          Connected providers
+        </TabLink>
+        <TabLink to="/reconciliation/statements" active={view === "statements"}>
+          Statement runs
         </TabLink>
         <TabLink to="/reconciliation/import" active={view === "import"}>
           Import a statement
@@ -137,8 +143,12 @@ export function ReconciliationPage() {
         <ImportWorkflow settings={settings} />
       ) : view === "history" ? (
         <ImportHistory />
-      ) : (
+      ) : view === "statements" ? (
         <Summary />
+      ) : (
+        // The primary path: both numbers are already synced, so this needs no
+        // upload. Statement import stays for what it cannot reach.
+        <BillingComparison />
       )}
     </div>
   );
@@ -182,9 +192,9 @@ function NotEnabled({
       <div className="source-section recon-empty">
         <h2>Compare your provider bill against what Meter tracked</h2>
         <p className="muted">
-          Import an official billing export and Meter will line it up against the spend it
-          already has — usage against usage, with tax, credits and fees kept separate — and explain
-          what differs.
+          Import an official billing export and Meter will line it up against the spend it already
+          has — usage against usage, with tax, credits and fees kept separate — and explain what
+          differs.
         </p>
         <p className="muted">
           This is off by default and entirely additive: turning it on adds a section and changes
@@ -226,10 +236,11 @@ function Summary() {
   if (runs.length === 0) {
     return (
       <div className="source-section recon-empty">
-        <h2>No statement reconciled yet</h2>
+        <h2>No billing data available yet</h2>
         <p className="muted">
-          Import a provider billing export to see how it compares with the spend Meter tracked
-          for the same period.
+          No statement has been reconciled. Importing one is the fallback for a provider Meter
+          cannot read, a closed period, or a final invoice — most providers reconcile from connected
+          billing data instead.
         </p>
         <Link className="button-link" to="/reconciliation/import">
           Import a statement

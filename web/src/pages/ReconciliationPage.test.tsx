@@ -19,9 +19,19 @@ vi.mock("../api", async (importActual) => {
       reconRun: vi.fn(),
       runReconciliation: vi.fn(),
       reconReportUrl: (id: string) => `/api/reconciliation/runs/${id}/report.csv`,
+      // The landing tab is now the connected-provider comparison, which every
+      // view of this page mounts behind.
+      billingComparison: vi.fn(),
+      billingBreakdown: vi.fn(),
     },
   };
 });
+
+const NO_BILLING = {
+  period: "2026-05-01",
+  providers: [],
+  tolerance: { absolute: 0.5, percent: 0.5 },
+};
 
 const ENABLED = {
   available: true,
@@ -74,6 +84,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.reconSettings).mockResolvedValue(ENABLED);
   vi.mocked(api.reconRuns).mockResolvedValue([]);
+  vi.mocked(api.billingComparison).mockResolvedValue(NO_BILLING);
   vi.mocked(api.reconImports).mockResolvedValue([]);
   // Importing routes straight to the new run's detail, which loads it.
   vi.mocked(api.reconRun).mockResolvedValue(RUN);
@@ -115,15 +126,42 @@ describe("Reconciliation — disabled", () => {
   });
 });
 
-describe("Reconciliation — summary", () => {
-  it("says what to do when nothing has been reconciled", async () => {
+describe("Reconciliation — connected providers", () => {
+  it("leads with the provider comparison, not with statement import", async () => {
     renderPage();
-    expect(await screen.findByText("No statement reconciled yet")).toBeInTheDocument();
+    // The landing tab, and the described workflow.
+    expect(await screen.findByRole("tab", { name: "Connected providers" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      screen.getByText(/compares tracked spend with billing data from your connected providers/i),
+    ).toBeInTheDocument();
+    expect(api.billingComparison).toHaveBeenCalled();
+  });
+
+  it("keeps statement import available as a tab, one step along", async () => {
+    renderPage();
+    expect(await screen.findByRole("tab", { name: /Import a statement/ })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+  });
+});
+
+describe("Reconciliation — statement runs", () => {
+  // Statement reconciliation is the fallback now, one tab along from the
+  // connected-provider comparison that landed in front of it.
+  const renderRuns = () => renderPage("/reconciliation/statements");
+
+  it("says what to do when nothing has been reconciled", async () => {
+    renderRuns();
+    expect(await screen.findByText("No billing data available yet")).toBeInTheDocument();
   });
 
   it("lists each run with its usage comparison and status", async () => {
     vi.mocked(api.reconRuns).mockResolvedValue([RUN]);
-    renderPage();
+    renderRuns();
 
     const row = (await screen.findByText(/2026-05-01/)).closest("tr")!;
     expect(within(row).getByText("$283")).toBeInTheDocument(); // provider usage
@@ -135,7 +173,7 @@ describe("Reconciliation — summary", () => {
 
   it("survives a summary that will not load", async () => {
     vi.mocked(api.reconRuns).mockRejectedValue(new ApiError(500, "boom"));
-    renderPage();
+    renderRuns();
     expect(await screen.findByText(/Could not load reconciliation runs/)).toBeInTheDocument();
   });
 });

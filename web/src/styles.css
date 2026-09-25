@@ -7616,3 +7616,78 @@ button.span-head:focus-visible {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+
+/* ---------------------------------------------------------------------------
+   Reconciliation → Connected providers
+   --------------------------------------------------------------------------- */
+.recon-period {
+  margin: 0 0 0.9rem;
+  font-size: 0.9rem;
+}
+
+/* A status is the first thing read on this table, so each one is a shape as
+   well as a word — "Variance found" and "Matched" must not depend on colour
+   alone to tell apart. */
+.recon-status {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.recon-status-matched {
+  background: var(--good-bg);
+  color: var(--good);
+  border-color: var(--good-line);
+}
+.recon-status-variance {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+/* Not a failure: the bill is fine, there is simply nothing metered against it
+   yet. Neutral rather than alarming. */
+.recon-status-no_metered_data,
+.recon-status-billing_access_required,
+.recon-status-not_supported {
+  background: var(--surface-alt);
+  color: var(--ink-soft);
+  border-color: var(--line-strong);
+}
+
+.recon-flag {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+/* The one-line explanation under each provider. Tied to the row above it, so
+   it reads as that row's footnote rather than as another entry. */
+.recon-hint-row td {
+  padding-top: 0;
+  border-top: 0;
+  font-size: 0.82rem;
+}
+
+.recon-breakdown h4 {
+  margin: 1rem 0 0.2rem;
+}
+.recon-breakdown h5 {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.recon-provider-only {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1.25rem;
+}
+
+.recon-fallback {
+  margin-top: 1rem;
+  font-size: 0.88rem;
+}

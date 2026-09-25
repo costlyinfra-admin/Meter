@@ -1536,6 +1536,66 @@ export interface McpActivity {
   token_label: string | null;
 }
 
+/** How one provider's bill compares with what the SDK metered.
+ *
+ *  `no_metered_data` is not a variance: a variance means two measurements
+ *  disagree, and that state is one measurement. `not_supported` means metered
+ *  spend with no billing API behind it — a self-hosted model, say. */
+export type BillingStatus =
+  | "matched"
+  | "variance"
+  | "no_metered_data"
+  | "billing_access_required"
+  | "not_supported";
+
+export interface BillingProvider {
+  provider: string;
+  name: string;
+  connected: boolean;
+  supported: boolean;
+  status: BillingStatus;
+  /** What the provider's billing API reported. */
+  provider_reported: number;
+  /** What the metering SDK measured. */
+  tracked: number;
+  variance: number;
+  /** Null when there is no bill to be a percentage of. */
+  variance_pct: number | null;
+  /** The provider has not closed the month; the bill can still move. */
+  estimated: boolean;
+  billing_updated_at: string | null;
+  currency: string;
+  mixed_currency: boolean;
+}
+
+export interface BillingComparison {
+  period: string;
+  providers: BillingProvider[];
+  tolerance: { absolute: number; percent: number };
+}
+
+export interface BillingModelVariance {
+  model: string;
+  provider_reported: number;
+  tracked: number;
+  variance: number;
+  variance_pct: number | null;
+}
+
+/** Slices only the provider reports. Meter's metered rows carry neither a day
+ *  nor a workspace, so these carry no variance and must not be shown with one. */
+export interface BillingProviderOnly {
+  by_day: { day: string; provider_reported: number }[];
+  by_account: { account: string; provider_reported: number }[];
+}
+
+export interface BillingBreakdown {
+  period: string;
+  provider: string;
+  by_model: BillingModelVariance[];
+  provider_only: BillingProviderOnly;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     credentials: "include",
@@ -1681,6 +1741,15 @@ export const api = {
     }),
 
   promptAudit: () => request<{ events: PromptAuditEvent[] }>("/prompt-optimization/audit"),
+
+  // ---- Billing reconciliation against connected providers ----
+  billingComparison: (period?: string) =>
+    request<BillingComparison>(`/billing/comparison${period ? `?period=${period}` : ""}`),
+
+  billingBreakdown: (provider: string, period?: string) =>
+    request<BillingBreakdown>(
+      `/billing/comparison/${encodeURIComponent(provider)}${period ? `?period=${period}` : ""}`,
+    ),
 
   // ---- MCP: read-only access for coding agents ----
   mcpTokens: () => request<McpToken[]>("/mcp/tokens"),

@@ -146,8 +146,20 @@ def test_api_registers_the_router_and_does_nothing_else_with_it():
     ]
 
 
+def _code_only(text: str) -> str:
+    """Source with its prose removed, so a scan judges what runs.
+
+    Same treatment the boundary test below applies. Without it this guard also
+    forbids *describing* the boundary: a module that explains it deliberately
+    stays out of the recon_ tables would fail for saying so, which would teach
+    people to delete the explanation rather than keep the rule.
+    """
+    text = re.sub(r'"""[\s\S]*?"""', "", text)
+    return re.sub(r"#.*", "", text)
+
+
 def test_no_existing_query_reads_a_reconciliation_table():
-    offenders = [p.name for p in SOURCE.glob("*.py") if "recon_" in p.read_text()]
+    offenders = [p.name for p in SOURCE.glob("*.py") if "recon_" in _code_only(p.read_text())]
     assert offenders == [], f"recon_ tables are read by {offenders}"
 
 

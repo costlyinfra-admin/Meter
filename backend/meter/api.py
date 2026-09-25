@@ -34,6 +34,7 @@ from . import (
     assistant,
     assistant_facts,
     auth,
+    bill_compare,
     budgets,
     build,
     claudecode,
@@ -1625,6 +1626,28 @@ def create_app() -> FastAPI:
         # The SDK's optimize mode fetches its per-tenant fingerprint salt once.
         tenant_id = _ingest_tenant(request)
         return {"salt": hook.get_or_create_salt(tenant_id)}
+
+    # ---- Billing reconciliation: the bill against what was metered --------
+    # Read-only and computed on request. Deliberately NOT part of the sealed
+    # reconciliation module, which compares an uploaded STATEMENT against
+    # connector spend; this compares connector spend against SDK-metered spend,
+    # needs no upload, and is available to every tenant with a cost connector.
+    @app.get("/api/billing/comparison")
+    def billing_comparison(
+        user: CurrentUser,
+        period: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    ) -> dict:
+        return bill_compare.compare(user["tenant_id"], _parse_period(period) if period else None)
+
+    @app.get("/api/billing/comparison/{provider}")
+    def billing_comparison_detail(
+        provider: str,
+        user: CurrentUser,
+        period: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    ) -> dict:
+        return bill_compare.breakdown(
+            user["tenant_id"], provider, _parse_period(period) if period else None
+        )
 
     @app.post("/api/inference/reconcile")
     def reconcile_inference(body: ReconcileRequest, user: CurrentUser) -> list[dict]:
