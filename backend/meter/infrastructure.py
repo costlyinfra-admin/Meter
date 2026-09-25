@@ -41,7 +41,7 @@ from typing import Optional
 
 from . import credentials, infra_csv
 from .db import admin_dsn, app_dsn, connect, tenant_tx
-from .infra_classify import LineItem, classify
+from .infra_classify import LineItem, classify, provider_for_vendor
 from .infra_providers import (
     CloudflareCostClient,
     DigitalOceanCostClient,
@@ -473,6 +473,13 @@ def persist(
         )
         for (period, key), row in folded.items():
             item, amount = row["item"], row["amount"]
+            # Classified by the row's OWN vendor, not by the import's. They are
+            # the same thing for every connector — but a FOCUS export is a
+            # format rather than a vendor, so one file can carry AWS, GCP and
+            # Azure lines under the single pseudo-provider `focus`. Classifying
+            # those by the import would give them no rule table, and an
+            # `Amazon Bedrock` line inside one would be counted here as well as
+            # by the Bedrock connector that owns it.
             verdict = classify(
                 LineItem(
                     service=item.service or "",
@@ -482,7 +489,9 @@ def persist(
                     account_id=item.account_id,
                     tag_value=item.tag_value,
                 ),
-                provider_type,
+                provider_for_vendor(
+                    (item.dimensions or {}).get("ServiceProviderName"), provider_type
+                ),
             )
             # A category another connector already owns is recorded, not counted.
             counted = verdict.dedupe_owner is None

@@ -32,11 +32,13 @@ def row(
     service="Amazon Elastic Compute Cloud",
     start="2026-09-01",
     tags="",
+    provider="AWS",
 ):
     quoted = f'"{tags}"' if tags else ""
     return (
         f"2026-09-01,{start},2026-09-02,{category},{charge_class},Compute,"
-        f"{billed},{effective},{listed},USD,{service},Compute,AWS,us-east-1,1234,i-1,sku-1,{quoted}"
+        f"{billed},{effective},{listed},USD,{service},Compute,{provider},"
+        f"us-east-1,1234,i-1,sku-1,{quoted}"
     )
 
 
@@ -429,3 +431,88 @@ def test_a_minimal_mandatory_only_export_is_enough():
     assert report.focus is not None
     assert report.total == Decimal("42.00")
     assert report.items[0].tag_value is None
+
+
+# ---------------------------------------------------------------------------
+# Dedupe: a FOCUS file is a format, not a vendor
+# ---------------------------------------------------------------------------
+# One export can carry AWS, GCP and Azure lines, and it is imported under the
+# pseudo-provider `focus`. Classifying those by the import rather than by each
+# row's own vendor gives them no rule table at all — so the services other
+# connectors authoritatively own would be counted here as well as there, which
+# is the guarantee migration 0045 makes.
+def _multi_cloud_csv() -> str:
+    return csv_of(
+        row(service="Amazon Elastic Compute Cloud", provider="AWS", billed="500.00"),
+        # Owned by the Bedrock inference connector.
+        row(service="Amazon Bedrock", provider="AWS", billed="300.00"),
+        # Owned by the Google Gemini / Vertex connector.
+        row(service="Vertex AI", provider="Google Cloud", billed="200.00"),
+        row(service="Cloud Storage", provider="Google Cloud", billed="100.00"),
+    )
+
+
+def _stored(admin_conn) -> dict:
+    rows = admin_conn.execute(
+        "SELECT service, counted, dedupe_owner, category FROM infra_cost"
+    ).fetchall()
+    return {service: (counted, owner, category) for service, counted, owner, category in rows}
+
+
+def test_a_service_another_connector_owns_is_not_counted_again(client, admin_conn):
+    client.post(
+        "/api/infrastructure/import", json={"provider": "focus", "csv": _multi_cloud_csv()}
+    )
+    stored = _stored(admin_conn)
+
+    counted, owner, category = stored["Amazon Bedrock"]
+    assert (counted, owner, category) == (False, "bedrock", "inference")
+    # ...and ordinary compute on the same file is counted as normal.
+    assert stored["Amazon Elastic Compute Cloud"][0] is True
+
+
+def test_the_vendor_is_read_per_row_not_per_file(client, admin_conn):
+    # Vertex AI is a GCP rule. If the rule table were chosen once for the
+    # import, a file whose first row is AWS could never match it.
+    client.post(
+        "/api/infrastructure/import", json={"provider": "focus", "csv": _multi_cloud_csv()}
+    )
+    stored = _stored(admin_conn)
+    assert stored["Vertex AI"][0] is False, "Vertex AI is owned by its own connector"
+    assert stored["Cloud Storage"][0] is True
+
+
+def test_the_excluded_spend_is_kept_out_of_the_infrastructure_total(client):
+    client.post(
+        "/api/infrastructure/import", json={"provider": "focus", "csv": _multi_cloud_csv()}
+    )
+    summary = client.get("/api/infrastructure/summary?provider=focus&period=2026-09").json()
+    # $500 compute + $100 storage. The $500 of Bedrock and Vertex is recorded
+    # but not counted, because the connectors that own it already report it.
+    assert summary["total"] == 600.0
+
+
+def test_an_unknown_vendor_falls_back_rather_than_failing(client, admin_conn):
+    # A cloud Meter has no rule table for still imports; it simply gets the
+    # default classification, which is what it would get today.
+    client.post(
+        "/api/infrastructure/import",
+        json={
+            "provider": "focus",
+            "csv": csv_of(row(service="Some Service", provider="Brand New Cloud")),
+        },
+    )
+    assert _stored(admin_conn)["Some Service"][0] is True
+
+
+def test_every_cloud_rule_table_is_reachable_from_a_focus_export():
+    # The bridge is a hand-written vocabulary map, so a missing entry is
+    # invisible: the row just falls back and quietly loses its dedupe.
+    from meter import infra_classify
+
+    reachable = {
+        infra_classify.provider_for_vendor(spelling, "fallback")
+        for spellings in infra_classify._FOCUS_VENDORS.values()
+        for spelling in spellings
+    }
+    assert set(infra_classify.RULES_BY_PROVIDER) <= reachable

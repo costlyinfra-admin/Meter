@@ -156,6 +156,21 @@ def _key(header: str) -> str:
     return _NORMALIZE.sub("", (header or "").strip().lower())
 
 
+def column(row: dict, *names: str):
+    """One FOCUS column out of a row, whatever the exporter did to its casing.
+
+    Public because the Vercel connector reads FOCUS from an API rather than a
+    file and must match names the same way this module does — two different
+    normalisations would mean a column found on one path and missed on the
+    other.
+    """
+    present = {_key(str(k)): v for k, v in (row or {}).items()}
+    for name in names:
+        if _key(name) in present:
+            return present[_key(name)]
+    return None
+
+
 @dataclass
 class Focus:
     """A file recognised as FOCUS, and how to read it.

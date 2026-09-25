@@ -572,7 +572,10 @@ def test_vercel_keeps_credits_because_they_are_real_money():
     items = _v(handler).fetch_items(*WINDOW)
     # A credit reduces the bill. Dropping it would overstate spend.
     assert [i.amount for i in items] == [Decimal("142.50"), Decimal("-25.00")]
-    assert items[1].dimensions["chargecategory"] == "Credit"
+    # The spec's own spelling. A bill imported from a file and the same bill
+    # fetched from this API must file the charge shape under one key, or a
+    # query written against either misses half the rows.
+    assert items[1].dimensions["ChargeCategory"] == "Credit"
 
 
 def test_vercel_enforces_the_window_on_our_side():
@@ -637,6 +640,126 @@ def test_vercel_follows_pagination_and_stops_on_a_repeated_cursor():
     items = _v(handler).fetch_items(*WINDOW)
     assert len(calls) == 2
     assert [i.service for i in items] == ["Edge Functions", "Blob"]
+
+
+def test_vercel_records_the_cost_column_it_actually_read():
+    # The metric lands on every row and in its item_key. Asking for BilledCost
+    # and reading EffectiveCost while stamping "BilledCost" is the failure
+    # import_csv warns about: a tenant who switches metric later would have the
+    # old rows silently reinterpreted.
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "charges": [
+                    {
+                        "ChargePeriodStart": "2026-05-04",
+                        "EffectiveCost": "7.00",
+                        "ServiceName": "Blob",
+                    }
+                ]
+            },
+        )
+
+    client = _v(handler)
+    assert client.metric == "BilledCost"
+    client.fetch_items(*WINDOW)
+    assert client.metric == "EffectiveCost"
+
+
+def test_vercel_reads_one_run_from_one_cost_column():
+    # Page one settles the column; page two carries the same one, so the whole
+    # run is one measurement and the metric describes every row of it.
+    pages = [
+        {
+            "charges": [_charge(BilledCost=None, EffectiveCost="7.00")],
+            "pagination": {"next": "cur2"},
+        },
+        {
+            "charges": [
+                _charge(ServiceName="Blob", BilledCost="12.00", EffectiveCost="9.00")
+            ]
+        },
+    ]
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=pages[min(len(calls) - 1, 1)])
+
+    client = _v(handler)
+    items = client.fetch_items(*WINDOW)
+    assert client.metric == "EffectiveCost"
+    # Page two has BilledCost too, and it is not what this run is measuring.
+    assert [i.amount for i in items] == [Decimal("7.00"), Decimal("9.00")]
+
+
+def test_vercel_refuses_a_run_whose_cost_column_changes_mid_export():
+    # The alternative is storing both pages under one metric — either
+    # mislabelling real dollars or dropping them. Both are silent; this is not.
+    pages = [
+        {
+            "charges": [_charge(BilledCost=None, EffectiveCost="7.00")],
+            "pagination": {"next": "cur2"},
+        },
+        {"charges": [_charge(ServiceName="Blob", BilledCost="12.00", EffectiveCost=None)]},
+    ]
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=pages[min(len(calls) - 1, 1)])
+
+    with pytest.raises(ProviderError) as exc:
+        _v(handler).fetch_items(*WINDOW)
+    assert "EffectiveCost" in str(exc.value)
+
+
+def test_vercel_flags_a_charge_that_restates_a_closed_period():
+    # ChargeClass = "Correction" is how FOCUS marks a row restating a period
+    # already billed. Unread, a correction looks like fresh spend.
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "charges": [
+                    _charge(ChargeClass="Correction", ServiceProviderName="Vercel"),
+                ]
+            },
+        )
+
+    (item,) = _v(handler).fetch_items(*WINDOW)
+    assert item.dimensions["ChargeClass"] == "Correction"
+    # ...and the vendor name classification reads to pick a rule table.
+    assert item.dimensions["ServiceProviderName"] == "Vercel"
+
+
+def test_vercel_reads_tags_whether_they_arrive_as_an_object_or_a_string():
+    # FOCUS serialises Tags as a JSON object, "as a String where necessary".
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "charges": [
+                    {
+                        "ChargePeriodStart": "2026-05-04",
+                        "BilledCost": "1.00",
+                        "ServiceName": "A",
+                        "Tags": {"feature": "search"},
+                    },
+                    {
+                        "ChargePeriodStart": "2026-05-04",
+                        "BilledCost": "2.00",
+                        "ServiceName": "B",
+                        "Tags": '{"vercel:feature": "billing"}',
+                    },
+                ]
+            },
+        )
+
+    items = _v(handler).fetch_items(*WINDOW)
+    # ...and a provider-prefixed key still matches the key the customer typed.
+    assert [i.tag_value for i in items] == ["search", "billing"]
 
 
 def test_vercel_prefers_billed_cost_but_falls_back_rather_than_dropping():

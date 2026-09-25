@@ -37,6 +37,7 @@ from typing import Optional
 
 import httpx
 
+from . import focus
 from .providers import (
     CloudCostItem,
     ProviderError,
@@ -627,18 +628,23 @@ def _parse_snowflake(payload: dict, tag_key: str) -> list[CloudCostItem]:
 _VERCEL_API = "https://api.vercel.com"
 _VERCEL_CHARGES = "/v1/billing/charges"
 
-#: FOCUS cost columns, in the order we prefer them. BilledCost is what the
-#: invoice says; EffectiveCost is amortised and is a different question.
-_FOCUS_COST_COLUMNS = ("billedcost", "effectivecost", "listcost", "contractedcost")
-#: FOCUS names dimensions in PascalCase; matching is case-insensitive because
-#: implementations differ on casing and none of them differ on meaning.
+#: The spec's own cost columns and preference order live in focus.py, which is
+#: the one place that knows FOCUS. BilledCost is what the invoice says;
+#: EffectiveCost is amortised and answers a different question.
+_FOCUS_COST_COLUMNS = focus.COST_COLUMNS
+#: FOCUS column -> the CloudCostItem field it fills. Written in the spec's own
+#: PascalCase and matched through focus.column, so these are the names that
+#: reach `dimensions` — a row imported from a file and the same row fetched from
+#: an API must not file the same fact under two different keys.
 _FOCUS_FIELDS = {
-    "servicename": "service",
-    "skuid": "usage_type",
-    "chargedescription": "operation",
-    "subaccountname": "account_id",
-    "regionid": "region",
+    "ServiceName": "service",
+    "SkuId": "usage_type",
+    "ChargeDescription": "operation",
+    "SubAccountId": "account_id",
+    "RegionId": "region",
 }
+#: SubAccountName where SubAccountId is absent: Vercel reports the name.
+_FOCUS_ALIASES = {"SubAccountId": ("SubAccountId", "SubAccountName")}
 
 
 class VercelCloudCostClient(_BaseCostClient):
@@ -659,12 +665,15 @@ class VercelCloudCostClient(_BaseCostClient):
             raise ProviderError("Vercel credentials need an access token with billing read access.")
         self._team = c.get("team_id") or c.get("teamId")
         self.tag = (c.get("tag") or "feature").strip() or "feature"
-        metric = (c.get("metric") or "BilledCost").strip()
-        if metric.lower() not in _FOCUS_COST_COLUMNS:
-            raise ProviderError(
-                "metric must be one of BilledCost, EffectiveCost, ListCost, ContractedCost."
-            )
-        self.metric = metric
+        # Normalised to the spec's own spelling, so a credential saying
+        # "effectivecost" is stored as "EffectiveCost" — `metric` ends up on
+        # every row and in its item_key, and two spellings of one column would
+        # be two different measurements as far as those are concerned.
+        requested = (c.get("metric") or "BilledCost").strip()
+        canonical = {column.lower(): column for column in _FOCUS_COST_COLUMNS}
+        if requested.lower() not in canonical:
+            raise ProviderError("metric must be one of " + ", ".join(_FOCUS_COST_COLUMNS) + ".")
+        self.metric = canonical[requested.lower()]
         self.granularity = "DAILY"
 
     def fetch_items(self, start: dt.date, end: dt.date) -> list[CloudCostItem]:
@@ -674,10 +683,29 @@ class VercelCloudCostClient(_BaseCostClient):
             params["teamId"] = self._team
         items: list[CloudCostItem] = []
         seen_cursors: set = set()
+        column: Optional[str] = None
         for _ in range(100):  # hard stop, far beyond a year of daily charges
             data = self._get(params)
             rows = _focus_rows(data)
-            items.extend(_parse_focus(rows, start, end, self.metric, self.tag))
+            # The payload decides which cost column is actually read, so the
+            # metric is narrowed to what was measured before sync_window stores
+            # it. Only the first page carrying a cost chooses; a later page
+            # that carries cost in some other column is a conflict we refuse
+            # rather than resolve — one run stores one metric, and mixing two
+            # columns under one label would either mislabel real dollars or
+            # drop them. Neither is allowed to happen quietly.
+            if column is not None and _focus_cost_column(rows, column) not in (None, column):
+                raise ProviderError(
+                    f"Vercel changed cost column mid-export. This sync read {column}; "
+                    "a later page carries cost only in a different column. Re-run the "
+                    "sync rather than mixing two measurements under one metric.",
+                    502,
+                )
+            parsed, used = _parse_focus(rows, start, end, column or self.metric, self.tag)
+            if used is not None:
+                column = used
+                self.metric = used
+            items.extend(parsed)
             cursor = _vercel_cursor(data)
             # A cursor that repeats means the API is not advancing; stop rather
             # than loop until the hard cap.
@@ -746,65 +774,87 @@ def _vercel_cursor(data) -> Optional[str]:
     return str(nxt) if nxt else None
 
 
-def _focus_get(row: dict, *names: str):
-    """A FOCUS column by name, case-insensitively."""
-    lowered = {str(k).lower(): v for k, v in row.items()}
-    for name in names:
-        if name.lower() in lowered:
-            return lowered[name.lower()]
-    return None
-
-
 def _parse_focus(
     rows: list, start: dt.date, end: dt.date, metric: str, tag_key: str
-) -> list[CloudCostItem]:
-    """FOCUS charge rows to line items, filtered to ``[start, end)``.
+) -> tuple[list[CloudCostItem], Optional[str]]:
+    """FOCUS charge rows to line items, and the cost column they were read from.
 
     The window is applied here as well as in the query. A charge outside it is
     not ours to record whatever the endpoint chose to return.
+
+    The second element is None when the payload carried no cost at all, so the
+    caller leaves the requested metric alone rather than narrowing it to a
+    guess made from nothing.
     """
+    # ONE cost column for the whole payload, chosen from what it actually
+    # carries — the requested one if any row has it, else the first the spec
+    # prefers that does. Picking per row would read some rows from BilledCost
+    # and others from EffectiveCost while labelling them all with the request,
+    # which is the failure import_csv warns about: a tenant who switches metric
+    # later must not have old rows silently reinterpreted. The caller reads the
+    # chosen column back and stores it, so `metric` says what was measured.
+    chosen = _focus_cost_column(rows, metric)
+    if chosen is None:
+        return [], None
+
     out: list[CloudCostItem] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        # Fall back through the cost columns: a provider that omits the
-        # requested one still has a real number to report.
-        amount = None
-        for column in (metric, *_FOCUS_COST_COLUMNS):
-            amount = _to_decimal(_focus_get(row, column))
-            if amount is not None:
-                break
+        amount = _to_decimal(focus.column(row, chosen))
         # Zero carries nothing; a NEGATIVE is a credit and is real money.
         if amount is None or amount == 0:
             continue
-        day = _iso_day(_focus_get(row, "ChargePeriodStart", "BillingPeriodStart"))
+        day = _iso_day(focus.column(row, "ChargePeriodStart", "BillingPeriodStart"))
         if day is None or not (start <= day < end):
             continue
-        tags = _focus_get(row, "Tags")
-        tag_value = None
-        if isinstance(tags, dict):
-            lowered = {str(k).lower(): v for k, v in tags.items()}
-            raw = lowered.get(tag_key.lower())
-            tag_value = str(raw) if raw not in (None, "") else None
+        # FOCUS keeps every tag in one JSON column — an object, or a string
+        # holding one. focus.read_tags takes both, and focus.tag_value tolerates
+        # the scheme prefixes providers actually use ("aws:feature").
+        tags = focus.read_tags(focus.column(row, "Tags"))
+        tag_value = focus.tag_value(tags, tag_key)
         item = CloudCostItem(
             period=day,
             amount=amount,
-            currency=str(_focus_get(row, "BillingCurrency") or "USD").upper(),
+            currency=str(focus.column(row, "BillingCurrency") or "USD").upper(),
             tag_key=tag_key,
             tag_value=tag_value,
             dimensions={f"TAG:{tag_key}": tag_value},
         )
-        for column, attr in _FOCUS_FIELDS.items():
-            value = _focus_get(row, column)
+        for name, attr in _FOCUS_FIELDS.items():
+            value = focus.column(row, *_FOCUS_ALIASES.get(name, (name,)))
             clean = str(value) if value not in (None, "") else None
-            item.dimensions[column] = clean
+            item.dimensions[name] = clean
             if getattr(item, attr, None) in (None, ""):
                 setattr(item, attr, clean if attr != "service" else (clean or ""))
-        # ChargeCategory separates usage from tax, credits and purchases; it is
-        # kept so those can be told apart later without re-fetching.
-        item.dimensions["chargecategory"] = _focus_get(row, "ChargeCategory")
+        # Charge shape, under the spec's own names so a file import and an API
+        # fetch file the same fact under one key. ChargeCategory separates usage
+        # from tax, credits and purchases; ChargeClass marks a row restating a
+        # closed period; ServiceProviderName is what classification reads to
+        # pick a rule table.
+        for name in ("ChargeCategory", "ChargeClass", "ServiceProviderName", "ProviderName"):
+            value = focus.column(row, name)
+            if value not in (None, ""):
+                item.dimensions.setdefault(
+                    "ServiceProviderName" if name == "ProviderName" else name, str(value)
+                )
         out.append(item)
-    return out
+    return out, chosen
+
+
+def _focus_cost_column(rows: list, requested: str) -> Optional[str]:
+    """The cost column this payload is read from, preferring what was asked.
+
+    None when no row carries a cost at all — an empty page, or a payload whose
+    cost columns are all blank. There is nothing to have measured, so the
+    caller keeps the metric it asked for.
+    """
+    for candidate in (requested, *_FOCUS_COST_COLUMNS):
+        if any(
+            isinstance(row, dict) and focus.column(row, candidate) not in (None, "") for row in rows
+        ):
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------

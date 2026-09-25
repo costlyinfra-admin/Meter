@@ -390,6 +390,55 @@ RULES_BY_PROVIDER: dict[str, tuple[Rule, ...]] = {
 #: Back-compat alias: the AWS table was `RULES` when AWS was the only provider.
 RULES = AWS_RULES
 
+#: FOCUS names its vendors in its own vocabulary — the spec's
+#: `ServiceProviderName` says "AWS" or "Microsoft Azure" where these tables are
+#: keyed "aws" and "azure_cloud". This bridges the two.
+#:
+#: It matters because of dedupe. A FOCUS export is a billing FORMAT, not a
+#: vendor: one file can carry AWS, GCP and Azure lines, and it is imported under
+#: the pseudo-provider `focus`. Without this, every row of it would be
+#: classified with no rule table at all — so an `Amazon Bedrock` line would be
+#: counted as infrastructure AND counted again by the Bedrock connector, which
+#: is its authoritative path. That is exactly the guarantee migration 0045
+#: makes, and the FOCUS file is the one most likely to contain all four of the
+#: services those rules exist to catch.
+#:
+#: Matched on letters and digits only, so "Digital Ocean" and "digitalocean" are
+#: one name. A vendor with no entry falls back to the import's own provider,
+#: which is today's behaviour — the safe direction, since a missing entry costs
+#: a dedupe rather than mis-firing one.
+_FOCUS_VENDORS: dict[str, tuple[str, ...]] = {
+    "aws": ("aws", "amazonwebservices", "amazon"),
+    "azure_cloud": ("microsoftazure", "azure", "microsoft"),
+    "gcp": ("googlecloud", "googlecloudplatform", "gcp", "google"),
+    "digitalocean": ("digitalocean",),
+    "mongodb_atlas": ("mongodb", "mongodbatlas", "atlas"),
+    "cloudflare": ("cloudflare",),
+    "snowflake": ("snowflake",),
+    "vercel_cloud": ("vercel",),
+    "redis_cloud": ("redis", "rediscloud", "redislabs"),
+    "supabase": ("supabase",),
+    "neon": ("neon",),
+}
+
+_BY_VENDOR_NAME = {
+    spelling: provider for provider, names in _FOCUS_VENDORS.items() for spelling in names
+}
+
+_VENDOR_NORMALIZE = re.compile(r"[^a-z0-9]+")
+
+
+def provider_for_vendor(name: Optional[str], fallback: str) -> str:
+    """The rule table a FOCUS row's `ServiceProviderName` belongs to.
+
+    `fallback` is the import's own provider, returned for an empty or unknown
+    vendor so nothing about a non-FOCUS import changes.
+    """
+    if not name:
+        return fallback
+    key = _VENDOR_NORMALIZE.sub("", name.strip().lower())
+    return _BY_VENDOR_NAME.get(key, fallback)
+
 
 def classify(item: LineItem, provider: str = "aws") -> Classification:
     """The one primary category for a line item, plus the rule that decided it.
