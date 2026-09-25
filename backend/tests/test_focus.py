@@ -18,7 +18,7 @@ from meter import focus, infra_csv
 HEADERS = (
     "BillingPeriodStart,ChargePeriodStart,ChargePeriodEnd,ChargeCategory,ChargeClass,"
     "ChargeDescription,BilledCost,EffectiveCost,ListCost,BillingCurrency,ServiceName,"
-    "ServiceCategory,ServiceProvider,RegionId,SubAccountId,ResourceId,SkuId,Tags"
+    "ServiceCategory,ServiceProviderName,RegionId,SubAccountId,ResourceId,SkuId,Tags"
 )
 
 
@@ -228,7 +228,7 @@ def test_a_genuinely_foreign_column_is_still_reported():
 def test_the_dimensions_keep_what_a_later_rule_might_group_by():
     report = parse(row())
     dims = report.items[0].dimensions
-    assert dims["ServiceProvider"] == "AWS"
+    assert dims["ServiceProviderName"] == "AWS"
     assert dims["ResourceId"] == "i-1"
     assert dims["ServiceCategory"] == "Compute"
     assert dims["imported_from"] == "focus"
@@ -320,7 +320,7 @@ def test_the_stored_rows_carry_the_focus_dimensions(client, admin_conn):
     )
     dims = admin_conn.execute("SELECT dimensions FROM infra_cost").fetchone()[0]
     assert dims["ChargeCategory"] == "Tax"
-    assert dims["ServiceProvider"] == "AWS"
+    assert dims["ServiceProviderName"] == "AWS"
     assert dims["imported_from"] == "focus"
 
 
@@ -366,3 +366,66 @@ def test_pointing_the_tag_at_a_different_column_uses_that_column(client):
         },
     ).json()
     assert body["mapping"]["tag"] == "ChargeDescription"
+
+
+# ---------------------------------------------------------------------------
+# Every released version, not only the newest
+# ---------------------------------------------------------------------------
+def test_a_file_from_before_the_provider_column_was_renamed_still_imports():
+    # ProviderName was removed in FOCUS 1.3 and ServiceProviderName introduced
+    # in its place. An export from 1.0 is still a FOCUS export.
+    old = csv_of(row()).replace("ServiceProviderName", "ProviderName")
+    report = infra_csv.parse(old, default_service="Cloud")
+    assert report.focus is not None
+    assert report.unmapped == []
+
+
+def test_the_provider_is_filed_under_one_name_whichever_version_wrote_it():
+    # Otherwise the same fact lands under two keys depending on which release
+    # the customer's exporter had caught up with, and a query written today
+    # silently misses last year's import.
+    current = infra_csv.parse(csv_of(row()), default_service="Cloud")
+    legacy = infra_csv.parse(
+        csv_of(row()).replace("ServiceProviderName", "ProviderName"), default_service="Cloud"
+    )
+    assert current.items[0].dimensions["ServiceProviderName"] == "AWS"
+    assert legacy.items[0].dimensions["ServiceProviderName"] == "AWS"
+    assert "ProviderName" not in legacy.items[0].dimensions
+
+
+def test_detection_needs_the_columns_every_version_has_had():
+    # These have been present since 1.0, which is what makes an export from any
+    # release recognisable. Losing either defeats detection.
+    for column in focus.SIGNATURE:
+        without = csv_of(row()).replace(column, f"Not{column}")
+        assert infra_csv.parse(without, default_service="Cloud").focus is None, column
+
+
+def test_any_one_cost_column_is_enough():
+    # A file carrying only EffectiveCost is still FOCUS, and that is what it
+    # gets read from — the default is a preference, not a requirement.
+    text = csv_of(row()).replace("BilledCost", "NotBilledCost")
+    assert infra_csv.parse(text, default_service="Cloud").focus["cost_column"] == "EffectiveCost"
+
+
+def test_a_file_with_no_cost_column_at_all_is_not_focus():
+    # It falls through to the by-meaning parser, which finds no amount and says
+    # which columns it did see — a better failure than importing zeroes.
+    text = csv_of(row())
+    for column in focus.COST_COLUMNS:
+        text = text.replace(column, f"Not{column}")
+    with pytest.raises(infra_csv.CsvImportError, match="amount column"):
+        infra_csv.parse(text, default_service="Cloud")
+
+
+def test_a_minimal_mandatory_only_export_is_enough():
+    # Nothing beyond the mandatory columns is required to import: a file with
+    # no tags, no region and no resource ids is still a bill.
+    text = (
+        "ChargePeriodStart,ChargeCategory,BilledCost,BillingCurrency,ServiceName\n"
+        "2026-09-01,Usage,42.00,USD,Compute\n"
+    )
+    report = infra_csv.parse(text, default_service="Cloud")
+    assert report.focus is not None
+    assert report.total == Decimal("42.00")
+    assert report.items[0].tag_value is None

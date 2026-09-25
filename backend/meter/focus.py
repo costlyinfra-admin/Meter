@@ -30,10 +30,16 @@ What the spec gives us that a guessed schema cannot:
   * **Tags as a map.** `Tags` is a JSON object, not a single value, so the one
     key a customer attributes by can be read out of it instead of being lost.
 
-Version-tolerant on purpose. FOCUS has spelled the provider column both
-`ProviderName` and `ServiceProvider` across releases; both are accepted, as are
-any columns the spec does not define but a vendor added under the `x_` prefix it
-reserves for exactly that.
+**Every released version, not only the newest.** Detection keys on
+`ChargeCategory`, `ChargePeriodStart` and a cost column, all of which have been
+present since 1.0, and the columns Meter reads — `ServiceName`,
+`BillingCurrency`, `RegionId`, `SubAccountId`, `SkuId`, `Tags` and the four
+costs — have been spelled the same way throughout. Where the spec did rename
+something the old name is still accepted and stored under the current one:
+`ProviderName` was removed in 1.3 and replaced by `ServiceProviderName`, so a
+file from either era files the provider under the same key. Columns a vendor
+added under the `x_` prefix the spec reserves are recognised as extensions
+rather than as names we failed to understand.
 
 This module knows the spec and nothing about Meter's storage — it reports what a
 file contains and leaves the writing to infrastructure.py.
@@ -91,9 +97,8 @@ _DIMENSIONS: tuple[str, ...] = (
     "ChargeDescription",
     "ServiceCategory",
     "ServiceName",
-    "ServiceProvider",
+    "ServiceProviderName",
     "ProviderName",
-    "PublisherName",
     "InvoiceIssuerName",
     "ResourceId",
     "ResourceName",
@@ -133,6 +138,16 @@ _RECOGNISED_UNUSED: tuple[str, ...] = (
     "PricingCurrencyListCost",
     "PricingCurrencyContractedCost",
 )
+
+#: Columns the spec renamed, mapped to the name Meter stores them under. A file
+#: is read whichever version produced it, and the stored row uses one key either
+#: way — otherwise the same fact would be filed under two names depending on
+#: which release the customer's exporter had caught up with.
+_CANONICAL: dict[str, str] = {
+    # ProviderName was removed in 1.3 and ServiceProviderName introduced in its
+    # place. Both are accepted; both are stored as the current name.
+    "ProviderName": "ServiceProviderName",
+}
 
 _NORMALIZE = re.compile(r"[^a-z0-9]+")
 
@@ -184,13 +199,17 @@ class Focus:
         return found
 
     def dimensions(self, row: dict) -> dict:
-        """The FOCUS columns worth keeping on the stored row."""
+        """The FOCUS columns worth keeping on the stored row.
+
+        Filed under the current spec name even where the file used an older
+        one, so a query written today works on last year's import.
+        """
         kept = {}
         for column in _DIMENSIONS:
             header = self.headers.get(column)
             value = (row.get(header) or "").strip() if header else ""
             if value:
-                kept[column] = value
+                kept.setdefault(_CANONICAL.get(column, column), value)
         return kept
 
 
