@@ -706,6 +706,7 @@ def test_the_registry_lists_every_connected_cloud_and_platform(tenant_id):
         "redis_cloud",
         "supabase",
         "neon",
+        "focus",
     ]
     # Every provider declares how its numbers arrive, and the two sets partition
     # the registry — a provider that is in neither could never be synced at all.

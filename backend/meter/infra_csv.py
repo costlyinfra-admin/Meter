@@ -21,6 +21,13 @@ the point: this path exists precisely for bills we cannot fetch.
 
 Only two things are required — a date and an amount. Everything else improves
 attribution when present and is absent honestly when not.
+
+**FOCUS is the exception, and proves the rule.** Where a file is a FOCUS export
+its columns are defined by a published specification rather than by a vendor's
+habits, so they can be matched exactly and read for what they mean — which cost
+is which, which rows are tax, which restate a closed month. focus.py holds that
+knowledge; this module asks it first and falls back to matching by meaning when
+the answer is no.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
+from . import focus as focus_spec
 from .providers import CloudCostItem
 
 
@@ -148,6 +156,10 @@ class CsvReport:
     currency: str
     first_day: Optional[dt.date]
     last_day: Optional[dt.date]
+    #: Set when the file was recognised as a FOCUS export: which cost column was
+    #: read, what the charge categories total, and how many rows restate a
+    #: closed period. None for every other kind of bill.
+    focus: Optional[dict] = None
 
     def as_dict(self) -> dict:
         return {
@@ -161,6 +173,7 @@ class CsvReport:
             "currency": self.currency,
             "from": self.first_day.isoformat() if self.first_day else None,
             "to": self.last_day.isoformat() if self.last_day else None,
+            "focus": self.focus,
         }
 
 
@@ -300,6 +313,7 @@ def parse(
     tag_key: str = "feature",
     mapping_override: Optional[dict] = None,
     default_service: str = "",
+    cost_column: Optional[str] = None,
 ) -> CsvReport:
     """Read a downloaded bill. Raises CsvImportError on anything unreadable.
 
@@ -313,7 +327,22 @@ def parse(
     if not reader.fieldnames:
         raise CsvImportError("The file has no header row, so its columns cannot be identified.")
 
-    mapping, unmapped = _build_mapping(list(reader.fieldnames), mapping_override)
+    spec = focus_spec.detect(list(reader.fieldnames))
+    if spec is not None:
+        # A published schema, so the columns are known rather than guessed. An
+        # override still wins: a customer who wants EffectiveCost says so, and
+        # one whose exporter renamed a column can still point at it by hand.
+        chosen_cost = spec.cost_column(cost_column)
+        mapping = {**spec.mapping(chosen_cost), **(mapping_override or {})}
+        # "Unused" means the spec has no meaning for it. A column read onto the
+        # row as a dimension, or a vendor extension under the x_ prefix, is
+        # understood — reporting those as unused would tell a customer their
+        # charge categories had been ignored when they are on every row.
+        understood = set(mapping.values()) | set(spec.headers.values()) | set(spec.extensions)
+        unmapped = [name for name in reader.fieldnames if name and name not in understood]
+    else:
+        chosen_cost = None
+        mapping, unmapped = _build_mapping(list(reader.fieldnames), mapping_override)
     missing = [m for m in REQUIRED if m not in mapping]
     if missing:
         article = {"amount": "an amount", "date": "a date"}
@@ -341,6 +370,8 @@ def parse(
     items: list = []
     skipped = 0
     reasons: dict = {}
+    by_category: dict = {}
+    corrections = 0
     total = Decimal("0")
     currencies: set = set()
     days: list = []
@@ -363,7 +394,23 @@ def parse(
 
         currency = (cell(row, "currency") or "USD").upper()[:8] or "USD"
         currencies.add(currency)
-        tag_value = cell(row, "tag") or None
+        if spec is not None:
+            # FOCUS keeps every tag in one JSON column, so the key a customer
+            # attributes by is read out of the map rather than from a column
+            # nobody would have named after it. Unless they pointed the tag at
+            # some other column, in which case that column is what they meant.
+            if mapping.get("tag") == spec.header("Tags"):
+                tags = focus_spec.read_tags(row.get(spec.header("Tags")))
+                tag_value = focus_spec.tag_value(tags, tag_key)
+            else:
+                tag_value = cell(row, "tag") or None
+            category = (row.get(spec.header("ChargeCategory")) or "").strip()
+            by_category[category or "(none)"] = by_category.get(category or "(none)", Decimal("0"))
+            by_category[category or "(none)"] += amount
+            if (row.get(spec.header("ChargeClass")) or "").strip() == focus_spec.CORRECTION:
+                corrections += 1
+        else:
+            tag_value = cell(row, "tag") or None
         # A bill with no service column still has a known service: whose bill it
         # is. Naming the platform is stating what we know, not inferring — and it
         # is the difference between the import classifying as infrastructure and
@@ -386,7 +433,11 @@ def parse(
                     "service": service,
                     "usage_type": cell(row, "usage_type") or None,
                     f"TAG:{tag_key}": tag_value,
-                    "imported_from": "csv",
+                    "imported_from": "focus" if spec is not None else "csv",
+                    # Everything FOCUS said about this charge, so a stored row
+                    # can be regrouped later against rules that do not exist
+                    # yet — by charge category, by resource, by publisher.
+                    **(spec.dimensions(row) if spec is not None else {}),
                 },
             )
         )
@@ -413,6 +464,36 @@ def parse(
     if unmapped:
         warnings.append("Columns not used: " + ", ".join(str(u) for u in unmapped if u))
 
+    summary = None
+    if spec is not None:
+        other = {c: v for c, v in by_category.items() if c not in focus_spec.SERVICE_CATEGORIES}
+        summary = {
+            "cost_column": chosen_cost,
+            "cost_columns_available": list(spec.costs),
+            "by_category": {c: float(v) for c, v in sorted(by_category.items())},
+            "corrections": corrections,
+            "extensions": list(spec.extensions),
+        }
+        others = [c for c in spec.costs if c != chosen_cost]
+        warnings.append(
+            f"FOCUS export: amounts read from {chosen_cost}."
+            + (f" This file also carries {', '.join(others)}." if others else "")
+        )
+        if other:
+            # Real money on the invoice, and not the cost of running anything.
+            # Said out loud so nobody reads a service total as including it.
+            warnings.append(
+                "Includes charges that are not service usage: "
+                + ", ".join(f"{c} {v:,.2f}" for c, v in sorted(other.items()))
+                + ". They are imported so the total still matches the invoice."
+            )
+        if corrections:
+            warnings.append(
+                f"{corrections} row{'s' if corrections != 1 else ''} "
+                f"restate{'' if corrections != 1 else 's'} a closed billing period "
+                "(ChargeClass Correction), so an earlier month's total may move."
+            )
+
     return CsvReport(
         items=items,
         mapping={meaning: header for meaning, header in mapping.items()},
@@ -424,4 +505,5 @@ def parse(
         currency=sorted(currencies)[0] if len(currencies) == 1 else "mixed",
         first_day=min(days) if days else None,
         last_day=max(days) if days else None,
+        focus=summary,
     )

@@ -55,17 +55,21 @@ export function CsvBillImport({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  /** Which of FOCUS's four costs to read. Null until the customer chooses:
+   *  the server picks BilledCost, and a UI default would quietly compete. */
+  const [costColumn, setCostColumn] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const headers = csv ? headersOf(csv) : [];
 
-  async function preview(text: string, override: Record<string, string>) {
+  async function preview(text: string, override: Record<string, string>, cost = costColumn) {
     setBusy(true);
     setError(null);
     try {
       const next = await api.importInfrastructureCsv(provider.type, text, {
         dryRun: true,
         mapping: Object.keys(override).length ? override : undefined,
+        costColumn: cost ?? undefined,
       });
       setReport(next);
       setMapping(next.mapping);
@@ -83,7 +87,8 @@ export function CsvBillImport({
     const text = await file.text();
     setCsv(text);
     setMapping({});
-    await preview(text, {});
+    setCostColumn(null);
+    await preview(text, {}, null);
   }
 
   async function remap(meaning: string, header: string) {
@@ -98,7 +103,10 @@ export function CsvBillImport({
     setBusy(true);
     setError(null);
     try {
-      const result = await api.importInfrastructureCsv(provider.type, csv, { mapping });
+      const result = await api.importInfrastructureCsv(provider.type, csv, {
+        mapping,
+        costColumn: costColumn ?? undefined,
+      });
       setDone(
         `Imported ${result.items ?? result.rows_imported} line ` +
           `${(result.items ?? result.rows_imported) === 1 ? "item" : "items"}: ` +
@@ -121,9 +129,20 @@ export function CsvBillImport({
     <div className="csv-import">
       <p className="muted">{provider.note}</p>
       <p className="muted csv-import-why">
-        {provider.name} publishes an invoice you can download but no cost API to read it from.
-        Rather than estimate your spend from a price list, we read the real numbers out of the file
-        — so download the bill and drop it here.
+        {provider.type === "focus" ? (
+          <>
+            FOCUS is the FinOps Foundation&rsquo;s open billing format, so an export from any
+            provider that publishes one is read the same way — including a file covering several
+            clouds at once. Any bill dropped on another card is read as FOCUS too when it turns out
+            to be one.
+          </>
+        ) : (
+          <>
+            {provider.name} publishes an invoice you can download but no cost API to read it from.
+            Rather than estimate your spend from a price list, we read the real numbers out of the
+            file — so download the bill and drop it here.
+          </>
+        )}
       </p>
 
       <label className="csv-import-file">
@@ -163,6 +182,41 @@ export function CsvBillImport({
             )}
             . Nothing has been imported yet.
           </p>
+
+          {report.focus && (
+            <div className="csv-import-focus">
+              <p>
+                This is a <strong>FinOps FOCUS</strong> export, so its columns are read from the
+                specification rather than guessed.
+              </p>
+              <label className="csv-import-focus-cost">
+                Amounts from
+                <select
+                  aria-label="Which FOCUS cost to read"
+                  value={report.focus.cost_column}
+                  disabled={busy || report.focus.cost_columns_available.length < 2}
+                  onChange={(e) => {
+                    setCostColumn(e.target.value);
+                    if (csv) void preview(csv, mapping, e.target.value);
+                  }}
+                >
+                  {report.focus.cost_columns_available.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <dl className="csv-import-focus-split">
+                {Object.entries(report.focus.by_category).map(([category, amount]) => (
+                  <div key={category}>
+                    <dt>{category}</dt>
+                    <dd>{money(amount)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
 
           <table className="data-table csv-import-mapping">
             <thead>

@@ -7562,3 +7562,57 @@ button.span-head:focus-visible {
 .mcp-activity li {
   margin-bottom: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Cost sources → import a bill → FOCUS
+   --------------------------------------------------------------------------- */
+/* FOCUS is a published schema, so the preview can state facts the generic
+   importer can only guess at: which of the four costs was summed, and what the
+   charge categories total. Marked out as its own block because a customer is
+   deciding something here, not just reading a mapping. */
+.csv-import-focus {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--good);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+  margin: 0 0 1rem;
+}
+.csv-import-focus > p {
+  margin: 0 0 0.6rem;
+  font-size: 0.9rem;
+}
+.csv-import-focus-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+/* The charge-category split. Tax and credits are real money on the invoice and
+   are not the cost of running anything, so they are shown rather than folded
+   silently into a service total. */
+.csv-import-focus-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+  margin: 0.75rem 0 0;
+}
+.csv-import-focus-split > div {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+}
+.csv-import-focus-split dt {
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.csv-import-focus-split dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

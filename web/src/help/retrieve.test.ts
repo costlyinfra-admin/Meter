@@ -79,3 +79,20 @@ describe("questions about coding agents", () => {
     expect(first.id).toBe("trust/coding-agents");
   });
 });
+
+describe("questions about FOCUS", () => {
+  // "import" and "export" belong to the reconciliation topics, whose titles
+  // carry them at eight times the weight — so a FOCUS question reached those
+  // until this had a topic of its own.
+  it.each([
+    "can I import a FOCUS export",
+    "does Meter support the FinOps billing format",
+    "BilledCost or EffectiveCost",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("cost-sources/focus");
+  });
+
+  it("leads with it, rather than with reconciling an invoice", () => {
+    expect(retrieve("can I import a FOCUS export")[0].id).toBe("cost-sources/focus");
+  });
+});

@@ -432,6 +432,22 @@ export interface InfraImportReport {
   infrastructure?: number;
   attributed?: number;
   unattributed?: number;
+  /** Set when the file was recognised as a FinOps FOCUS export. */
+  focus?: FocusReport | null;
+}
+
+/** What a FOCUS export turned out to contain. FOCUS is a published schema, so
+ *  unlike a vendor's own CSV these are facts rather than guesses. */
+export interface FocusReport {
+  /** Which of FOCUS's costs the amounts were read from, e.g. "BilledCost". */
+  cost_column: string;
+  cost_columns_available: string[];
+  /** Totals per ChargeCategory: Usage, Purchase, Tax, Credit, Adjustment. */
+  by_category: Record<string, number>;
+  /** Rows restating a billing period that was already closed. */
+  corrections: number;
+  /** Vendor columns under the x_ prefix the spec reserves for them. */
+  extensions: string[];
 }
 
 export interface InfraSummary {
@@ -2137,7 +2153,12 @@ export const api = {
   importInfrastructureCsv: (
     provider: string,
     csv: string,
-    opts: { dryRun?: boolean; tag?: string; mapping?: Record<string, string> } = {},
+    opts: {
+      dryRun?: boolean;
+      tag?: string;
+      mapping?: Record<string, string>;
+      costColumn?: string;
+    } = {},
   ) =>
     request<InfraImportReport>("/infrastructure/import", {
       method: "POST",
@@ -2147,6 +2168,7 @@ export const api = {
         dry_run: opts.dryRun ?? false,
         tag: opts.tag ?? "feature",
         mapping: opts.mapping ?? null,
+        cost_column: opts.costColumn ?? null,
       }),
     }),
 

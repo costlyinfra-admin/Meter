@@ -310,8 +310,37 @@ export const CATEGORIES: Category[] = [
           p(
             "**Nothing is counted twice.** Amazon Bedrock spend already arrives through the Bedrock inference connector, which stays its authoritative path. Bedrock line items are recorded here but not counted, and every total filters on that.",
           ),
+          p(
+            "A bill exported in the FinOps **FOCUS** format is read against that specification rather than by guessing at column names — see [Importing a FOCUS export](/help/cost-sources/focus).",
+          ),
           note(
             "Infrastructure cost currently lives on its own tab and is **not yet folded into feature cost or the Overview's totals**. Where a feature is assigned, it comes from a cost-allocation tag you activated or a rule you wrote — a service name on its own never implies a feature.",
+          ),
+        ],
+      },
+      {
+        slug: "focus",
+        title: "Importing a FOCUS export",
+        summary:
+          "Upload a FinOps FOCUS billing file from any cloud, read against the published spec.",
+        blocks: [
+          p(
+            "FOCUS is the FinOps Foundation's open specification for billing data. A provider that publishes a FOCUS export emits the same columns as every other one, so a file from AWS, Azure, GCP, OCI or a FinOps pipeline covering several of them at once is read the same way.",
+          ),
+          p(
+            "Upload one under **FOCUS export** on [Connect sources](/cost-sources). A file dropped on any other import card is recognised as FOCUS too when it turns out to be one — the format is detected, not declared.",
+          ),
+          p(
+            "Every other bill import matches columns by what they appear to mean, because a vendor's own column names cannot be verified. FOCUS names are published, so they are matched exactly and read for what the specification says they mean:",
+          ),
+          list(
+            "**Which dollars.** A FOCUS row carries up to four costs. `BilledCost` is what the invoice says and is what Meter reads by default; `EffectiveCost` amortizes a commitment purchase across the periods it covers. You can switch before importing, and the column used is stored with every row — so choosing differently next month does not silently reinterpret what is already there.",
+            "**What kind of charge.** `ChargeCategory` separates Usage and Purchase from Tax, Credit and Adjustment. All of them are imported, because leaving any out would make Meter's total disagree with the invoice it reconciles against — and the preview reports what each category came to, because sales tax is not the cost of running a service.",
+            "**Corrections.** A row whose `ChargeClass` is `Correction` restates a billing period that was already closed. It is imported and flagged, so a month whose total moves after somebody wrote it down is explainable.",
+            "**Tags.** FOCUS keeps every tag in one JSON column. The key you attribute by is read out of that map, with or without a provider prefix — `feature`, `aws:feature` and `someScheme/feature` all match.",
+          ),
+          note(
+            "Nothing is written until you confirm. The preview names the cost column it read, the charge-category split, any corrections, and any column it did not recognise — a vendor's own `x_` columns are expected rather than reported as junk.",
           ),
         ],
       },

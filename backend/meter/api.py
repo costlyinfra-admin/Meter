@@ -47,6 +47,7 @@ from . import (
     discovery_llm,
     entra,
     features,
+    focus,
     hook,
     human_effort,
     inference,
@@ -512,6 +513,9 @@ class InfraImportRequest(BaseModel):
     # How the customer corrected a column we guessed wrong, e.g.
     # {"amount": "Cost (USD)"}. Keys are meanings, values are the file's headers.
     mapping: Optional[dict] = None
+    # FOCUS files carry several costs per row; this picks which. Ignored for any
+    # other kind of bill, which has only the one number.
+    cost_column: Optional[str] = Field(default=None, pattern="|".join(focus.COST_COLUMNS))
 
 
 class ManualBuildRequest(BaseModel):
@@ -1354,6 +1358,7 @@ def create_app() -> FastAPI:
                 tag=body.tag,
                 mapping_override=body.mapping,
                 dry_run=body.dry_run,
+                cost_column=body.cost_column,
             )
         except infrastructure.InfraError as exc:
             # Every failure here is something about the file that the customer

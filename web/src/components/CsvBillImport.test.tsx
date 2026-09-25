@@ -64,6 +64,7 @@ describe("CsvBillImport", () => {
       expect(api.importInfrastructureCsv).toHaveBeenCalledWith("redis_cloud", CSV, {
         dryRun: true,
         mapping: undefined,
+        costColumn: undefined,
       }),
     );
     // The preview says so in as many words: a number on screen that has already
@@ -154,5 +155,100 @@ describe("CsvBillImport", () => {
 
     expect(screen.queryByText(/Nothing has been imported yet/)).not.toBeInTheDocument();
     expect(screen.getByText(/Choose the downloaded bill/)).toBeInTheDocument();
+  });
+});
+
+describe("a FOCUS export", () => {
+  const FOCUS_PROVIDER: InfraProvider = { ...PROVIDER, type: "focus", name: "FOCUS export" };
+
+  const focusReport = (over = {}) =>
+    report({
+      provider: "focus",
+      focus: {
+        cost_column: "BilledCost",
+        cost_columns_available: ["BilledCost", "EffectiveCost"],
+        by_category: { Usage: 100, Tax: 14.8, Credit: -25 },
+        corrections: 0,
+        extensions: [],
+        ...over,
+      },
+    });
+
+  beforeEach(() => {
+    vi.mocked(api.importInfrastructureCsv).mockResolvedValue(focusReport());
+  });
+
+  it("says it recognised the format rather than guessed at it", async () => {
+    render(<CsvBillImport provider={FOCUS_PROVIDER} onImported={() => {}} />);
+    await choose();
+    expect(await screen.findByText(/FinOps FOCUS/)).toBeInTheDocument();
+  });
+
+  it("shows what the charge categories total, so tax is not read as service cost", async () => {
+    render(<CsvBillImport provider={FOCUS_PROVIDER} onImported={() => {}} />);
+    await choose();
+
+    await screen.findByText("Tax");
+    expect(screen.getByText("Usage")).toBeInTheDocument();
+    expect(screen.getByText("Credit")).toBeInTheDocument();
+    // A credit is negative money; showing it as a positive would be worse than
+    // not showing it at all.
+    expect(screen.getByText(/-\$25/)).toBeInTheDocument();
+  });
+
+  it("lets a customer read the amortized cost instead, and re-previews", async () => {
+    render(<CsvBillImport provider={FOCUS_PROVIDER} onImported={() => {}} />);
+    await choose();
+
+    const select = await screen.findByLabelText(/Which FOCUS cost to read/i);
+    vi.mocked(api.importInfrastructureCsv).mockResolvedValue(
+      focusReport({ cost_column: "EffectiveCost" }),
+    );
+    fireEvent.change(select, { target: { value: "EffectiveCost" } });
+
+    await waitFor(() =>
+      expect(api.importInfrastructureCsv).toHaveBeenLastCalledWith("focus", CSV, {
+        dryRun: true,
+        mapping: expect.anything(),
+        costColumn: "EffectiveCost",
+      }),
+    );
+  });
+
+  it("imports with the cost column the customer chose, not the default", async () => {
+    render(<CsvBillImport provider={FOCUS_PROVIDER} onImported={() => {}} />);
+    await choose();
+    const select = await screen.findByLabelText(/Which FOCUS cost to read/i);
+    vi.mocked(api.importInfrastructureCsv).mockResolvedValue(
+      focusReport({ cost_column: "EffectiveCost" }),
+    );
+    fireEvent.change(select, { target: { value: "EffectiveCost" } });
+    // Wait for the re-preview to land, not merely to start. While one is in
+    // flight the button reads "Working…" and is disabled, so both finding it
+    // by name and clicking it would be racing the request.
+    fireEvent.click(await screen.findByRole("button", { name: /Import 2 line items/ }));
+    await waitFor(() =>
+      expect(api.importInfrastructureCsv).toHaveBeenLastCalledWith("focus", CSV, {
+        mapping: expect.anything(),
+        costColumn: "EffectiveCost",
+      }),
+    );
+  });
+
+  it("offers no choice when the file carries only one cost", async () => {
+    vi.mocked(api.importInfrastructureCsv).mockResolvedValue(
+      focusReport({ cost_columns_available: ["BilledCost"] }),
+    );
+    render(<CsvBillImport provider={FOCUS_PROVIDER} onImported={() => {}} />);
+    await choose();
+    expect(await screen.findByLabelText(/Which FOCUS cost to read/i)).toBeDisabled();
+  });
+
+  it("stays out of the way for a bill that is not FOCUS", async () => {
+    vi.mocked(api.importInfrastructureCsv).mockResolvedValue(report());
+    render(<CsvBillImport provider={PROVIDER} onImported={() => {}} />);
+    await choose();
+    await screen.findByText(/Nothing has been imported yet/);
+    expect(screen.queryByText(/FinOps FOCUS/)).not.toBeInTheDocument();
   });
 });

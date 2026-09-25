@@ -86,6 +86,7 @@ def test_providers_lists_every_cloud_as_connectable(client):
         "redis_cloud",
         "supabase",
         "neon",
+        "focus",
     ]
     assert all(p["status"] == "available" for p in providers)
     assert all(p["connected"] is False for p in providers)

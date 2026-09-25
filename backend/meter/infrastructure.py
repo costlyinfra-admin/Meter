@@ -173,6 +173,20 @@ PROVIDERS: tuple[dict, ...] = (
         "ingest": "csv",
         "note": "Import the invoice you download from the Neon console.",
     },
+    # A format, not a vendor. FOCUS is the FinOps Foundation's open billing
+    # schema, so an export from any provider that publishes one arrives with
+    # the same columns — and a customer whose FinOps pipeline already emits
+    # FOCUS has one file covering several clouds. It is listed as its own entry
+    # because naming the vendor would be a lie about what the file is; every
+    # other CSV import also reads FOCUS when the file turns out to be one.
+    {
+        "type": "focus",
+        "name": "FOCUS export",
+        "short": "FOCUS",
+        "status": "available",
+        "ingest": "csv",
+        "note": "Import any FinOps FOCUS billing export, from any provider.",
+    },
 )
 _BY_TYPE = {p["type"]: p for p in PROVIDERS}
 
@@ -192,7 +206,7 @@ LIVE_PROVIDERS = (
 )
 
 #: Providers whose numbers arrive as an uploaded file.
-CSV_PROVIDERS = ("redis_cloud", "supabase", "neon")
+CSV_PROVIDERS = ("redis_cloud", "supabase", "neon", "focus")
 
 #: How far back a manual "Sync now" reaches. Cloud bills are restated for days
 #: after the fact, so a sync always re-reads recent history rather than trusting
@@ -651,6 +665,7 @@ def import_csv(
     tag: str = "feature",
     mapping_override: Optional[dict] = None,
     dry_run: bool = False,
+    cost_column: Optional[str] = None,
 ) -> dict:
     """Read a downloaded bill and, unless ``dry_run``, store it.
 
@@ -669,7 +684,11 @@ def import_csv(
         raise InfraError(f"{meta['name']} syncs from its API — there is nothing to import.")
     try:
         report = infra_csv.parse(
-            text, tag_key=tag, mapping_override=mapping_override, default_service=meta["name"]
+            text,
+            tag_key=tag,
+            mapping_override=mapping_override,
+            default_service=meta["name"],
+            cost_column=cost_column,
         )
     except infra_csv.CsvImportError as exc:
         raise InfraError(str(exc)) from exc
@@ -685,7 +704,10 @@ def import_csv(
         report.items,
         start=start,
         end=end,
-        metric="invoice",
+        # Which dollars these are. "invoice" is all a vendor's own CSV tells
+        # us; a FOCUS file says exactly, and a tenant who later switches to
+        # EffectiveCost must not have the old rows silently reinterpreted.
+        metric=(report.focus or {}).get("cost_column") or "invoice",
         granularity="DAILY",
         source="csv",
     )
