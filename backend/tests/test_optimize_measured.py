@@ -238,8 +238,8 @@ def test_combines_measured_and_estimated_tiers(tenant_id):
     dup = _opp(result, "duplicate_calls")
     assert dup["overlaps"] == "Prompt caching"
     assert set(result["totals"]) == {"measured", "modeled_ceiling", "directional"}
-    # Only the right-sizing ceiling remains ($60 × 0.733 = $44.00).
-    assert result["totals"]["modeled_ceiling"] == 44.0
+    # Only the right-sizing ceiling remains ($60 × 0.6667 = $40.00).
+    assert result["totals"]["modeled_ceiling"] == 40.0
 
 
 def test_no_signals_no_cost_yields_no_opportunities(tenant_id):
@@ -396,18 +396,18 @@ def test_model_rightsizing_ceiling_from_real_spend(tenant_id):
 
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
     rs = _opp(result, "model_rightsizing")
-    # sonnet $18 vs haiku $4.80 per (1M,1M) -> 73.33% saving on the $100 spend.
-    assert rs["projected_monthly_savings"] == 73.33
+    # sonnet $18 vs haiku $6 per (1M,1M) -> 66.67% saving on the $100 spend.
+    assert rs["projected_monthly_savings"] == 66.67
     assert rs["confidence"] == "med"
     assert rs["savings_type"] == "modeled_ceiling"  # quality-gated ceiling
-    # High effort (needs a quality eval); priority = 73.33 × med 0.6 × high 0.3 = 13.2.
+    # High effort (needs a quality eval); priority = 66.67 × med 0.6 × high 0.3 = 12.0.
     assert rs["engineering_effort"] == "high"
-    assert rs["priority_score"] == 13.2
-    assert "claude-haiku-4-5" in rs["evidence"] and "73%" in rs["evidence"]
+    assert rs["priority_score"] == 12.0
+    assert "claude-haiku-4-5" in rs["evidence"] and "67%" in rs["evidence"]
     assert rs["trail"][0]["note"].startswith("up to")
     # The ceiling is counted in the modeled total, NOT the guaranteed measured total.
     assert result["totals"]["measured"] == 0.0
-    assert result["totals"]["modeled_ceiling"] == 73.33
+    assert result["totals"]["modeled_ceiling"] == 66.67
 
 
 def test_measured_finding_supersedes_directional_estimate(tenant_id):
@@ -613,9 +613,9 @@ def test_rightsizing_does_not_double_count_a_metered_connector_provider(tenant_i
     rs = _opp(optimize_measured.opportunities(tenant_id, triage["id"], PERIOD),
               "model_rightsizing")
     # The same $100 month as test_model_rightsizing_ceiling_from_real_spend, so
-    # the same ceiling. Summing both rows would propose $146.66 of savings on a
+    # the same ceiling. Summing both rows would propose $133.34 of savings on a
     # $100 bill.
-    assert rs["projected_monthly_savings"] == 73.33
+    assert rs["projected_monthly_savings"] == 66.67
 
 
 def test_rightsizing_ignores_spend_marked_ignore(tenant_id):
@@ -628,7 +628,7 @@ def test_rightsizing_ignores_spend_marked_ignore(tenant_id):
 
     rs = _opp(optimize_measured.opportunities(tenant_id, triage["id"], PERIOD),
               "model_rightsizing")
-    assert rs["projected_monthly_savings"] == 73.33
+    assert rs["projected_monthly_savings"] == 66.67
 
 
 def test_arbitrage_does_not_double_count_a_metered_connector_provider(tenant_id):

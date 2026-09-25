@@ -78,7 +78,8 @@ def token_buckets_add(
     r_in = pricing.rate_in(model or "", provider)
     r_out = pricing.rate_out(model or "", provider)
     if r_in > 0 or r_out > 0:
-        read_mult = pricing.cache_read_mult(provider) or Decimal("1")
+        # By model: the rate is not a provider-wide fact any more.
+        read_mult = pricing.cache_read_mult(provider, model) or Decimal("1")
         rates = {
             "input": r_in,
             "cache_read": r_in * read_mult,

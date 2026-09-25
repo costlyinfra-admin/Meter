@@ -30,6 +30,9 @@ npm-debug.log*
 
 # --- Local tooling settings (personal, not shared) ---
 .claude/settings.local.json
+# Claude Code session worktrees and local launch config: scratch, and large.
+.claude/worktrees/
+.claude/launch.json
 
 # --- OS / editor ---
 .DS_Store

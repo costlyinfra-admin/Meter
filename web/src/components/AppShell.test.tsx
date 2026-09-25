@@ -78,8 +78,19 @@ describe("Sidebar nav", () => {
       { section: "Optimize", items: ["Recommendations", "Prompts"] },
       { section: "Monitor", items: ["Alerts"] },
       { section: "Setup", items: ["Connect sources", "Install SDK", "Settings"] },
-      { section: "Help", items: ["Knowledge base"] },
+      { section: "Help", items: ["Knowledge base", "Provider pricing"] },
     ]);
+  });
+
+  it("puts the price book under Help, where a reader goes to check something", async () => {
+    // Every measured saving in the product is a published rate times a counted
+    // number of tokens. The rates belong somewhere a reader can reach them
+    // without administrative access, not behind Settings.
+    renderAt("/optimize");
+    const link = await screen.findByRole("link", { name: "Provider pricing" });
+    expect(link).toHaveAttribute("href", "/pricing");
+    const group = link.closest(".nav-group") as HTMLElement;
+    expect(within(group).getByText("Help")).toBeInTheDocument();
   });
 
   it("puts connecting a provider under Setup, because you do it once", async () => {

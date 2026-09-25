@@ -479,7 +479,7 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         write_calls,
         cache_windows,
     ) in rows:
-        mult = pricing.cache_read_mult(provider)
+        mult = pricing.cache_read_mult(provider, model)
         if mult is None:  # provider has no priced cache discount -> don't claim one
             continue
         written = int(write_calls or 0)

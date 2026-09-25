@@ -24,6 +24,7 @@ import { FeaturesPage } from "./pages/FeaturesPage";
 import { InstallSdkPage } from "./pages/InstallSdkPage";
 import { Login } from "./pages/Login";
 import { HelpPage } from "./pages/HelpPage";
+import { PricingPage } from "./pages/PricingPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { Signup } from "./pages/Signup";
 import { AdminConnectors } from "./pages/admin/AdminConnectors";
@@ -105,6 +106,7 @@ export function App() {
         <Route path="/alerts/:id" element={<AlertDetailPage />} />
         <Route path="/alerts/:id/edit" element={<AlertFormPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/pricing" element={<PricingPage />} />
         <Route path="/help" element={<HelpPage />} />
         <Route path="/help/:category/:topic" element={<HelpPage />} />
       </Route>

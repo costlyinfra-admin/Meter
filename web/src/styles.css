@@ -7691,3 +7691,28 @@ button.span-head:focus-visible {
   margin-top: 1rem;
   font-size: 0.88rem;
 }
+
+/* Provider pricing: the model column is a row header, so it inherits the
+   table-head treatment — but these are API model IDs, and an identifier
+   rendered in caps is no longer the string you would paste into your code. */
+.price-table td.price-model,
+.price-table th.price-model {
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.price-table th.price-model code {
+  font-size: 0.85rem;
+}
+/* A rate column reads as a column of numbers or not at all. */
+.price-table td.num,
+.price-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Seven columns do not fit a phone. The TABLE scrolls, not the page: a layout
+   that slides sideways under a thumb makes the whole app feel broken. */
+.price-table-wrap {
+  overflow-x: auto;
+}

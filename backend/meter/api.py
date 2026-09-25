@@ -56,6 +56,7 @@ from . import (
     okta,
     optimize_measured,
     otel,
+    pricing,
     products,
     prompt_capture,
     prompt_eval,
@@ -908,6 +909,18 @@ def create_app() -> FastAPI:
             # Organization name of the effective tenant (shown in the UI header).
             "org_name": admin.company_name(user["tenant_id"]),
         }
+
+    # ---- Provider price book ---------------------------------------------
+    @app.get("/api/pricing")
+    def get_pricing(user: CurrentUser) -> dict:
+        """Published list rates, as Meter costs hook-metered traffic at them.
+
+        Signed in, because the rest of the app is, but there is nothing
+        tenant-specific in it: no spend, no usage, no tenant id. It is the
+        price book itself, so a customer can check the arithmetic behind every
+        number Meter derives from it instead of taking it on faith.
+        """
+        return pricing.catalog()
 
     # ---- Organization settings (administrative Settings page) -----------
     @app.get("/api/settings")

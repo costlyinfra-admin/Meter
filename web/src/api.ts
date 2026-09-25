@@ -1509,6 +1509,36 @@ export class ApiError extends Error {
 }
 
 /** A credential a coding agent uses to read this organization's data over MCP. */
+/** One model's published list rates, and what it does about prompt caching. */
+export interface PriceBookModel {
+  model: string;
+  input_per_million: string;
+  output_per_million: string;
+  /** null where the provider has no priced prompt cache — not zero. */
+  cache_read_per_million: string | null;
+  cache_write_per_million: string | null;
+  cache_read_mult: string | null;
+  /** Smallest prefix the provider will cache; null where we have not checked. */
+  min_cacheable_tokens: number | null;
+  cache_is_automatic: boolean | null;
+  downgrade_target: string | null;
+  open_weights_family: string | null;
+}
+
+export interface PriceBookProvider {
+  provider: string;
+  label: string;
+  source_url: string | null;
+  /** When this table was last reconciled against the provider's own page. */
+  checked: string | null;
+  models: PriceBookModel[];
+}
+
+export interface PriceBook {
+  version: string;
+  providers: PriceBookProvider[];
+}
+
 export interface McpToken {
   id: string;
   label: string;
@@ -2285,4 +2315,7 @@ export const api = {
 
   // ---- Metering hook (M7, optional precision tier) ----
   createHookToken: () => request<{ token: string }>("/hook/token", { method: "POST" }),
+
+  /** The published price book Meter costs hook-metered traffic at. */
+  pricing: () => request<PriceBook>("/pricing"),
 };

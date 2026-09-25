@@ -27,6 +27,7 @@ type IconName =
   | "sdk"
   | "settings"
   | "help"
+  | "pricing"
   | "prompts"
   | "products"
   | "reconciliation";
@@ -78,7 +79,13 @@ const NAV: { section?: string; items: NavItem[] }[] = [
   },
   {
     section: "Help",
-    items: [{ to: "/help", label: "Knowledge base", end: false, icon: "help" }],
+    items: [
+      { to: "/help", label: "Knowledge base", end: false, icon: "help" },
+      // The price book, readable. Every measured saving in this product is
+      // these rates times a counted number of tokens, so it belongs where a
+      // reader goes to check something rather than behind a settings gate.
+      { to: "/pricing", label: "Provider pricing", end: false, icon: "pricing" },
+    ],
   },
 ];
 
@@ -179,6 +186,12 @@ function NavIcon({ name }: { name: IconName }) {
           <path d="M4.5 2.75h7.2l3.8 3.8v10.7a.75.75 0 0 1-.75.75H4.5a.75.75 0 0 1-.75-.75V3.5a.75.75 0 0 1 .75-.75Z" />
           <path d="M11.5 2.9v3.9h3.9" />
           <path d="m6.6 12.4 1.8 1.8 3.5-3.5" />
+        </>
+      )}
+      {name === "pricing" && (
+        <>
+          <path d="M3.4 3.4h5.1l8.1 8.1-5.1 5.1-8.1-8.1V3.4Z" />
+          <circle cx="6.6" cy="6.6" r="1.1" />
         </>
       )}
       {name === "help" && (

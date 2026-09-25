@@ -28,10 +28,25 @@ def test_input_rate_per_token():
 
 def test_cache_read_multiplier_is_provider_specific():
     assert pricing.cache_read_mult("anthropic") == Decimal("0.10")
-    assert pricing.cache_read_mult("openai") == Decimal("0.50")
+    assert pricing.cache_read_mult("openai") == Decimal("0.10")
     # Providers with no priced cache discount return None (never claim a saving).
     assert pricing.cache_read_mult("together") is None
     assert pricing.cache_read_mult(None) is None
+
+
+def test_a_model_that_caches_at_a_different_rate_overrides_its_provider():
+    # It is not a provider-wide fact. gpt-4o reads cache at HALF the input rate
+    # where the current families read at a tenth — five times the difference,
+    # in the direction that overstates a caching saving. Opus 5.5 goes the
+    # other way, at a twentieth.
+    assert pricing.cache_read_mult("openai", "gpt-4o") == Decimal("0.50")
+    assert pricing.cache_read_mult("openai", "gpt-5.6-sol") == Decimal("0.10")
+    assert pricing.cache_read_mult("anthropic", "claude-opus-5-5") == Decimal("0.05")
+    assert pricing.cache_read_mult("anthropic", "claude-fable-5-1") == Decimal("0.025")
+    # A model with no override falls back to its provider's rate...
+    assert pricing.cache_read_mult("anthropic", "claude-sonnet-4-6") == Decimal("0.10")
+    # ...and a provider with no cache discount stays None whatever the model.
+    assert pricing.cache_read_mult("together", "gpt-4o") is None
 
 
 def test_cheapest_equivalent_finds_a_cheaper_host():
@@ -56,11 +71,11 @@ def test_cheapest_equivalent_none_when_already_cheapest_or_unknown():
 
 
 def test_downgrade_ceiling_fraction():
-    # sonnet ($3/$15) -> haiku ($0.80/$4) at 1M in / 1M out:
-    # sonnet = $18, haiku = $4.80 -> saves (18-4.8)/18 = 0.7333...
+    # sonnet ($3/$15) -> haiku ($1/$5) at 1M in / 1M out:
+    # sonnet = $18, haiku = $6 -> saves (18-6)/18 = 0.6667...
     dc = pricing.downgrade_ceiling("claude-sonnet-4-6", 1_000_000, 1_000_000)
     assert dc["target"] == "claude-haiku-4-5"
-    assert round(dc["save_fraction"], 4) == 0.7333
+    assert round(dc["save_fraction"], 4) == 0.6667
     # gpt-4o -> gpt-4o-mini exists; the cheapest tier has no target.
     assert pricing.downgrade_ceiling("gpt-4o", 1_000_000, 0)["target"] == "gpt-4o-mini"
     assert pricing.downgrade_ceiling("gpt-4o-mini", 1_000_000, 0) is None
