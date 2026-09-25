@@ -523,3 +523,101 @@ def test_telemetry_that_is_arriving_and_finding_nothing_does_verify(tenant_id):
     action = next(a for a in result["actions"] if a["lever"] == "duplicate_calls")
     assert action["status"] in ("measured", "verified")
     assert action["realized_monthly"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Counting one dollar once, here too (dashboard._NOT_DOUBLE_COUNTED)
+# ---------------------------------------------------------------------------
+# A provider with both a connector and the SDK describes the same spend twice.
+# dashboard.py reconciles that everywhere it reads inference_cost; this module
+# reads the same table for three of its four detectors and did not, so a
+# customer running both had every connector-sourced finding computed from
+# doubled tokens and doubled dollars.
+
+
+def _cost_row(conn, tenant_id, feature_id, **over):
+    row = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "amount": 100.00,
+        "tokens_in": 1_000_000,
+        "tokens_out": 1_000_000,
+        "cached_tokens_in": None,
+        "source": "cost_api",
+        "environment": None,
+    }
+    row.update(over)
+    conn.execute(
+        """
+        INSERT INTO inference_cost (tenant_id, feature_id, provider, model, amount,
+                                    period, tokens_in, tokens_out, cached_tokens_in,
+                                    source, confidence, environment)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'high', %s)
+        """,
+        (
+            tenant_id, feature_id, row["provider"], row["model"], row["amount"],
+            PERIOD, row["tokens_in"], row["tokens_out"], row["cached_tokens_in"],
+            row["source"], row["environment"],
+        ),
+    )
+
+
+def test_rightsizing_does_not_double_count_a_metered_connector_provider(tenant_id):
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        # The connector reports the bill; the SDK reports the calls behind it.
+        # One month's spend, described twice.
+        _cost_row(conn, tenant_id, triage["id"], source="cost_api")
+        _cost_row(conn, tenant_id, triage["id"], source="hook")
+
+    rs = _opp(optimize_measured.opportunities(tenant_id, triage["id"], PERIOD),
+              "model_rightsizing")
+    # The same $100 month as test_model_rightsizing_ceiling_from_real_spend, so
+    # the same ceiling. Summing both rows would propose $146.66 of savings on a
+    # $100 bill.
+    assert rs["projected_monthly_savings"] == 73.33
+
+
+def test_rightsizing_ignores_spend_marked_ignore(tenant_id):
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        _cost_row(conn, tenant_id, triage["id"])
+        # Spend the user excluded from reporting. Proposing a saving on it
+        # offers money back from a bill Meter has been told not to count.
+        _cost_row(conn, tenant_id, triage["id"], amount=900.00, environment="ignore")
+
+    rs = _opp(optimize_measured.opportunities(tenant_id, triage["id"], PERIOD),
+              "model_rightsizing")
+    assert rs["projected_monthly_savings"] == 73.33
+
+
+def test_arbitrage_does_not_double_count_a_metered_connector_provider(tenant_id):
+    enrich = features.add_feature(tenant_id, "Log enrichment")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        for source in ("cost_api", "hook"):
+            _cost_row(conn, tenant_id, enrich["id"], provider="together",
+                      model="meta-llama-3.1-70b-instruct", amount=8.80,
+                      tokens_in=10_000_000, tokens_out=0, source=source)
+
+    arb = _opp(optimize_measured.opportunities(tenant_id, enrich["id"], PERIOD),
+               "provider_switch")
+    # 10M tokens, not 20M: $8.80 on Together vs $3.50 on DeepInfra.
+    assert arb["projected_monthly_savings"] == 5.3
+
+
+def test_cache_utilization_is_read_from_the_billed_rows_only(tenant_id):
+    report = features.add_feature(tenant_id, "Report generator")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        # The connector sees the cache reads; the SDK rows for the same calls
+        # carry no cache field at all. Counting both puts the SDK's input in the
+        # denominator with nothing in the numerator, and halves the ratio.
+        _cost_row(conn, tenant_id, report["id"], tokens_in=1_000_000,
+                  tokens_out=0, cached_tokens_in=800_000, source="cost_api")
+        _cost_row(conn, tenant_id, report["id"], tokens_in=1_000_000,
+                  tokens_out=0, source="hook")
+        # ...and ignored spend is not part of the question either.
+        _cost_row(conn, tenant_id, report["id"], tokens_in=3_000_000,
+                  tokens_out=0, source="cost_api", environment="ignore")
+
+    result = optimize_measured.opportunities(tenant_id, report["id"], PERIOD)
+    assert result["cache_utilization"] == 0.8  # 800k / 1M

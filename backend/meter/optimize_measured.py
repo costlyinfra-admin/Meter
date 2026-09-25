@@ -22,6 +22,14 @@ detectors differ in exactly that:
 
 The two overlap — the same input tokens counted two ways — so they are mutually
 exclusive in the totals rather than summed.
+
+Every read of `inference_cost` here goes through dashboard's counting rule —
+`_ACTIVE_ENV` and `_NOT_DOUBLE_COUNTED`. A provider with both a connector and
+the SDK has described one month's spend twice, and a detector that sums both
+proposes a saving on money that was never spent; spend the customer marked
+`ignore` is not a saving either, because it is not in any total this product
+reports. The rule lives in one place for exactly this reason: it was
+re-introduced here once already.
 """
 
 from __future__ import annotations
@@ -417,14 +425,15 @@ def _cache_utilization(conn, feature_id, start, signal_rows) -> Optional[float]:
     call-level ratio when no provider cache data is available. None when neither.
     """
     row = conn.execute(
-        """
+        f"""
         SELECT COALESCE(SUM(cached_tokens_in), 0),
                COALESCE(SUM(tokens_in), 0),
                COUNT(cached_tokens_in)
         FROM inference_cost
         WHERE feature_id = %s AND period = %s
-        """,
-        (feature_id, start),
+          AND {dashboard._ACTIVE_ENV} {dashboard._NOT_DOUBLE_COUNTED}
+        """,  # noqa: S608
+        (feature_id, start, dashboard._connector_providers(conn, start)),
     ).fetchone()
     # If any row reported cache tokens, the ratio is over ALL input (a floor —
     # providers that don't report cache count as uncached, never overstated).
@@ -446,14 +455,15 @@ def _arbitrage_opportunity(conn, feature_id, start) -> Optional[dict]:
     quality change. Connector data only; no SDK needed.
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT provider, model,
                SUM(COALESCE(tokens_in, 0)), SUM(COALESCE(tokens_out, 0))
         FROM inference_cost
         WHERE feature_id = %s AND period = %s AND provider IS NOT NULL AND model IS NOT NULL
+          AND {dashboard._ACTIVE_ENV} {dashboard._NOT_DOUBLE_COUNTED}
         GROUP BY provider, model
-        """,
-        (feature_id, start),
+        """,  # noqa: S608
+        (feature_id, start, dashboard._connector_providers(conn, start)),
     ).fetchall()
 
     total_savings = Decimal("0")
@@ -509,14 +519,15 @@ def _rightsizing_opportunity(conn, feature_id, start) -> Optional[dict]:
     guaranteed savings headline.
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT model, SUM(amount),
                SUM(COALESCE(tokens_in, 0)), SUM(COALESCE(tokens_out, 0))
         FROM inference_cost
         WHERE feature_id = %s AND period = %s AND model IS NOT NULL
+          AND {dashboard._ACTIVE_ENV} {dashboard._NOT_DOUBLE_COUNTED}
         GROUP BY model
-        """,
-        (feature_id, start),
+        """,  # noqa: S608
+        (feature_id, start, dashboard._connector_providers(conn, start)),
     ).fetchall()
 
     total = Decimal("0")
