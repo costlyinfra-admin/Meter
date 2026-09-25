@@ -289,6 +289,84 @@ def test_the_last_seen_map_cannot_grow_with_traffic_either():
     assert len(collector._prefix_last) == 10
 
 
+def test_an_openai_system_prompt_is_part_of_the_prefix():
+    """OpenAI has no top-level `system`; it is messages[0].
+
+    Reading only Anthropic's spelling found nothing there — and when `tools`
+    was present the prefix became the tool definitions ALONE, so two calls with
+    completely different instructions but the same toolset hashed alike and the
+    prefix size left out the bigger of the two blocks.
+    """
+    from costlyinfra_meter import _Optimizer
+
+    collector = _Optimizer(meter(Captured("pepper"), salt="pepper"))
+    tools = [{"type": "function", "function": {"name": "search"}}]
+    a = {"messages": [{"role": "system", "content": "You are a security analyst."},
+                      {"role": "user", "content": "one"}], "tools": tools}
+    b = {"messages": [{"role": "system", "content": "You write limericks."},
+                      {"role": "user", "content": "two"}], "tools": tools}
+    collector.on_call("openai", "gpt-4o", a, {})
+    collector.on_call("openai", "gpt-4o", b, {})
+
+    summaries = collector.due_summaries(force=True)
+    assert len(summaries) == 2, "same toolset, different instructions: not one prefix"
+    # ...and the instruction is inside the size, not only the fingerprint.
+    assert all(e["signal"]["prefix_tokens"] > 0 for e in summaries)
+
+
+def test_two_calls_sharing_an_openai_system_prompt_are_one_prefix():
+    from costlyinfra_meter import _Optimizer
+
+    collector = _Optimizer(meter(Captured("pepper"), salt="pepper"))
+    system = {"role": "system", "content": "You are a security analyst. " * 20}
+    for question in ("one", "two", "three"):
+        collector.on_call(
+            "openai",
+            "gpt-4o",
+            {"messages": [system, {"role": "user", "content": question}]},
+            {},
+        )
+
+    (event,) = collector.due_summaries(force=True)
+    assert event["signal"]["count"] == 3
+
+
+def test_only_the_leading_system_turns_count_as_a_prefix():
+    """A cache is a prefix. A system turn further down the conversation is not
+    part of one, and treating it as static would group calls that share a late
+    instruction but nothing at the front."""
+    from costlyinfra_meter import _Optimizer
+
+    collector = _Optimizer(meter(Captured("pepper"), salt="pepper"))
+    shared = {"role": "system", "content": "Reminder: be terse."}
+    collector.on_call("openai", "m", {"messages": [{"role": "user", "content": "a"}, shared]}, {})
+    collector.on_call("openai", "m", {"messages": [{"role": "user", "content": "b"}, shared]}, {})
+
+    # Nothing static at the front, so these fall back to the leading slice of
+    # the conversation — which differs — rather than being called one prefix.
+    assert len(collector.due_summaries(force=True)) == 2
+
+
+def test_a_gemini_system_instruction_is_found_under_its_own_name():
+    from costlyinfra_meter import _Optimizer
+
+    collector = _Optimizer(meter(Captured("pepper"), salt="pepper"))
+    for question in ("one", "two"):
+        collector.on_call(
+            "google",
+            "gemini-2.5-flash",
+            {
+                "system_instruction": "You are a security analyst. " * 20,
+                "contents": [{"role": "user", "parts": [{"text": question}]}],
+            },
+            {},
+        )
+
+    (event,) = collector.due_summaries(force=True)
+    assert event["signal"]["count"] == 2
+    assert event["signal"]["prefix_tokens"] > 100
+
+
 # --- the privacy boundary --------------------------------------------------
 def test_no_part_of_a_request_or_reply_is_transmitted():
     t = Captured("pepper")

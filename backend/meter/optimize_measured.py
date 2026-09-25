@@ -775,10 +775,13 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
     # that a fix worked — so a lever is observable when its KIND of telemetry
     # arrived at all, not when it happened to find something.
     observable = {
-        # v2 signals of any kind prove optimize mode is live and reporting on a
-        # comparison this detector trusts. v1 rows do not: they are excluded
-        # from the finding, so they cannot witness its absence either.
-        "duplicate_calls": any(r[10] == "v2" for r in rows),
+        # A v2 DUPLICATE row. "Any v2 row" was the same thing only by accident:
+        # prefix summaries carry no version and default to v1, so the moment one
+        # of them is ever stamped, a feature with prefix telemetry and no
+        # duplicate telemetry would say the duplicate lever was looking — and an
+        # applied dedup action would reconcile against a silence it had
+        # mistaken for a measurement.
+        "duplicate_calls": any(r[0] == "duplicate" and r[10] == "v2" for r in rows),
         "prompt_caching": any(r[0] == "prefix" for r in rows),
     }
     return opportunities, cache_utilization, observable

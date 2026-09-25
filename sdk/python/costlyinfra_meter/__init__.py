@@ -1505,18 +1505,49 @@ def _normalize(request: dict) -> str:
         return str(payload)
 
 
+def _system_of(request: dict):
+    """The system instruction, wherever this particular API keeps it.
+
+    Anthropic and Gemini put it at the top level under different names. OpenAI
+    has no top-level field at all: it is the leading run of system/developer
+    turns in `messages`.
+    """
+    for key in ("system", "system_instruction", "systemInstruction"):
+        value = request.get(key)
+        if value is not None:
+            return value
+    messages = request.get("messages")
+    if not isinstance(messages, list):
+        return None
+    leading = []
+    for message in messages:
+        # The LEADING run only. A system turn further down is not part of a
+        # prefix, and a cache is a prefix.
+        if not isinstance(message, dict) or message.get("role") not in ("system", "developer"):
+            break
+        leading.append(message)
+    return leading or None
+
+
 def _static_prefix(request: dict, prefix_chars: int) -> tuple:
     """The cacheable static head of a request, and an estimate of its size.
 
-    Prefers the explicitly static blocks — the system prompt and the tool
+    Prefers the explicitly static blocks — the system instruction and the tool
     definitions — and otherwise falls back to the leading slice of the request.
     The token count is characters over four, which is an estimate and is
     reported as one: `on_call` replaces it with the provider's own figure
     wherever the provider reports it.
+
+    The system instruction used to be read only from `request["system"]`, which
+    is Anthropic's spelling. On OpenAI that found nothing, and when `tools` was
+    present the first branch still fired — so the prefix became the tool
+    definitions ALONE, with the system prompt (usually the larger block) left
+    out of both the estimated size and the fingerprint. Every OpenAI call
+    sharing a toolset hashed alike however different its instructions were.
     """
     static = ""
     if isinstance(request, dict):
-        system = request.get("system")
+        system = _system_of(request)
         tools = request.get("tools")
         if system is not None or tools is not None:
             try:

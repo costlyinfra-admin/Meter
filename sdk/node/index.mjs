@@ -1220,16 +1220,42 @@ function stableJson(value) {
 /**
  * The cacheable static head of a request, and an estimate of its size.
  *
- * Prefers the explicitly static blocks — the system prompt and the tool
+ * Prefers the explicitly static blocks — the system instruction and the tool
  * definitions — and otherwise falls back to the leading slice of the request.
  * The token count is characters over four, which is an estimate and is reported
  * as one: the provider's own figure replaces it wherever the provider gives one.
+ *
+ * The system instruction used to be read only from `request.system`, which is
+ * Anthropic's spelling. On OpenAI that found nothing, and when `tools` was
+ * present the first branch still fired — so the prefix became the tool
+ * definitions ALONE, with the system prompt (usually the larger block) left out
+ * of both the estimated size and the fingerprint. Every OpenAI call sharing a
+ * toolset hashed alike however different its instructions were.
  */
+function systemOf(request) {
+  for (const key of ["system", "system_instruction", "systemInstruction"]) {
+    const value = request[key];
+    if (value !== undefined && value !== null) return value;
+  }
+  const messages = request.messages;
+  if (!Array.isArray(messages)) return null;
+  const leading = [];
+  for (const message of messages) {
+    // The LEADING run only. A system turn further down is not part of a
+    // prefix, and a cache is a prefix.
+    if (!message || typeof message !== "object") break;
+    if (message.role !== "system" && message.role !== "developer") break;
+    leading.push(message);
+  }
+  return leading.length > 0 ? leading : null;
+}
+
 function staticPrefix(request, prefixChars) {
   let staticPart = "";
   if (request && typeof request === "object") {
-    const { system, tools } = request;
-    if (system !== undefined || tools !== undefined) {
+    const system = systemOf(request);
+    const { tools } = request;
+    if (system !== null || tools !== undefined) {
       try {
         staticPart = stableJson([system ?? null, tools ?? null]);
       } catch {

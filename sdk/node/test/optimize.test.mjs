@@ -197,6 +197,94 @@ test("the prefix size is the provider's own count when the provider gives one", 
   assert.equal(signal.prefix_measured, true);
 });
 
+test("an OpenAI system prompt is part of the prefix", async () => {
+  // OpenAI has no top-level `system`; it is messages[0]. Reading only
+  // Anthropic's spelling found nothing there — and when `tools` was present
+  // the prefix became the tool definitions ALONE, so two calls with completely
+  // different instructions but the same toolset hashed alike.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  const client = clientFor(m);
+  const tools = [{ type: "function", function: { name: "search" } }];
+  await client.messages.create({
+    model: "m",
+    tools,
+    messages: [
+      { role: "system", content: "You are a security analyst." },
+      { role: "user", content: "one" },
+    ],
+  });
+  await client.messages.create({
+    model: "m",
+    tools,
+    messages: [
+      { role: "system", content: "You write limericks." },
+      { role: "user", content: "two" },
+    ],
+  });
+  await flush(m);
+
+  const prefixes = t.signals("prefix");
+  const fingerprints = new Set(prefixes.map((p) => p.fingerprint));
+  assert.equal(fingerprints.size, 2, "same toolset, different instructions: not one prefix");
+});
+
+test("two calls sharing an OpenAI system prompt are one prefix", async () => {
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper", optimizeFlushIntervalMs: 3_600_000 });
+  const client = clientFor(m);
+  const system = { role: "system", content: "You are a security analyst. ".repeat(20) };
+  for (const question of ["one", "two", "three"]) {
+    await client.messages.create({
+      model: "m",
+      messages: [system, { role: "user", content: question }],
+    });
+  }
+  await flush(m);
+
+  const prefixes = t.signals("prefix");
+  assert.equal(prefixes.length, 1);
+  assert.equal(prefixes[0].count, 3);
+});
+
+test("a Gemini system instruction is found under its own name", async () => {
+  // Three APIs, three spellings for the same block.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper", optimizeFlushIntervalMs: 3_600_000 });
+  const client = clientFor(m);
+  for (const question of ["one", "two"]) {
+    await client.messages.create({
+      model: "gemini-2.5-flash",
+      system_instruction: "You are a security analyst. ".repeat(20),
+      contents: [{ role: "user", parts: [{ text: question }] }],
+    });
+  }
+  await flush(m);
+
+  const prefixes = t.signals("prefix");
+  assert.equal(prefixes.length, 1);
+  assert.equal(prefixes[0].count, 2);
+  assert.ok(prefixes[0].prefix_tokens > 100);
+});
+
+test("only the leading system turns count as a prefix", async () => {
+  // A cache is a prefix. A system turn further down the conversation is not
+  // part of one.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper", optimizeFlushIntervalMs: 3_600_000 });
+  const client = clientFor(m);
+  const shared = { role: "system", content: "Reminder: be terse." };
+  for (const first of ["a", "b"]) {
+    await client.messages.create({
+      model: "m",
+      messages: [{ role: "user", content: first }, shared],
+    });
+  }
+  await flush(m);
+
+  assert.equal(new Set(t.signals("prefix").map((p) => p.fingerprint)).size, 2);
+});
+
 test("a call the provider cached for is counted as a write, not an opportunity", async () => {
   // cache_creation_input_tokens means caching is already ON for this prefix.
   // Those calls are the unavoidable cost of keeping the entry warm; counting

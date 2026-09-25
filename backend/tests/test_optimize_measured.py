@@ -1438,3 +1438,42 @@ def test_each_model_is_split_at_its_own_rates(tenant_id):
     # $257.10. Output is $250.60, so output reduction is 8% of that.
     out = _directional(result, "Output token reduction")
     assert out is not None and out["projected_monthly_savings"] == 20.05
+
+
+def test_prefix_telemetry_does_not_vouch_for_the_duplicate_lever(tenant_id):
+    """Two levers, two kinds of evidence, and they are not interchangeable.
+
+    "Is anything looking?" is asked so that a lever finding nothing can be told
+    apart from a lever nobody is running. Answering it with signals of the
+    WRONG kind lets an applied dedup action reconcile against a silence it has
+    mistaken for a measurement — and, two periods on, call that verified.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    # Prefix telemetry only: optimize mode is on, but nothing is comparing
+    # whole requests for this feature. Written straight to the table with a v2
+    # stamp, because the question is what the DETECTOR does with a row the
+    # schema allows — today's SDK leaves prefix summaries unversioned, which is
+    # the only reason reading "any v2 row" has not already gone wrong.
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO usage_signal (tenant_id, feature_id, provider, model, period,
+                                      signal_kind, fingerprint, call_count, prefix_tokens,
+                                      tokens_in, tokens_out, cached_count, prefix_measured,
+                                      fingerprint_version, cache_windows)
+            VALUES (%s, %s, 'anthropic', 'claude-sonnet-4-6', %s, 'prefix', 'fp-p',
+                    1000, 4000, 4000000, 0, 0, true, 'v2', 20)
+            """,
+            (tenant_id, triage["id"], PERIOD),
+        )
+    optimize_measured.mark_applied(
+        tenant_id, triage["id"], "duplicate_calls", 100.0, dt.date(2026, 4, 1)
+    )
+    action = next(
+        a
+        for a in optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)["actions"]
+        if a["lever"] == "duplicate_calls"
+    )
+    assert action["status"] == "unverifiable"
+    assert action["realized_monthly"] is None
+    assert action["current_avoidable"] is None
