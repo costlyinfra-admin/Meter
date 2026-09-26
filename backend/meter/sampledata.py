@@ -282,6 +282,7 @@ def _add_usage_signal(
     cached_count=0,
     write_calls=0,
     cache_windows=None,
+    prefix_samples=0,
     # The demo seeds v2 signals: a v1 row is a LEGACY row by definition, and the
     # detector excludes those, so seeding v1 would leave the demo's repeated-
     # request finding permanently empty.
@@ -300,8 +301,10 @@ def _add_usage_signal(
                                   signal_kind, fingerprint, call_count, prefix_tokens,
                                   tokens_in, tokens_out, cached_count,
                                   fingerprint_version, scope_kind,
-                                  write_calls, cache_windows)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                  write_calls, cache_windows,
+                                  prefix_tokens_sum, prefix_tokens_n, prefix_measured)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s)
         """,
         (
             tenant_id,
@@ -320,6 +323,9 @@ def _add_usage_signal(
             scope_kind,
             write_calls,
             cache_windows,
+            (prefix_tokens or 0) * prefix_samples,
+            prefix_samples,
+            prefix_samples > 0,
         ),
     )
 
@@ -1192,6 +1198,9 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         prefix_tokens=4100,
         cached_count=2080,
         cache_windows=700,
+        # The provider reported a creation size on each of those writes, so the
+        # demo shows the measured path rather than the character estimate.
+        prefix_samples=700,
         tokens_in=106_600_000,
         tokens_out=5_200_000,
     )

@@ -1367,15 +1367,27 @@ class Optimizer {
         tin: 0,
         tout: 0,
         estimated: 0,
-        measured: 0,
+        measuredSum: 0,
+        measuredN: 0,
       };
       this._prefixes.set(key, entry);
     }
     entry.count += 1;
     entry.tin += int(usage.tokens_in);
     entry.tout += int(usage.tokens_out);
+    // A no-op fold, kept explicit: the fingerprint IS the static block, so
+    // every call in this group has the same character estimate.
     entry.estimated = Math.max(entry.estimated, estimated);
-    if (measured) entry.measured = Math.max(entry.measured, measured);
+    if (measured) {
+      // Summed and counted, not maximised. What the provider actually caches
+      // varies between calls sharing a static block — the breakpoint moves,
+      // and the conversation in front of it grows — so the largest figure of
+      // the month is the group's most expensive member, not its typical one. A
+      // mean also survives being folded again server-side; a max of means does
+      // not.
+      entry.measuredSum += measured;
+      entry.measuredN += 1;
+    }
     if (cacheRead) entry.cached += 1;
     // The provider says it WROTE this prefix, so caching is already on here and
     // this call is the unavoidable cost of keeping it warm — not an opportunity
@@ -1432,10 +1444,12 @@ class Optimizer {
 
     const events = [];
     for (const entry of items.values()) {
-      // The provider's own count when it gave one, characters over four when it
-      // did not — and the flag says which, so the server never presents an
-      // estimate as a measurement.
-      const measured = entry.measured > 0;
+      // The estimate and the measurements travel in SEPARATE fields. They used
+      // to share one, folded server-side with GREATEST, which cannot tell them
+      // apart: a process that never saw a cache creation sent its character
+      // count, and if that was the larger number it won and was then labelled
+      // as the provider's own.
+      const measured = entry.measuredN > 0;
       events.push(
         this._m._event("span.completed", newId(), {
           span_id: newId(),
@@ -1451,8 +1465,13 @@ class Optimizer {
             cached_count: entry.cached,
             tokens_in: entry.tin,
             tokens_out: entry.tout,
-            prefix_tokens: measured ? entry.measured : entry.estimated,
+            // Always the estimate now, whatever else was seen.
+            prefix_tokens: entry.estimated,
             prefix_measured: measured,
+            // The provider's own counts, summed and counted so the server can
+            // hold a mean across every process reporting this prefix.
+            prefix_tokens_sum: entry.measuredSum,
+            prefix_tokens_n: entry.measuredN,
             // What caching costs, not just what it saves: calls the provider
             // already wrote to cache, and the number of writes enabling it
             // would need.

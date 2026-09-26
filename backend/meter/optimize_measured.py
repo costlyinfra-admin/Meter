@@ -434,7 +434,7 @@ _CACHING_FIX_AUTOMATIC = (
 
 def _prefix_opportunity(rows: list) -> Optional[dict]:
     """Rows: (provider, model, fingerprint, call_count, prefix_tokens, cached_count,
-    prefix_measured, write_calls, cache_windows).
+    write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n).
 
     Caching is not a discount, it is a trade: reads are cheap and WRITES cost
     more than sending the prefix uncached. So the saving for one prefix is
@@ -475,9 +475,10 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         call_count,
         prefix_tokens,
         cached_count,
-        prefix_measured,
         write_calls,
         cache_windows,
+        tokens_sum,
+        tokens_n,
     ) in rows:
         mult = pricing.cache_read_mult(provider, model)
         if mult is None:  # provider has no priced cache discount -> don't claim one
@@ -486,7 +487,17 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         # A cache creation is already cached. It is neither a saving nor a call
         # that could be made cheaper by enabling what is evidently enabled.
         cacheable = int(call_count) - int(cached_count) - written
-        p_tokens = int(prefix_tokens or 0)
+        # The MEAN of what the provider actually cached, where it reported
+        # anything. Not the largest: a creation count varies between calls
+        # sharing a static block, so the month's high-water mark values the
+        # whole group at its most expensive member and the bias only ever
+        # points one way. Falling back to the SDK's character estimate is what
+        # makes this a `med` finding rather than a measured one.
+        samples = int(tokens_n or 0)
+        prefix_measured = samples > 0
+        p_tokens = (
+            int(int(tokens_sum or 0) / samples) if prefix_measured else int(prefix_tokens or 0)
+        )
         # Below the provider's own minimum there is no cache to read from, so
         # the finding would not be a cautious estimate — it would be an
         # instruction that cannot be carried out. Unknown models fall back to
@@ -539,7 +550,11 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
                 "model": model,
                 "calls": int(call_count),
                 "prefix_tokens": p_tokens,
-                "prefix_measured": bool(prefix_measured),
+                "prefix_measured": prefix_measured,
+                # How many provider counts that average is over, so a mean
+                # taken from one sample is visible as one rather than reading
+                # like a settled figure.
+                "measured_samples": samples,
                 "cached": int(cached_count),
                 "already_written": written,
                 "cache_writes_needed": None if cache_windows is None else writes,
@@ -732,10 +747,14 @@ def _rightsizing_opportunity(conn, feature_id, start) -> Optional[dict]:
 def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[float], dict]:
     rows = conn.execute(
         """
+        -- Read positionally below, so the order is load-bearing. prefix_measured
+        -- is deliberately absent: since 0063 a prefix is measured when it has
+        -- provider counts to average, and that column survives only to tell
+        -- pre-0063 rows apart, which having no counts already does.
         SELECT signal_kind, provider, model, fingerprint,
                call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
-               prefix_measured, fingerprint_version, scope_kind,
-               write_calls, cache_windows
+               fingerprint_version, scope_kind,
+               write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n
         FROM usage_signal
         WHERE feature_id = %s AND period = %s
         """,
@@ -748,13 +767,13 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
     # existing applied actions — but an incomplete match must not be presented
     # as an exact one, so the finding is built from v2 alone.
     dup_rows = [
-        (r[1], r[2], r[3], r[4], r[6], r[7], r[11])
+        (r[1], r[2], r[3], r[4], r[6], r[7], r[10])
         for r in rows
-        if r[0] == "duplicate" and r[10] == "v2"
+        if r[0] == "duplicate" and r[9] == "v2"
     ]
-    legacy_dups = sum(int(r[4]) for r in rows if r[0] == "duplicate" and r[10] != "v2")
+    legacy_dups = sum(int(r[4]) for r in rows if r[0] == "duplicate" and r[9] != "v2")
     pfx_rows = [
-        (r[1], r[2], r[3], r[4], r[5], r[8], r[9], r[12], r[13])
+        (r[1], r[2], r[3], r[4], r[5], r[8], r[11], r[12], r[13], r[14])
         for r in rows
         if r[0] == "prefix"
     ]
@@ -781,7 +800,7 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
         # duplicate telemetry would say the duplicate lever was looking — and an
         # applied dedup action would reconcile against a silence it had
         # mistaken for a measurement.
-        "duplicate_calls": any(r[0] == "duplicate" and r[10] == "v2" for r in rows),
+        "duplicate_calls": any(r[0] == "duplicate" and r[9] == "v2" for r in rows),
         "prompt_caching": any(r[0] == "prefix" for r in rows),
     }
     return opportunities, cache_utilization, observable

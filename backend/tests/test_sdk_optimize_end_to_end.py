@@ -112,7 +112,8 @@ def signals(tenant_id):
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         return conn.execute(
             """
-            SELECT signal_kind, call_count, cached_count, prefix_tokens, prefix_measured
+            SELECT signal_kind, call_count, cached_count, prefix_tokens, prefix_measured,
+                   prefix_tokens_sum, prefix_tokens_n
             FROM usage_signal ORDER BY signal_kind
             """
         ).fetchall()
@@ -172,6 +173,7 @@ def test_a_shared_prefix_becomes_a_prefix_signal_in_the_database(client):
     assert all(row[2] == 0 for row in prefixes)
     # No provider count, so the size is the SDK's estimate and says so.
     assert all(row[4] is False for row in prefixes)
+    assert all((row[5], row[6]) == (0, 0) for row in prefixes)
 
 
 def test_the_provider_s_own_prefix_count_arrives_as_measured(client):
@@ -184,8 +186,16 @@ def test_the_provider_s_own_prefix_count_arrives_as_measured(client):
     assert meter.flush(timeout=5.0)
 
     prefix = [row for row in signals(tenant) if row[0] == "prefix"][0]
-    assert prefix[3] == 3500, "the provider's cache-creation count was not the prefix size"
+    # The provider's count arrives summed and counted, so the server holds a
+    # mean rather than a high-water mark: one report of 3,500 tokens.
+    assert (prefix[5], prefix[6]) == (3500, 1), "the provider's count did not arrive"
     assert prefix[4] is True
+    # ...and it does NOT land in prefix_tokens, which carries the SDK's
+    # character estimate and nothing else. The two shared a column once, folded
+    # with GREATEST, and an estimate could outrank a measurement and be
+    # labelled as one.
+    assert prefix[3] != 3500
+    assert prefix[3] == len(json.dumps([SYSTEM, None], sort_keys=True)) // 4
 
 
 def test_the_recommendation_a_customer_sees_comes_out_the_far_end(client):

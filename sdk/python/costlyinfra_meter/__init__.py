@@ -1659,14 +1659,24 @@ class _Optimizer:
                 (prefix_fp, feature),
                 {"provider": provider, "model": model, "feature_id": feature,
                  "count": 0, "cached": 0, "writes": 0, "windows": 0,
-                 "tin": 0, "tout": 0, "estimated": 0, "measured": 0},
+                 "tin": 0, "tout": 0, "estimated": 0,
+                 "measured_sum": 0, "measured_n": 0},
             )
             entry["count"] += 1
             entry["tin"] += int(usage.get("tokens_in") or 0)
             entry["tout"] += int(usage.get("tokens_out") or 0)
+            # A no-op fold, kept explicit: the fingerprint IS the static block,
+            # so every call in this group has the same character estimate.
             entry["estimated"] = max(entry["estimated"], estimated)
             if measured:
-                entry["measured"] = max(entry["measured"], measured)
+                # Summed and counted, not maximised. What the provider actually
+                # caches varies between calls sharing a static block — the
+                # breakpoint moves, and the conversation in front of it grows —
+                # so the largest figure of the month is the group's most
+                # expensive member, not its typical one. A mean also survives
+                # being folded again server-side; a max of means does not.
+                entry["measured_sum"] += measured
+                entry["measured_n"] += 1
             if cache_read:
                 entry["cached"] += 1
             if measured:
@@ -1724,10 +1734,12 @@ class _Optimizer:
             items, self._prefixes = self._prefixes, {}
         events = []
         for (fingerprint, _feature), entry in items.items():
-            # The provider's own count when it gave one, characters over four
-            # when it did not — and the flag says which, so the server never
-            # presents an estimate as a measurement.
-            measured = bool(entry["measured"])
+            # The estimate and the measurements travel in SEPARATE fields. They
+            # used to share one, folded server-side with GREATEST, which cannot
+            # tell them apart: a process that never saw a cache creation sent
+            # its character count, and if that was the larger number it won and
+            # was then labelled as the provider's own.
+            measured = entry["measured_n"] > 0
             events.append(
                 self._m._event(
                     "span.completed", _new_id(), span_id=_new_id(), span_kind="llm",
@@ -1740,8 +1752,14 @@ class _Optimizer:
                         "cached_count": entry["cached"],
                         "tokens_in": entry["tin"],
                         "tokens_out": entry["tout"],
-                        "prefix_tokens": entry["measured"] if measured else entry["estimated"],
+                        # Always the estimate now, whatever else was seen.
+                        "prefix_tokens": entry["estimated"],
                         "prefix_measured": measured,
+                        # The provider's own counts, summed and counted so the
+                        # server can hold a mean across every process reporting
+                        # this prefix.
+                        "prefix_tokens_sum": entry["measured_sum"],
+                        "prefix_tokens_n": entry["measured_n"],
                         # What caching costs, not just what it saves: calls the
                         # provider already wrote to cache, and the number of
                         # writes enabling it would need.

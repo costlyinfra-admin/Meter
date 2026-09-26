@@ -882,7 +882,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p("What goes into that number:"),
           list(
             "**How many calls shared the prefix**, and how many of them were already served from cache. Both are counts, not estimates.",
-            "**How big the prefix is.** Where the provider reports the size of what it cached, that is the figure used. Where it does not, the SDK estimates from the request length and the finding says so — an estimated size is a ceiling, not a measured saving.",
+            "**How big the prefix is.** Where the provider reports the size of what it cached, Meter uses the **average** of those reports rather than the largest — what a provider caches shifts from call to call, and the biggest figure of the month describes the most expensive call, not a typical one. Where the provider reports nothing, the SDK estimates from the request length and the finding says so; an estimated size is a ceiling, not a measured saving.",
             "**What caching would cost.** This is the part that decides whether there is a saving at all.",
           ),
           p(

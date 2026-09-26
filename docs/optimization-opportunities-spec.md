@@ -243,6 +243,20 @@ client sees the call timestamps. The write is priced against the READ it
 replaces, not against an uncached call: the writing call pays `write_mult`
 where it would otherwise have paid `read_mult`.
 
+`P` is the **mean** of the provider's own cache-creation counts
+(`prefix_tokens_sum / prefix_tokens_n`), falling back to the SDK's character
+estimate where the provider reported none. It used to be their maximum, folded
+with `GREATEST`, which was wrong twice over. A creation count varies between
+calls sharing a static block — the breakpoint moves, the conversation in front
+of it grows — so the month's high-water mark values the group at its most
+expensive member. And `GREATEST` could not tell a measurement from an estimate:
+one process that never saw a creation sent its character count, and if that was
+larger it won and `prefix_measured` then labelled it as the provider's own
+figure. The two now travel in separate fields and measurements are summed and
+counted, because a mean has to survive being folded again — `max(max)` is a max,
+but `max(mean)` is not a mean. Rows written before 0063 are read as estimates:
+their single number may be either kind and nothing left can say which.
+
 A per-prefix loss is dropped rather than netted off a profitable one — caching
 each prefix is an independent decision, and you would simply not take the bad one.
 

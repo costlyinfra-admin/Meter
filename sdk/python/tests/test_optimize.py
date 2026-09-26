@@ -191,8 +191,54 @@ def test_the_prefix_size_is_the_providers_own_count_when_the_provider_gives_one(
     drain(m)
 
     signal = t.signals("prefix")[0]
-    assert signal["prefix_tokens"] == 4242
     assert signal["prefix_measured"] is True
+    # The measurements travel apart from the estimate, summed and counted, so
+    # the server holds a mean rather than a high-water mark.
+    assert (signal["prefix_tokens_sum"], signal["prefix_tokens_n"]) == (4242, 1)
+
+
+def test_a_prefix_is_valued_at_the_average_of_what_the_provider_cached():
+    """The provider's creation count varies between calls sharing a prefix.
+
+    What it caches depends on where the breakpoint falls and how much
+    conversation sits in front of it. The largest figure of the month is the
+    group's most expensive member, and multiplying every uncached call by it
+    overstates the saving every time.
+    """
+    t = Captured("pepper")
+    m = meter(t, optimize=True, salt="pepper", optimize_flush_interval=3600.0)
+    for size in (3000, 4000, 5000):
+        client_for(m, Response(cache_write=size)).messages.create(
+            model="m", system="static block", messages=[{"role": "user"}]
+        )
+    drain(m)
+
+    signal = t.signals("prefix")[0]
+    assert (signal["prefix_tokens_sum"], signal["prefix_tokens_n"]) == (12_000, 3)
+    # ...and prefix_tokens still holds the CHARACTER estimate, small and
+    # unrelated, rather than doubling as a place to put a measurement. The two
+    # only ever got confused because they once shared a field.
+    assert signal["prefix_tokens"] == len('["static block", null]') // 4
+
+
+def test_an_estimate_is_never_sent_in_the_field_a_measurement_lives_in():
+    """One process sees a cache creation, another never does.
+
+    They used to share one field, folded server-side with GREATEST, which
+    cannot tell a character count from a token count — so the estimate could
+    win and then be labelled as the provider's own number.
+    """
+    t = Captured("pepper")
+    m = meter(t, optimize=True, salt="pepper")
+    client_for(m, Response()).messages.create(  # no cache_creation_input_tokens
+        model="m", system="s" * 4000, messages=[{"role": "user"}]
+    )
+    drain(m)
+
+    signal = t.signals("prefix")[0]
+    assert signal["prefix_measured"] is False
+    assert (signal["prefix_tokens_sum"], signal["prefix_tokens_n"]) == (0, 0)
+    assert signal["prefix_tokens"] > 0  # the estimate, in its own field
 
 
 def test_the_prefix_size_is_declared_an_estimate_when_the_provider_gives_none():
@@ -206,6 +252,7 @@ def test_the_prefix_size_is_declared_an_estimate_when_the_provider_gives_none():
     assert signal["prefix_measured"] is False
     # Characters over four, which is why it may not be called measured.
     assert 0 < signal["prefix_tokens"] < 400
+    assert signal["prefix_tokens_n"] == 0
 
 
 def test_a_call_the_provider_cached_for_is_counted_as_a_write_not_an_opportunity():

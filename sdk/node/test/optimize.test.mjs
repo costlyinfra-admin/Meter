@@ -193,8 +193,55 @@ test("the prefix size is the provider's own count when the provider gives one", 
   await flush(m);
 
   const signal = t.signals("prefix")[0];
-  assert.equal(signal.prefix_tokens, 4242);
   assert.equal(signal.prefix_measured, true);
+  // The measurements travel apart from the estimate, summed and counted, so
+  // the server holds a mean rather than a high-water mark.
+  assert.equal(signal.prefix_tokens_sum, 4242);
+  assert.equal(signal.prefix_tokens_n, 1);
+});
+
+test("a prefix is valued at the average of what the provider cached", async () => {
+  // The provider's creation count varies between calls sharing a static block:
+  // the breakpoint moves and the conversation in front of it grows. The
+  // largest figure of the month is the group's most expensive member, and
+  // multiplying every uncached call by it overstates the saving every time.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper", optimizeFlushIntervalMs: 3_600_000 });
+  for (const size of [3000, 4000, 5000]) {
+    await clientFor(m, response({ cache_creation_input_tokens: size })).messages.create({
+      model: "m",
+      system: "static block",
+      messages: [{ content: "hi" }],
+    });
+  }
+  await flush(m);
+
+  const signal = t.signals("prefix")[0];
+  assert.equal(signal.prefix_tokens_sum, 12000);
+  assert.equal(signal.prefix_tokens_n, 3);
+  // ...and prefix_tokens still holds the CHARACTER estimate, small and
+  // unrelated, rather than doubling as a place to put a measurement.
+  assert.ok(signal.prefix_tokens < 100);
+});
+
+test("an estimate is never sent in the field a measurement lives in", async () => {
+  // They used to share one field, folded server-side with GREATEST, which
+  // cannot tell a character count from a token count — so the estimate could
+  // win and then be labelled as the provider's own number.
+  const t = capture();
+  const m = meter(t, { optimize: true, salt: "pepper" });
+  await clientFor(m, response()).messages.create({
+    model: "m",
+    system: "s".repeat(4000),
+    messages: [{ content: "hi" }],
+  });
+  await flush(m);
+
+  const signal = t.signals("prefix")[0];
+  assert.equal(signal.prefix_measured, false);
+  assert.equal(signal.prefix_tokens_sum, 0);
+  assert.equal(signal.prefix_tokens_n, 0);
+  assert.ok(signal.prefix_tokens > 0); // the estimate, in its own field
 });
 
 test("an OpenAI system prompt is part of the prefix", async () => {

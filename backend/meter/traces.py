@@ -278,7 +278,29 @@ def _signal(raw) -> Optional[dict]:
     if not fingerprint:
         return None  # unusable without one; not worth failing the batch over
     out = {"kind": kind, "fingerprint": fingerprint}
-    for field in ("count", "tokens_in", "tokens_out", "cached_count", "prefix_tokens"):
+    # Every counter a prefix summary carries. An allowlist is the right shape
+    # here, but it is also a place a new field can be added at both ends and
+    # still go nowhere: write_calls and cache_windows were computed by the SDK
+    # and stored by the hook for a while with this list in between, silently
+    # dropping them, because every test of that path called ingest_events
+    # directly. test_signal_fields_survive_the_wire is the tripwire now.
+    for field in (
+        "count",
+        "tokens_in",
+        "tokens_out",
+        "cached_count",
+        "prefix_tokens",
+        # The provider's own cache-creation counts, summed and counted, so the
+        # server can hold their mean (0063).
+        "prefix_tokens_sum",
+        "prefix_tokens_n",
+        # What caching would COST: calls already written to cache, and the
+        # number of provider-TTL windows a write would be needed in (0062).
+        # Absent cache_windows stays absent — it means "this SDK could not
+        # count them", which is not the same as counting none.
+        "write_calls",
+        "cache_windows",
+    ):
         value = _count(raw.get(field), f"signal.{field}")
         if value is not None:
             out[field] = value

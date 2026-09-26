@@ -449,3 +449,57 @@ def test_heartbeats_move_activity_without_touching_money(tenant_id):
     status, cost, _, _, _, _, heartbeat, _ = trace_row(tenant_id)
     assert (status, cost) == ("running", before)
     assert heartbeat is not None
+
+
+# ---------------------------------------------------------------------------
+# The ingest allowlist is a place fields go to die quietly
+# ---------------------------------------------------------------------------
+
+
+def test_signal_fields_survive_the_wire():
+    """Every counter the SDK puts in a prefix summary has to reach the hook.
+
+    traces._signal is an allowlist, which is the right shape — a fingerprint
+    reaches an aggregation key, and an unbounded one is an unbounded row. But
+    it also sits between two ends that can both be updated without it: the SDK
+    computed write_calls and cache_windows, the hook stored them, and this list
+    in the middle dropped them for an entire release, because every test of
+    that path called ingest_events directly and never crossed the boundary.
+
+    Read from the SDK's own source rather than a list written out here, so the
+    tripwire cannot drift from the thing it is guarding.
+    """
+    import inspect
+    import re
+
+    import costlyinfra_meter
+
+    source = inspect.getsource(costlyinfra_meter._Optimizer.due_summaries)
+    # The keys of the `signal={...}` payload the SDK emits.
+    sent = set(re.findall(r'"(\w+)":', source.split("signal=")[1]))
+    sent -= {"kind", "fingerprint"}  # handled explicitly above the loop
+
+    survived = traces._signal(
+        {"kind": "prefix", "fingerprint": "fp", **{name: 1 for name in sent}}
+    )
+    missing = sorted(name for name in sent if name not in survived)
+    assert not missing, f"the SDK sends these and the allowlist drops them: {missing}"
+
+
+def test_a_signal_field_nobody_named_still_cannot_get_through():
+    """The allowlist is still an allowlist."""
+    out = traces._signal(
+        {"kind": "prefix", "fingerprint": "fp", "count": 2, "prompt": "secret", "extra": 9}
+    )
+    assert "prompt" not in out and "extra" not in out
+    assert out["count"] == 2
+
+
+def test_an_sdk_that_cannot_count_windows_sends_no_window_field():
+    """Absent is recorded as absent. Zero windows and no window count are
+    different facts, and only the first is a measurement."""
+    out = traces._signal({"kind": "prefix", "fingerprint": "fp", "count": 2})
+    assert "cache_windows" not in out
+    assert traces._signal(
+        {"kind": "prefix", "fingerprint": "fp", "cache_windows": 0}
+    )["cache_windows"] == 0

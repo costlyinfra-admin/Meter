@@ -303,6 +303,8 @@ def accumulate_signal(
             "cached": 0,
             "prefix_tokens": None,
             "prefix_measured": False,
+            "prefix_sum": 0,
+            "prefix_n": 0,
             "write_calls": 0,
             # None, not 0: an SDK too old to count windows has not counted zero
             # of them. The detector must be able to tell those apart.
@@ -333,6 +335,10 @@ def accumulate_signal(
         # One measured report is enough to stop calling the batch an estimate.
         if sig.get("prefix_measured"):
             entry["prefix_measured"] = True
+        # Summed, so the mean survives every layer it is folded through. A max
+        # would not: max(max) is still a max, but max(mean) is not a mean.
+        entry["prefix_sum"] += int(sig.get("prefix_tokens_sum") or 0)
+        entry["prefix_n"] += int(sig.get("prefix_tokens_n") or 0)
         entry["write_calls"] += int(sig.get("write_calls") or 0)
         windows = sig.get("cache_windows")
         if windows is not None:
@@ -378,6 +384,11 @@ def upsert_signal(
                 -- Latches on: once the provider has reported a real prefix size
                 -- for this fingerprint, later estimates do not un-measure it.
                 prefix_measured = prefix_measured OR %s::boolean,
+                -- Added, never maximised, and kept out of prefix_tokens above:
+                -- a character estimate and a provider token count are not
+                -- comparable quantities, and GREATEST happily compared them.
+                prefix_tokens_sum = prefix_tokens_sum + %s,
+                prefix_tokens_n = prefix_tokens_n + %s,
                 -- Least-scoped wins, for the reason in accumulate_signal.
                 scope_kind = CASE
                     WHEN usage_signal.scope_kind = 'unscoped' OR %s = 'unscoped' THEN 'unscoped'
@@ -396,6 +407,8 @@ def upsert_signal(
                 entry["prefix_tokens"],
                 entry["prefix_tokens"],
                 entry.get("prefix_measured", False),
+                entry.get("prefix_sum", 0),
+                entry.get("prefix_n", 0),
                 entry.get("scope_kind"),
                 entry.get("scope_kind"),
                 existing[0],
@@ -408,8 +421,9 @@ def upsert_signal(
                 (tenant_id, feature_id, provider, model, period, signal_kind, fingerprint,
                  call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
                  prefix_measured, fingerprint_version, scope_kind,
-                 write_calls, cache_windows)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s)
             """,
             (
                 tenant_id,
@@ -429,6 +443,8 @@ def upsert_signal(
                 entry.get("scope_kind"),
                 entry.get("write_calls", 0),
                 entry.get("cache_windows"),
+                entry.get("prefix_sum", 0),
+                entry.get("prefix_n", 0),
             ),
         )
 

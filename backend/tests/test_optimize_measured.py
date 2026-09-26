@@ -44,6 +44,7 @@ def _prefix_event(
     measured=False,
     write_calls=0,
     windows=0,
+    samples=1,
     model="claude-sonnet-4-6",
 ):
     """A flushed prefix summary as the current SDK sends one.
@@ -56,6 +57,7 @@ def _prefix_event(
         "kind": "prefix",
         "fingerprint": fingerprint,
         "count": count,
+        # The SDK's character estimate, always in its own field.
         "prefix_tokens": prefix_tokens,
         "cached_count": cached_count,
         "tokens_in": tokens_in,
@@ -63,6 +65,11 @@ def _prefix_event(
         "prefix_measured": measured,
         "write_calls": write_calls,
     }
+    if measured:
+        # One provider count of exactly that size, so the mean is the figure
+        # the test named. `samples` overrides it where the average matters.
+        signal["prefix_tokens_sum"] = prefix_tokens * samples
+        signal["prefix_tokens_n"] = samples
     if windows is not None:
         signal["cache_windows"] = windows
     return {
@@ -1477,3 +1484,129 @@ def test_prefix_telemetry_does_not_vouch_for_the_duplicate_lever(tenant_id):
     assert action["status"] == "unverifiable"
     assert action["realized_monthly"] is None
     assert action["current_avoidable"] is None
+
+
+# ---------------------------------------------------------------------------
+# A prefix is worth its average size, not its largest (0063)
+# ---------------------------------------------------------------------------
+
+
+def test_a_prefix_is_priced_at_the_average_the_provider_reported(tenant_id):
+    """Three creations of 3k, 4k and 5k tokens is a 4k prefix, not a 5k one.
+
+    What a provider caches varies between calls that share a static block: the
+    breakpoint moves and the conversation in front of it grows. Taking the
+    month's high-water mark and multiplying it by every uncached call values
+    the whole group at its most expensive member, and the bias only ever points
+    one way.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            # Sum 12,000 over 3 samples -> a 4,000-token mean.
+            _prefix_event(triage["id"], "fp-p", 1000, 4000, 0, 4_000_000,
+                          measured=True, windows=20, samples=3)
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    # The same $10.52 as a single 4,000-token measurement. At the old maximum
+    # of 5,000 it would have been $13.15.
+    assert prefix["projected_monthly_savings"] == 10.52
+    assert "4,000-token static prefix" in prefix["evidence"]
+    assert prefix["trail"][0]["measured_samples"] == 3
+
+
+def test_measurements_from_several_processes_average_rather_than_compete(tenant_id):
+    """Replicas each report what they saw. The fold has to keep a mean.
+
+    A max survives being folded again — max(max) is a max — but a mean does
+    not, which is why the sum and the count travel rather than the average.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    # Two separate deliveries, which is what replicas actually do: the second
+    # updates the row the first inserted, so the fold has to be right in the
+    # UPDATE path as well as in the batch accumulator.
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 500, 2000, 0, 1_000_000,
+                       measured=True, windows=10, samples=1)],
+    )
+    hook.ingest_events(
+        tenant_id,
+        [_prefix_event(triage["id"], "fp-p", 500, 6000, 0, 1_000_000,
+                       measured=True, windows=10, samples=1)],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    # (2,000 + 6,000) / 2 = 4,000. The old GREATEST would have said 6,000.
+    assert "4,000-token static prefix" in prefix["evidence"]
+    assert prefix["trail"][0]["measured_samples"] == 2
+
+
+def test_a_character_estimate_can_no_longer_outrank_a_provider_count(tenant_id):
+    """One process saw a cache creation; another never did.
+
+    They shared a column folded with GREATEST, which cannot tell a character
+    count from a token count. The estimate won whenever it was larger, and
+    prefix_measured — which latches on — then labelled the row as the
+    provider's own number. That is the failure 0056 exists to prevent,
+    reintroduced one layer up.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    hook.ingest_events(
+        tenant_id,
+        [
+            # An estimate of 5,000 characters-over-four, no measurement.
+            _prefix_event(triage["id"], "fp-p", 500, 5000, 0, 1_000_000, windows=10),
+            # The provider's actual count, which is smaller.
+            _prefix_event(triage["id"], "fp-p", 500, 3000, 0, 1_000_000,
+                          measured=True, windows=10),
+        ],
+    )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    # 3,000 — the measurement — not 5,000, and it is honestly called measured.
+    assert "3,000-token static prefix" in prefix["evidence"]
+    assert "measured by the provider" in prefix["evidence"]
+    assert prefix["confidence"] == "high"
+
+
+def test_a_row_written_before_the_mean_existed_is_read_as_an_estimate(tenant_id):
+    """Legacy rows carry a maximum with no way left to tell which kind it is.
+
+    They are not deleted — they are real history and they back applied actions
+    — but a number that might be either a measurement or a character count is
+    only safely read as the weaker of the two.
+    """
+    triage = features.add_feature(tenant_id, "AI threat triage")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO usage_signal (tenant_id, feature_id, provider, model, period,
+                                      signal_kind, fingerprint, call_count, prefix_tokens,
+                                      tokens_in, tokens_out, cached_count, prefix_measured,
+                                      cache_windows)
+            VALUES (%s, %s, 'anthropic', 'claude-sonnet-4-6', %s, 'prefix', 'fp-old',
+                    1000, 4000, 4000000, 0, 0, true, 20)
+            """,
+            (tenant_id, triage["id"], PERIOD),
+        )
+
+    prefix = _opp(
+        optimize_measured.opportunities(tenant_id, triage["id"], PERIOD), "prompt_caching"
+    )
+    # The size is still used — the finding is real — but it is no longer
+    # presented as something the provider counted.
+    assert "4,000-token static prefix" in prefix["evidence"]
+    assert "estimated from request length" in prefix["evidence"]
+    assert prefix["confidence"] == "med"
+    assert prefix["savings_type"] == "modeled_ceiling"
+    assert prefix["trail"][0]["measured_samples"] == 0
