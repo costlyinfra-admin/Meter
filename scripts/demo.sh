@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # One-command demo: spins up a throwaway seeded Postgres, starts the API and the
-# web dev server, and prints the demo login. Everything is torn down on exit.
+# web dev server, and prints the demo login. Everything is torn down on exit —
+# including when the script is killed outright (see "Teardown" below).
 #
 # Prereqs (one time): `make install`, and Postgres 16 (`brew install postgresql@16`).
 #
@@ -21,12 +22,69 @@ fi
 export PATH="$PGBIN:$PATH"
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
-TMPD="$(mktemp -d)"
+# ── Teardown ──────────────────────────────────────────────────────────────────
+# The throwaway Postgres runs detached (`pg_ctl start` gives it its own session),
+# so it does not stop just because this script does. The Claude desktop app stops
+# a demo by sending SIGTERM to the script's process group and, ~3 s later,
+# SIGKILL — which no trap can catch. With only an EXIT trap, every stopped demo
+# left a Postgres running and its temp directory behind. So teardown has three
+# layers, all safe to run more than once:
+#   1. an EXIT trap — Ctrl-C and ordinary exits;
+#   2. a watchdog in its own process group, out of reach of signals sent to ours,
+#      that tears down as soon as this script is gone, however it died;
+#   3. at startup, a sweep of leftovers from earlier demos whose script is gone
+#      (e.g. if a watchdog was killed as well).
+# Each demo's files live in $TMPDIR/meter-demo.XXXXXX, with the script's pid in
+# owner.pid.
+TMPROOT="${TMPDIR:-/tmp}"
+TMPROOT="${TMPROOT%/}"
+
+# Stop the Postgres of demo directory $1, if it is still running. Immediate mode:
+# the data is throwaway, and the stop has to fit inside the app's kill window.
+stop_postgres() {
+  local pid
+  pid="$(head -n 1 "$1/data/postmaster.pid" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 0
+  # Pids get reused: only touch the process if it is this demo's postmaster.
+  case "$(ps -o command= -p "$pid" 2>/dev/null || true)" in
+    *postgres*"/$(basename "$1")/data"*) ;;
+    *) return 0 ;;
+  esac
+  pg_ctl -D "$1/data" stop -m immediate -w -t 10 >/dev/null 2>&1 \
+    || kill -KILL "$pid" 2>/dev/null || true
+}
+
+teardown() {
+  stop_postgres "$1"
+  rm -rf "$1"
+}
+
+# Layer 3 — leftovers from earlier demos.
+for old in "$TMPROOT"/meter-demo.*; do
+  [ -f "$old/owner.pid" ] || continue
+  kill -0 "$(cat "$old/owner.pid")" 2>/dev/null && continue  # that demo is still running
+  echo "▶ Removing a leftover demo database ($old)…"
+  teardown "$old"
+done
+
+TMPD="$(mktemp -d "$TMPROOT/meter-demo.XXXXXX")"
+echo "$$" > "$TMPD/owner.pid"
 UVPID=""
+
+# Layer 2 — the watchdog. `set -m` starts it in its own process group; its stdio
+# is /dev/null so it never holds the launcher's output open.
+DEMO_PID=$$
+set -m
+(
+  while kill -0 "$DEMO_PID" 2>/dev/null; do sleep 1; done
+  teardown "$TMPD"
+) </dev/null >/dev/null 2>&1 &
+set +m
+
+# Layer 1 — the EXIT trap.
 cleanup() {
   [ -n "$UVPID" ] && kill "$UVPID" 2>/dev/null || true
-  pg_ctl -D "$TMPD/data" stop >/dev/null 2>&1 || true
-  rm -rf "$TMPD"
+  teardown "$TMPD"
 }
 trap cleanup EXIT INT TERM
 
