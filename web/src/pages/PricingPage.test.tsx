@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type PriceBook } from "../api";
@@ -11,19 +11,46 @@ vi.mock("../api", async (importActual) => {
 
 const BOOK: PriceBook = {
   version: "2026-09-25",
+  families: [
+    {
+      family: "llama-3.1-70b-instruct",
+      label: "Llama 3.1 70B Instruct",
+      vendor: "Meta",
+      hosts: [
+        {
+          provider: "deepinfra",
+          label: "DeepInfra",
+          model: "meta-llama-3.1-70b-instruct",
+          input_per_million: "0.35",
+          output_per_million: "0.40",
+        },
+        {
+          provider: "together",
+          label: "Together AI",
+          model: "meta-llama-3.1-70b-instruct",
+          input_per_million: "0.88",
+          output_per_million: "0.88",
+        },
+      ],
+    },
+  ],
   providers: [
     {
       provider: "anthropic",
       label: "Anthropic",
       source_url: "https://claude.com/pricing",
       checked: "2026-09-25",
+      vendors: null,
       models: [
         {
           model: "claude-sonnet-4-6",
           input_per_million: "3",
           output_per_million: "15",
           cache_read_per_million: "0.30",
-          cache_write_per_million: "3.75",
+          input_batch_per_million: "1.50",
+          output_batch_per_million: "7.50",
+          cache_write_5m_per_million: "3.75",
+          cache_write_1h_per_million: "6.00",
           cache_read_mult: "0.10",
           min_cacheable_tokens: 1024,
           cache_is_automatic: false,
@@ -37,13 +64,17 @@ const BOOK: PriceBook = {
       label: "Together AI",
       source_url: "https://www.together.ai/pricing",
       checked: null,
+      vendors: null,
       models: [
         {
           model: "meta-llama-3.1-70b-instruct",
           input_per_million: "0.88",
           output_per_million: "0.88",
           cache_read_per_million: null,
-          cache_write_per_million: null,
+          input_batch_per_million: null,
+          output_batch_per_million: null,
+          cache_write_5m_per_million: null,
+          cache_write_1h_per_million: null,
           cache_read_mult: null,
           min_cacheable_tokens: null,
           cache_is_automatic: null,
@@ -92,14 +123,17 @@ describe("Provider pricing", () => {
 
   it("writes a missing cache rate as a dash, never as zero", async () => {
     renderPage();
-    await screen.findByText("meta-llama-3.1-70b-instruct");
-    const row = screen.getByText("meta-llama-3.1-70b-instruct").closest("tr");
+    // Scoped to the provider's own table by its heading: the same model also
+    // appears in the open-weights family section below, with fewer columns.
+    const heading = await screen.findByRole("heading", { name: "Together AI", level: 2 });
+    const section = heading.closest("section");
+    const row = within(section!).getByText("meta-llama-3.1-70b-instruct").closest("tr");
     expect(row).not.toBeNull();
-    // Four cache columns, all unpriced for this host: read, write, minimum
-    // and mode. "$0" would read as "caching is free here", which is a claim
-    // Meter is not making — it does not price a cache for this host at all.
+    // Everything this host does not offer: both batch columns, both cache
+    // writes, the read, the minimum and the mode. "$0" would read as "batch
+    // and caching are free here", which is a claim Meter is not making.
     const cells = [...row!.querySelectorAll("td")].map((c) => c.textContent);
-    expect(cells.slice(2)).toEqual(["—", "—", "—", "—"]);
+    expect(cells.slice(2)).toEqual(["—", "—", "—", "—", "—", "—", "—"]);
     // The rates it DOES have are still there, so this is not an empty row.
     expect(cells.slice(0, 2)).toEqual(["$0.88", "$0.88"]);
   });
@@ -118,9 +152,53 @@ describe("Provider pricing", () => {
     await screen.findByText("claude-sonnet-4-6");
     fireEvent.change(screen.getByLabelText("Filter models"), { target: { value: "llama" } });
     await waitFor(() => expect(screen.queryByText("claude-sonnet-4-6")).not.toBeInTheDocument());
-    expect(screen.getByText("meta-llama-3.1-70b-instruct")).toBeInTheDocument();
+    // The model appears in its host's table and again under its family, so
+    // this is getAll: one match would mean the family section had vanished.
+    expect(screen.getAllByText("meta-llama-3.1-70b-instruct").length).toBeGreaterThan(0);
     // ...and a provider with nothing left drops out rather than sitting empty.
     expect(screen.queryByText("Anthropic")).not.toBeInTheDocument();
+  });
+
+  it("shows batch rates beside standard ones where a batch API exists", async () => {
+    renderPage();
+    await screen.findByText("claude-sonnet-4-6");
+    const row = screen.getByText("claude-sonnet-4-6").closest("tr");
+    const cells = [...row!.querySelectorAll("td")].map((c) => c.textContent);
+    // input, output, then the same two at the batch rate.
+    expect(cells.slice(0, 4)).toEqual(["$3", "$15", "$1.5", "$7.5"]);
+  });
+
+  it("shows both cache write tiers, because a caller picks between them", async () => {
+    renderPage();
+    await screen.findByText("claude-sonnet-4-6");
+    const row = screen.getByText("claude-sonnet-4-6").closest("tr");
+    const cells = [...row!.querySelectorAll("td")].map((c) => c.textContent);
+    // read, then 5-minute, then 1-hour: $0.30, $3.75, $6. An hour costs nearly
+    // twice what five minutes does, which is the decision the column exists for.
+    expect(cells.slice(4, 7)).toEqual(["$0.3", "$3.75", "$6"]);
+  });
+
+  it("lists open weights by who serves them, cheapest first", async () => {
+    // Meta sells no inference of its own, so Llama cannot be a provider row.
+    // It is a family, and the spread between its hosts is the point.
+    renderPage();
+    const heading = await screen.findByRole("heading", {
+      name: "Open weights, by who serves them",
+    });
+    const section = heading.closest("section");
+    expect(within(section!).getByText(/Llama 3.1 70B Instruct/)).toBeInTheDocument();
+    expect(within(section!).getByText(/Meta/)).toBeInTheDocument();
+    const hosts = [...section!.querySelectorAll("tbody tr")].map(
+      (r) => r.querySelector("th")?.textContent,
+    );
+    expect(hosts).toEqual(["DeepInfra", "Together AI"]);
+  });
+
+  it("puts the providers a reader came for at the top", async () => {
+    renderPage();
+    await screen.findByText("Anthropic");
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings[0]).toBe("Anthropic");
   });
 
   it("reports a failure instead of showing an empty table", async () => {

@@ -1529,15 +1529,38 @@ export interface PriceBookModel {
   model: string;
   input_per_million: string;
   output_per_million: string;
+  /** null where no batch API has been established for this provider — not zero. */
+  input_batch_per_million: string | null;
+  output_batch_per_million: string | null;
   /** null where the provider has no priced prompt cache — not zero. */
   cache_read_per_million: string | null;
-  cache_write_per_million: string | null;
+  /** Two write prices, because a caller chooses between them. The 1-hour one is
+   *  null unless the provider actually offers a longer-lived entry. */
+  cache_write_5m_per_million: string | null;
+  cache_write_1h_per_million: string | null;
   cache_read_mult: string | null;
   /** Smallest prefix the provider will cache; null where we have not checked. */
   min_cacheable_tokens: number | null;
   cache_is_automatic: boolean | null;
   downgrade_target: string | null;
   open_weights_family: string | null;
+}
+
+/** A model Bedrock resells, priced from AWS's own published list. Reference
+ *  only: AWS names models the way its console does, not the way its API does,
+ *  so these cannot be matched against metered traffic. */
+export interface BedrockModel {
+  model: string;
+  input_per_million: string | null;
+  output_per_million: string | null;
+  input_batch_per_million: string | null;
+  output_batch_per_million: string | null;
+  cache_read_per_million: string | null;
+}
+
+export interface BedrockVendor {
+  vendor: string;
+  models: BedrockModel[];
 }
 
 export interface PriceBookProvider {
@@ -1547,11 +1570,30 @@ export interface PriceBookProvider {
   /** When this table was last reconciled against the provider's own page. */
   checked: string | null;
   models: PriceBookModel[];
+  /** Bedrock resells a dozen vendors' models and is grouped by vendor the way
+   *  AWS's own pricing page is. null for every provider that sells its own. */
+  vendors: BedrockVendor[] | null;
+}
+
+/** One set of open weights and every host in the book that serves it. */
+export interface PriceBookFamily {
+  family: string;
+  label: string;
+  /** Who made the weights, which is not who charges you to run them. */
+  vendor: string;
+  hosts: {
+    provider: string;
+    label: string;
+    model: string;
+    input_per_million: string;
+    output_per_million: string;
+  }[];
 }
 
 export interface PriceBook {
   version: string;
   providers: PriceBookProvider[];
+  families: PriceBookFamily[];
 }
 
 export interface McpToken {

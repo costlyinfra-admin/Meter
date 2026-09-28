@@ -62,8 +62,12 @@ def test_a_provider_with_no_priced_cache_reports_nothing_rather_than_zero(client
         # Absent, not 0. A zero would read as "caching is free here", which is
         # a claim; the truth is that Meter does not price a cache for this host.
         assert row["cache_read_per_million"] is None
-        assert row["cache_write_per_million"] is None
+        assert row["cache_write_5m_per_million"] is None
+        assert row["cache_write_1h_per_million"] is None
         assert row["cache_is_automatic"] is None
+        # Same for a batch tier nobody has established this host offers.
+        assert row["input_batch_per_million"] is None
+        assert row["output_batch_per_million"] is None
 
 
 def test_the_cache_columns_follow_the_model_not_only_the_provider(client):
@@ -79,9 +83,78 @@ def test_the_cache_columns_follow_the_model_not_only_the_provider(client):
 def test_a_cache_write_is_shown_as_dearer_than_sending_it_uncached(client):
     rows = _models(client.get("/api/pricing").json())
     sonnet = rows["claude-sonnet-4-6"]
-    # $3 in, $3.75 to write. The whole reason a caching recommendation can come
-    # out negative, so the screen has to show it rather than only the discount.
-    assert Decimal(sonnet["cache_write_per_million"]) > Decimal(sonnet["input_per_million"])
+    # $3 in, $3.75 to write for five minutes, $6 to write for an hour. The
+    # whole reason a caching recommendation can come out negative, so the
+    # screen shows both rather than only the discount.
+    assert Decimal(sonnet["cache_write_5m_per_million"]) == Decimal("3.75")
+    assert Decimal(sonnet["cache_write_1h_per_million"]) == Decimal("6")
+    assert Decimal(sonnet["cache_write_5m_per_million"]) > Decimal(sonnet["input_per_million"])
+
+
+def test_only_a_provider_that_offers_a_longer_cache_has_a_one_hour_price(client):
+    rows = _models(client.get("/api/pricing").json())
+    # Anthropic lets a caller pay more for an entry that lives an hour. OpenAI
+    # and Gemini do not offer the choice, so repeating their 5-minute number
+    # under a 1-hour heading would invent a product.
+    assert rows["claude-opus-4-8"]["cache_write_1h_per_million"] is not None
+    assert rows["gpt-5.6-sol"]["cache_write_1h_per_million"] is None
+    assert rows["gemini-2.5-pro"]["cache_write_1h_per_million"] is None
+
+
+def test_batch_rates_are_half_where_a_batch_api_exists(client):
+    rows = _models(client.get("/api/pricing").json())
+    sonnet = rows["claude-sonnet-4-6"]
+    assert Decimal(sonnet["input_batch_per_million"]) == Decimal("1.5")
+    assert Decimal(sonnet["output_batch_per_million"]) == Decimal("7.5")
+    assert Decimal(rows["gemini-2.5-pro"]["input_batch_per_million"]) == Decimal("0.625")
+
+
+def test_the_providers_a_reader_came_for_are_listed_first(client):
+    body = client.get("/api/pricing").json()
+    order = [p["provider"] for p in body["providers"]]
+    assert order[:3] == ["anthropic", "openai", "google"]
+    # ...and the rest alphabetically by label, not by internal key.
+    rest = [p["label"] for p in body["providers"][3:]]
+    assert rest == sorted(rest, key=str.lower)
+
+
+def test_bedrock_is_grouped_by_the_vendor_whose_model_it_is(client):
+    body = client.get("/api/pricing").json()
+    bedrock = next(p for p in body["providers"] if p["provider"] == "bedrock")
+    vendors = {v["vendor"]: v for v in bedrock["vendors"]}
+    # AWS resells a dozen vendors' models and its own pricing page is a tab per
+    # vendor. Anything less than that is a subset pretending to be a catalogue.
+    assert {"Amazon", "Anthropic", "Meta", "Mistral", "OpenAI"} <= set(vendors)
+    assert sum(len(v["models"]) for v in bedrock["vendors"]) > 60
+    # Amazon's own models have no vendor in AWS's price list; they are not left
+    # under a blank heading.
+    assert "" not in vendors and None not in vendors
+    # Every other provider sells only its own models and has no vendor split.
+    assert next(p for p in body["providers"] if p["provider"] == "anthropic")["vendors"] is None
+
+
+def test_a_bedrock_rate_aws_does_not_publish_is_left_blank(client):
+    body = client.get("/api/pricing").json()
+    bedrock = next(p for p in body["providers"] if p["provider"] == "bedrock")
+    anthropic = next(v for v in bedrock["vendors"] if v["vendor"] == "Anthropic")
+    # AWS's price list carries input prices for the older Claude models and no
+    # output prices at all. Inventing one would be worse than the gap.
+    assert any(m["output_per_million"] is None for m in anthropic["models"])
+    assert all(m["input_per_million"] is not None for m in anthropic["models"])
+
+
+def test_llama_is_listed_as_a_family_across_its_hosts(client):
+    body = client.get("/api/pricing").json()
+    families = {f["label"]: f for f in body["families"]}
+    llama = families["Llama 3.1 70B Instruct"]
+    # Meta sells no inference of its own, so it is a vendor of weights rather
+    # than a provider with rates. The finding is the spread between its hosts.
+    assert llama["vendor"] == "Meta"
+    hosts = [h["label"] for h in llama["hosts"]]
+    assert len(hosts) >= 4
+    rates = [Decimal(h["input_per_million"]) for h in llama["hosts"]]
+    assert rates == sorted(rates), "cheapest host first — that is the point"
+    assert max(rates) / min(rates) > 2  # the same weights, at twice the price
 
 
 def test_a_minimum_nobody_has_checked_is_reported_as_unknown(client):

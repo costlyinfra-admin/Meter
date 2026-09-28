@@ -12,6 +12,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
+from . import bedrock_prices
+
 PRICING_VERSION = "2026-09-25"
 
 # Providers that bill (or whose tokens we price) PER TOKEN — closed-source plus
@@ -213,6 +215,16 @@ _FAMILY_LABEL: dict[str, str] = {
     "mixtral-8x7b-instruct": "Mixtral 8x7B Instruct",
 }
 
+# Who made the weights, which is not who charges you for running them. Meta has
+# no inference API of its own to list as a provider, so this is where Llama
+# appears on the pricing screen: one family, every host, their rates side by
+# side.
+_FAMILY_VENDOR: dict[str, str] = {
+    "llama-3.1-70b-instruct": "Meta",
+    "llama-3.1-8b-instruct": "Meta",
+    "mixtral-8x7b-instruct": "Mistral",
+}
+
 # One-step model right-sizing: a cheaper same-vendor tier that often preserves
 # quality for simpler tasks (opt spec §16, M-opt-7). Quality-gated — a CEILING,
 # not a guaranteed saving. One step down keeps the recommendation credible.
@@ -328,6 +340,20 @@ CACHE_IS_AUTOMATIC = {"openai", "google"}
 # non-latency-sensitive calls run ~50% cheaper on batch APIs.
 BATCH_MULT = Decimal("0.50")
 
+# Which providers actually HAVE a batch API, and what it costs. Checked against
+# each provider's own published table: Anthropic's batch column is exactly half
+# its standard column on every model, OpenAI's docs say the Batch API halves
+# everything, and Gemini's say batch runs "at 50% of the standard cost".
+#
+# A provider absent here is not assumed to offer one. Several hosts in this book
+# do not, and a blank column saying "we have not checked" is worth more than a
+# number that halves a price nobody halves.
+BATCH_MULT_BY_PROVIDER: dict[str, Decimal] = {
+    "anthropic": Decimal("0.50"),
+    "openai": Decimal("0.50"),
+    "google": Decimal("0.50"),
+}
+
 
 # CACHE_WRITE_MULT is the multiple of the input rate charged to WRITE tokens into
 # the cache (cache creation). Anthropic prices writes by how long the entry lives:
@@ -339,6 +365,26 @@ CACHE_WRITE_MULT: dict[str, Decimal] = {
 CACHE_WRITE_1H_MULT: dict[str, Decimal] = {
     "anthropic": Decimal("2.0"),  # 1-hour TTL
 }
+
+# OpenAI began charging for cache writes with the 5.6 generation; everything
+# before it bills a write as ordinary input. There is no TTL to choose there,
+# so these models have a write price and no 1-hour tier.
+CACHE_WRITE_MULT_BY_MODEL: dict[str, Decimal] = {
+    "gpt-6-astra": Decimal("1.25"),
+    "gpt-6-sol": Decimal("1.25"),
+    "gpt-6-luna": Decimal("1.25"),
+    "gpt-5.6-cyber": Decimal("1.25"),
+    "gpt-5.6-sol": Decimal("1.25"),
+    "gpt-5.6-terra": Decimal("1.25"),
+    "gpt-5.6-luna": Decimal("1.25"),
+}
+
+# The order the pricing screen lists providers in. The three that carry almost
+# all of anybody's bill come first and in that order; everything else follows
+# alphabetically. Not alphabetical throughout, because "AWS Bedrock, Cohere,
+# DeepInfra, Fireworks, Google…" buries the two providers most readers came to
+# look at.
+PROVIDER_ORDER = ("anthropic", "openai", "google")
 
 
 def min_cacheable_tokens(model: str, provider: Optional[str] = None) -> Optional[int]:
@@ -366,13 +412,29 @@ def cache_read_mult(provider: Optional[str], model: Optional[str] = None) -> Opt
     return CACHE_READ_MULT[provider]
 
 
-def cache_write_mult(provider: Optional[str], ttl: str = "5m") -> Decimal:
+def cache_write_mult(
+    provider: Optional[str], ttl: str = "5m", model: Optional[str] = None
+) -> Decimal:
     """Cache-WRITE multiplier on the input rate, by cache TTL ("5m" or "1h").
 
-    1.0 means the provider bills writes as ordinary input.
+    1.0 means the provider bills writes as ordinary input. The model's own rate
+    wins where it has one, as it does for reads.
     """
-    table = CACHE_WRITE_1H_MULT if ttl == "1h" else CACHE_WRITE_MULT
-    return table.get(provider or "", Decimal("1"))
+    if ttl == "1h":
+        return CACHE_WRITE_1H_MULT.get(provider or "", Decimal("1"))
+    if model is not None and model in CACHE_WRITE_MULT_BY_MODEL:
+        return CACHE_WRITE_MULT_BY_MODEL[model]
+    return CACHE_WRITE_MULT.get(provider or "", Decimal("1"))
+
+
+def has_1h_cache_tier(provider: Optional[str]) -> bool:
+    """True where a caller can choose a longer-lived cache entry, and pay for it."""
+    return (provider or "") in CACHE_WRITE_1H_MULT
+
+
+def batch_mult(provider: Optional[str]) -> Optional[Decimal]:
+    """Batch-API multiplier, or None where we have not established one."""
+    return BATCH_MULT_BY_PROVIDER.get(provider or "")
 
 
 def rate_in(model: str, provider: Optional[str] = None) -> Decimal:
@@ -508,24 +570,120 @@ def catalog() -> dict:
                 # checked is the failure this column exists to prevent.
                 "checked": meta.get("checked"),
                 "models": models,
+                # Bedrock resells a dozen vendors' models, so its rows are
+                # grouped by vendor the way AWS's own pricing page is. Every
+                # other provider sells its own and has one flat list.
+                "vendors": _bedrock_vendors() if provider == "bedrock" else None,
             }
         )
-    providers.sort(key=lambda p: p["label"].lower())
-    return {"version": PRICING_VERSION, "providers": providers}
+    providers.sort(key=lambda p: _provider_rank(p["provider"]))
+    return {
+        "version": PRICING_VERSION,
+        "providers": providers,
+        # The same open weights cost different amounts depending on who serves
+        # them, and that is the whole basis of the cross-provider lever. Listed
+        # once here rather than repeated on every host's row.
+        "families": _families(),
+    }
+
+
+def _provider_rank(provider: str) -> tuple:
+    """Sort key: the big three in a fixed order, then everyone alphabetically."""
+    label = PROVIDER_SOURCES.get(provider, {}).get("label", provider).lower()
+    if provider in PROVIDER_ORDER:
+        return (0, PROVIDER_ORDER.index(provider), label)
+    return (1, 0, label)
+
+
+def _bedrock_vendors() -> list:
+    """Bedrock's catalogue, grouped by the vendor whose model it is.
+
+    Reference only, and the API says so: these come from AWS's published price
+    list, which names models the way its console does rather than the way its
+    API does, so they cannot be matched to metered traffic.
+    """
+    grouped: dict[str, list] = {}
+    for (vendor, model), rates in bedrock_prices.CATALOG.items():
+        grouped.setdefault(vendor, []).append(
+            {
+                "model": model,
+                "input_per_million": rates.get("in"),
+                "output_per_million": rates.get("out"),
+                "input_batch_per_million": rates.get("in_batch"),
+                "output_batch_per_million": rates.get("out_batch"),
+                "cache_read_per_million": rates.get("cache_read"),
+            }
+        )
+    out = []
+    for vendor, models in grouped.items():
+        models.sort(key=lambda m: (Decimal(m["input_per_million"] or "0"), m["model"]))
+        out.append({"vendor": vendor, "models": models})
+    out.sort(key=lambda v: v["vendor"].lower())
+    return out
+
+
+def _families() -> list:
+    """Open-weight families and every host in the book that serves them.
+
+    Meta does not sell Llama inference itself, so it is not a provider here. It
+    is a family served by several, at rates that differ by more than a factor
+    of two — which is the finding, not a footnote.
+    """
+    grouped: dict[str, list] = {}
+    for (provider, model), family in _MODEL_FAMILY.items():
+        rates = _OSS_PRICES.get((provider, model))
+        if rates is None:
+            continue
+        grouped.setdefault(family, []).append(
+            {
+                "provider": provider,
+                "label": PROVIDER_SOURCES.get(provider, {}).get("label", provider),
+                "model": model,
+                "input_per_million": rates[0],
+                "output_per_million": rates[1],
+            }
+        )
+    out = []
+    for family, hosts in grouped.items():
+        hosts.sort(key=lambda h: (Decimal(h["input_per_million"]), h["label"].lower()))
+        out.append(
+            {
+                "family": family,
+                "label": _FAMILY_LABEL.get(family, family),
+                "vendor": _FAMILY_VENDOR.get(family, ""),
+                "hosts": hosts,
+            }
+        )
+    out.sort(key=lambda f: f["label"].lower())
+    return out
 
 
 def _catalog_row(provider: str, model: str, r_in: str, r_out: str) -> dict:
     read = cache_read_mult(provider, model)
+    batch = batch_mult(provider)
     family = _MODEL_FAMILY.get((provider, model))
     return {
         "model": model,
         "input_per_million": r_in,
         "output_per_million": r_out,
-        # Absent, not zero, where the provider has no priced prompt cache: a
-        # blank column says "we do not claim to know", a 0 says "free".
+        # Absent, not zero, wherever the provider offers no such thing: a blank
+        # column says "we do not claim to know", a 0 says "free".
+        "input_batch_per_million": str(Decimal(r_in) * batch) if batch is not None else None,
+        "output_batch_per_million": str(Decimal(r_out) * batch) if batch is not None else None,
         "cache_read_per_million": str(Decimal(r_in) * read) if read is not None else None,
-        "cache_write_per_million": (
-            str(Decimal(r_in) * cache_write_mult(provider)) if read is not None else None
+        # Two write prices, because a caller chooses between them and they are
+        # not close: on Anthropic a 1-hour entry costs 2x input where the
+        # 5-minute one costs 1.25x. Only that provider offers the choice, so
+        # everyone else's 1-hour column is blank rather than a repeat of the 5m.
+        "cache_write_5m_per_million": (
+            str(Decimal(r_in) * cache_write_mult(provider, "5m", model))
+            if read is not None
+            else None
+        ),
+        "cache_write_1h_per_million": (
+            str(Decimal(r_in) * cache_write_mult(provider, "1h", model))
+            if read is not None and has_1h_cache_tier(provider)
+            else None
         ),
         "cache_read_mult": str(read) if read is not None else None,
         "min_cacheable_tokens": MIN_CACHEABLE_TOKENS.get(model),

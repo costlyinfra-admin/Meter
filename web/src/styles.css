@@ -7752,3 +7752,37 @@ button.span-head:focus-visible {
   white-space: nowrap;
   background: var(--surface-2, var(--bg-subtle));
 }
+
+/* Provider pricing: nine money columns read as one undifferentiated wall, so
+   standard / batch / cache get a spanning header each. */
+.price-table .price-group-row th {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.price-table th.price-group {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.62rem;
+  border-bottom: 1px solid var(--line);
+}
+/* Batch is the secondary of each pair — same number, quieter, so the eye lands
+   on the rate you actually pay by default. */
+.price-table td.price-batch {
+  color: var(--muted);
+}
+.price-subhead {
+  margin-top: 1.4rem;
+}
+.price-family + .price-family {
+  margin-top: 1.2rem;
+}
+.price-family-title {
+  font-size: 0.9rem;
+  margin: 0 0 0.4rem;
+}
+/* Thirteen vendor tabs do not fit a laptop, let alone a phone. The tab row
+   scrolls; the page does not — the same bargain every wide table here makes. */
+.price-vendor-tabs {
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
