@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type Feature } from "../api";
 import { AuthProvider } from "../auth/AuthContext";
 import { InstallSdkPage } from "./InstallSdkPage";
@@ -282,7 +282,17 @@ describe("InstallSdkPage — generated prompts carry no secrets", () => {
 });
 
 describe("InstallSdkPage — verification", () => {
+  /** What the panel waits between polls — POLL_MS in InstallSdkPage.tsx. */
+  const POLL_MS = 5000;
+
+  // Anything that has to cross a poll boundary drives the clock by hand rather
+  // than waiting on it: five real seconds per test is slow, and on a loaded
+  // machine a real-timer poll can miss its window and fail a test that has
+  // nothing wrong with it.
+  afterEach(() => vi.useRealTimers());
+
   it("waits, then reports what arrived", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.mocked(api.recentHookEvent).mockResolvedValue({ event: null });
     renderPage();
     expect(await screen.findByText(/Waiting for your first Meter event/)).toBeInTheDocument();
@@ -297,11 +307,15 @@ describe("InstallSdkPage — verification", () => {
         requests: 3,
       },
     });
-    // Polling picks it up without a reload.
-    expect(await screen.findByText("Events received", {}, { timeout: 8000 })).toBeInTheDocument();
+    // Nothing re-reads the panel until the next poll comes round...
+    expect(screen.queryByText("Events received")).not.toBeInTheDocument();
+
+    // ...and then polling picks it up without a reload.
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(await screen.findByText("Events received")).toBeInTheDocument();
     expect(screen.getByText("AI threat triage")).toBeInTheDocument();
     expect(screen.getByText("claude-sonnet-4-6")).toBeInTheDocument();
-  }, 15000);
+  });
 
   it("marks the wait with an hourglass, not a status light", async () => {
     // A pulsing dot reads as a status light, and a light that is not green
@@ -380,10 +394,12 @@ describe("InstallSdkPage — verification", () => {
   });
 
   it("stops polling on an expired session instead of hammering a 401", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.mocked(api.recentHookEvent).mockRejectedValue(new ApiError(401, "Not authenticated"));
     renderPage();
     await waitFor(() => expect(api.recentHookEvent).toHaveBeenCalledTimes(1));
-    await new Promise((r) => setTimeout(r, 200));
+    // Well past several polls: a dead session is never asked twice.
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3);
     expect(api.recentHookEvent).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Waiting for your first Meter event/)).toBeInTheDocument();
   });
