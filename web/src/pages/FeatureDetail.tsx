@@ -182,30 +182,32 @@ export function FeatureDetail() {
               <p className="muted">No build cost in this period.</p>
             ) : (
               <>
-                <table className="mini-table">
-                  <thead>
-                    <tr>
-                      <th>Developer</th>
-                      <th>Tool</th>
-                      <th className="num">Amount</th>
-                      <th className="num">Commits</th>
-                      <th className="num">PRs</th>
-                      <th className="num">Files</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.build_by_developer.map((d, i) => (
-                      <tr key={i}>
-                        <td>{d.developer_id}</td>
-                        <td>{d.tool.replace("_", " ")}</td>
-                        <td className="num">{money(d.amount)}</td>
-                        <td className="num">{num(d.commits)}</td>
-                        <td className="num">{num(d.prs)}</td>
-                        <td className="num">{num(d.files_changed)}</td>
+                <div className="mini-table-wrap">
+                  <table className="mini-table">
+                    <thead>
+                      <tr>
+                        <th>Developer</th>
+                        <th>Tool</th>
+                        <th className="num">Amount</th>
+                        <th className="num">Commits</th>
+                        <th className="num">PRs</th>
+                        <th className="num">Files</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {detail.build_by_developer.map((d, i) => (
+                        <tr key={i}>
+                          <td>{d.developer_id}</td>
+                          <td>{d.tool.replace("_", " ")}</td>
+                          <td className="num">{money(d.amount)}</td>
+                          <td className="num">{num(d.commits)}</td>
+                          <td className="num">{num(d.prs)}</td>
+                          <td className="num">{num(d.files_changed)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
                 <p className="muted legend">
                   Amount is for the selected period; commits, PRs, and files are all-time
                   engineering activity.
@@ -520,59 +522,61 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
     <div className="opt-applied">
       <h4 className="opt-applied-title">Applied optimizations</h4>
       <span className="section-sub muted">
-        Projected savings frozen at apply time, reconciled against the measured drop since —
-        and confirmed only where the bill agrees that a unit of work got cheaper.
+        Projected savings frozen at apply time, reconciled against the measured drop since — and
+        confirmed only where the bill agrees that a unit of work got cheaper.
       </span>
-      <table className="mini-table">
-        <thead>
-          <tr>
-            <th>Optimization</th>
-            <th>Applied</th>
-            <th className="num">Projected</th>
-            <th className="num">Realized</th>
-            <th className="num">Cost per unit</th>
-          </tr>
-        </thead>
-        <tbody>
-          {actions.map((a) => (
-            <tr key={a.lever}>
-              <td>{LEVER_TITLES[a.lever] ?? a.lever}</td>
-              <td>{monthLabel(a.applied_on)}</td>
-              <td className="num">{money(a.projected_monthly)}/mo</td>
-              <td className="num">
-                {a.status === "pending" ? (
-                  <span className="muted">awaiting next period</span>
-                ) : (
-                  <>
-                    <strong className="opt-realized">{money(a.realized_monthly ?? 0)}/mo</strong>
-                    {a.status === "verified" && <span className="opt-verified">✓ Verified</span>}
-                    {a.status === "unverifiable" && (
-                      <span
-                        className="muted"
-                        title="No optimization telemetry for this lever in this period."
-                      >
-                        can&apos;t verify
-                      </span>
-                    )}
-                    {a.verification_note && (
-                      // Everything the telemetry can show is satisfied and this
-                      // still did not advance. Saying which half the invoice
-                      // would not confirm is the difference between a cautious
-                      // number and an unexplained one.
-                      <span className="muted opt-unconfirmed" title={a.verification_note}>
-                        not confirmed by the bill
-                      </span>
-                    )}
-                  </>
-                )}
-              </td>
-              <td className="num">
-                <UnitCost action={a} />
-              </td>
+      <div className="mini-table-wrap">
+        <table className="mini-table">
+          <thead>
+            <tr>
+              <th>Optimization</th>
+              <th>Applied</th>
+              <th className="num">Projected</th>
+              <th className="num">Realized</th>
+              <th className="num">Cost per unit</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {actions.map((a) => (
+              <tr key={a.lever}>
+                <td>{LEVER_TITLES[a.lever] ?? a.lever}</td>
+                <td>{monthLabel(a.applied_on)}</td>
+                <td className="num">{money(a.projected_monthly)}/mo</td>
+                <td className="num">
+                  {a.status === "pending" ? (
+                    <span className="muted">awaiting next period</span>
+                  ) : (
+                    <>
+                      <strong className="opt-realized">{money(a.realized_monthly ?? 0)}/mo</strong>
+                      {a.status === "verified" && <span className="opt-verified">✓ Verified</span>}
+                      {a.status === "unverifiable" && (
+                        <span
+                          className="muted"
+                          title="No optimization telemetry for this lever in this period."
+                        >
+                          can&apos;t verify
+                        </span>
+                      )}
+                      {a.verification_note && (
+                        // Everything the telemetry can show is satisfied and this
+                        // still did not advance. Saying which half the invoice
+                        // would not confirm is the difference between a cautious
+                        // number and an unexplained one.
+                        <span className="muted opt-unconfirmed" title={a.verification_note}>
+                          not confirmed by the bill
+                        </span>
+                      )}
+                    </>
+                  )}
+                </td>
+                <td className="num">
+                  <UnitCost action={a} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -599,29 +603,31 @@ function DirectionalGroup({ opps, total }: { opps: Opportunity[]; total: number 
       {opps.length === 0 ? (
         <p className="muted">No estimated opportunities for this period.</p>
       ) : (
-        <table className="mini-table">
-          <thead>
-            <tr>
-              <th>Opportunity</th>
-              <th className="num">Potential savings</th>
-              <th>Confidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            {opps.map((o) => (
-              <tr key={o.lever} className={o.overlaps ? "opt-overlapped" : ""}>
-                <td title={o.evidence}>
-                  {o.title}
-                  {o.overlaps && <span className="muted"> · measured as {o.overlaps}</span>}
-                </td>
-                <td className="num">{money(o.projected_monthly_savings)}/mo</td>
-                <td>
-                  <ConfidenceBadge level={o.confidence} />
-                </td>
+        <div className="mini-table-wrap">
+          <table className="mini-table">
+            <thead>
+              <tr>
+                <th>Opportunity</th>
+                <th className="num">Potential savings</th>
+                <th>Confidence</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {opps.map((o) => (
+                <tr key={o.lever} className={o.overlaps ? "opt-overlapped" : ""}>
+                  <td title={o.evidence}>
+                    {o.title}
+                    {o.overlaps && <span className="muted"> · measured as {o.overlaps}</span>}
+                  </td>
+                  <td className="num">{money(o.projected_monthly_savings)}/mo</td>
+                  <td>
+                    <ConfidenceBadge level={o.confidence} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

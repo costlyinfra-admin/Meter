@@ -1930,10 +1930,16 @@ input.credential-label-input {
   display: flex;
   gap: 0.6rem;
   margin: 1.1rem 0 0.6rem;
+  /* One row wherever there is room for one. On a phone there is not, and a row
+     that refuses to wrap pushes the whole page sideways instead of stacking. */
+  flex-wrap: wrap;
 }
 
 .discovery-bar input {
-  flex: 1;
+  /* Grows to fill the row as before; the basis only decides where it lands once
+     the row wraps, so the desktop layout is unchanged. */
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
 .summary {
@@ -1952,6 +1958,7 @@ input.credential-label-input {
   justify-content: space-between;
   gap: 0.6rem;
   margin: 1.2rem 0;
+  flex-wrap: wrap;
 }
 
 .feature-card {
@@ -1971,6 +1978,11 @@ input.credential-label-input {
   display: flex;
   align-items: center;
   gap: 0.65rem;
+  /* The name, three badges, two pickers and four actions are a single row on a
+     desktop and nowhere near one on a phone. Wrapping costs the desktop layout
+     nothing (there is room, so nothing wraps) and stops the card from dragging
+     the page sideways at 375px. */
+  flex-wrap: wrap;
 }
 
 .feature-name {
@@ -1981,6 +1993,7 @@ input.credential-label-input {
   margin-left: auto;
   display: flex;
   gap: 0.85rem;
+  flex-wrap: wrap;
 }
 
 .branch-pattern {
@@ -2607,6 +2620,12 @@ a.exec-value:hover {
 }
 
 /* ---------- Tables ---------- */
+/* Six columns of developer cost do not fit a phone. The TABLE scrolls, not the
+   page — same bargain as .alerts-table-wrap and .price-table-wrap. */
+.mini-table-wrap {
+  overflow-x: auto;
+}
+
 .features-table,
 .mini-table {
   width: 100%;
@@ -2894,6 +2913,7 @@ button.method-head:hover .method-title {
   align-items: center;
   gap: 0.75rem;
   margin: 0.4rem 0 0.5rem;
+  flex-wrap: wrap;
 }
 
 /* ---------------------------------------------------------------------------
@@ -3297,6 +3317,7 @@ button.method-head:hover .method-title {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .opt-item-lever {
@@ -3882,6 +3903,7 @@ button.method-head:hover .method-title {
   display: flex;
   align-items: center;
   gap: 0.65rem;
+  flex-wrap: wrap;
   padding: 0.6rem 0.85rem;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);

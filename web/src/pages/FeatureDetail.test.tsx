@@ -477,4 +477,18 @@ describe("FeatureDetail", () => {
     fireEvent.change(picker, { target: { value: "auth" } });
     await waitFor(() => expect(api.setFeatureCategory).toHaveBeenCalledWith("f1", "auth"));
   });
+
+  it("keeps every table inside a scroller, so a phone scrolls the table not the page", async () => {
+    // Six columns of developer cost do not fit 375px. Without the wrapper the
+    // widest table sets the page width and the whole layout slides sideways.
+    renderDetail();
+    await screen.findByRole("heading", { name: "AI threat triage" });
+    await screen.findByText("Prompt caching");
+
+    const tables = [...document.querySelectorAll("table.mini-table")];
+    expect(tables.length).toBeGreaterThan(0);
+    for (const t of tables) {
+      expect(t.parentElement).toHaveClass("mini-table-wrap");
+    }
+  });
 });
