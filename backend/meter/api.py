@@ -1452,7 +1452,7 @@ def create_app() -> FastAPI:
             # keystroke guessing at what the server will accept.
             "has_budget": budgets.get_budget(user["tenant_id"]) is not None,
             "budget_required_message": alerts.NO_BUDGET_MESSAGE,
-            "budget_conditions": ["budget_pct"],
+            "budget_conditions": ["budget_pct", "forecast_budget_pct"],
         }
 
     @app.get("/api/alerts")

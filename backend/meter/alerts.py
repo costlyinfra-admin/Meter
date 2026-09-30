@@ -49,7 +49,18 @@ METRIC_LABELS = {
     "cache_hit_rate": "Prompt cache hit rate (%)",
 }
 SCOPES = ("organization", "provider", "model", "feature", "application")
-CONDITIONS = ("exceeds", "increase_pct", "budget_pct", "falls_below")
+CONDITIONS = ("exceeds", "increase_pct", "budget_pct", "forecast_budget_pct", "falls_below")
+
+#: Fires on where the month is HEADING rather than where it has got to.
+#: budget_pct compares actual month-to-date spend to the budget, so it can only
+#: say "you have spent it" — by which point there is nothing left to do about
+#: this month. This one fires while there still is.
+#:
+#: Inference and combined cost only: build is billed monthly with no daily
+#: figures to project from. Organization scope only: the budget is org-wide, and
+#: projecting one feature against the whole organization's budget answers no
+#: question anyone is asking.
+_FORECAST_METRICS = {"inference_cost", "combined_cost"}
 
 #: What a threshold is COUNTED IN, per metric. Without this the form labels every
 #: threshold "$", and "notify me when a run takes more than $30" is nonsense.
@@ -115,6 +126,8 @@ def valid_conditions(metric: str) -> tuple[str, ...]:
     conds = ["exceeds", "increase_pct"]
     if metric in _BUDGET_METRICS:
         conds.append("budget_pct")
+    if metric in _FORECAST_METRICS:
+        conds.append("forecast_budget_pct")
     return tuple(conds)
 
 
@@ -208,6 +221,11 @@ def _validate(payload: dict, *, tenant_id: str) -> dict:
     condition = payload.get("condition_type")
     if condition not in valid_conditions(metric):
         raise AlertError(f"Condition {condition!r} is not valid for {METRIC_LABELS.get(metric)}.")
+    if condition == "forecast_budget_pct" and scope_type != "organization":
+        raise AlertError(
+            "A projected-budget alert applies to the whole organization, because the "
+            "budget does."
+        )
 
     # Zero is normally a nonsense threshold — "notify me when spend exceeds $0"
     # is an alert that fires forever. For the two metrics whose healthy value IS
@@ -216,7 +234,9 @@ def _validate(payload: dict, *, tenant_id: str) -> dict:
     threshold = _pos_number(
         payload.get("threshold"), "Threshold", allow_zero=metric in _ZERO_IS_MEANINGFUL
     )
-    if condition in ("increase_pct", "budget_pct") and threshold > Decimal("100000"):
+    if condition in ("increase_pct", "budget_pct", "forecast_budget_pct") and threshold > Decimal(
+        "100000"
+    ):
         raise AlertError("Percentage threshold looks too large.")
     if METRIC_UNITS.get(metric) == "percent" and threshold > Decimal("100"):
         # A rule that fires when the cache hit rate falls below 150% would never
@@ -229,7 +249,7 @@ def _validate(payload: dict, *, tenant_id: str) -> dict:
     # persisted budget — not a number typed into the alert form, and never a
     # demo or default one. Without a budget the rule has no denominator, so it
     # cannot be saved.
-    if condition == "budget_pct" and budgets.get_budget(tenant_id) is None:
+    if condition in ("budget_pct", "forecast_budget_pct") and budgets.get_budget(tenant_id) is None:
         raise AlertError(NO_BUDGET_MESSAGE)
 
     window = payload.get("window")

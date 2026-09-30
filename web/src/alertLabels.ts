@@ -73,7 +73,11 @@ export function ruleQuantity(
   r: { metric: string; condition_type?: string | null },
   value: number,
 ): string {
-  if (r.condition_type === "increase_pct" || r.condition_type === "budget_pct")
+  if (
+    r.condition_type === "increase_pct" ||
+    r.condition_type === "budget_pct" ||
+    r.condition_type === "forecast_budget_pct"
+  )
     return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
   return quantity(r.metric, value);
 }
@@ -90,6 +94,9 @@ export const CONDITION_LABELS: Record<string, string> = {
   exceeds: "Exceeds a fixed value",
   increase_pct: "Increases by more than %",
   budget_pct: "Exceeds % of monthly budget",
+  // Fires on where the month is HEADING, while there is still time to act —
+  // budget_pct can only say the money has been spent.
+  forecast_budget_pct: "Projected to exceed % of monthly budget",
   falls_below: "Falls below a value",
 };
 

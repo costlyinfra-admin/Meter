@@ -300,11 +300,15 @@ def _observed_and_breach(
     value for 'exceeds'/'falls_below', or the computed percentage for the pct
     conditions.
     """
+    threshold = Decimal(str(rule["threshold"]))
+    cond = rule["condition_type"]
+    if cond == "forecast_budget_pct":
+        # Not the metric's current value: where the month is projected to END.
+        return _forecast_breach(conn, rule, tenant_id, threshold)
+
     value = _current_value(conn, rule, month, now)
     if value is None:
         return None, False
-    threshold = Decimal(str(rule["threshold"]))
-    cond = rule["condition_type"]
     if cond == "exceeds":
         return value, value > threshold
     if cond == "falls_below":
@@ -329,6 +333,47 @@ def _observed_and_breach(
         pct = value / applicable * Decimal("100")
         return pct, pct > threshold
     return None, False
+
+
+def _forecast_breach(
+    conn, rule: dict, tenant_id: str, threshold: Decimal
+) -> tuple[Optional[Decimal], bool]:
+    """Projected month-end spend as a share of budget, and whether it is over.
+
+    Uses forecast.py — the same projection the Forecast page and the Overview
+    panel show — and the same "today" (budgets.as_of_date), so an alert raised
+    from the page's "alert me" link can never disagree with the page. For a real
+    organization that is today in its timezone, exactly what the rest of this
+    evaluator uses; only the demo's pinned date differs.
+
+    No budget, or a month with nothing to project from, is insufficient data —
+    never a default, never a projection of zero.
+    """
+    from . import forecast as forecasting
+
+    configured = budgets.get_budget(tenant_id)
+    if configured is None:
+        return None, False
+    as_of, _fixed = budgets.as_of_date(tenant_id)
+    open_month = month_start(as_of)
+    applicable = Decimal(str(budgets.prorate(configured, open_month, open_month)["amount"]))
+    if applicable <= 0:
+        return None, False
+
+    projection = forecasting.open_month(conn, as_of)["org"]
+    if projection["projected"] is None:
+        return None, False
+    projected = projection["projected"]
+    if rule["metric"] == "combined_cost":
+        # A budget covers both, so the combined rule compares both. Build is
+        # billed monthly and is its actual — never projected.
+        build = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM build_cost WHERE period = %s",
+            (open_month,),
+        ).fetchone()[0]
+        projected = projected + Decimal(str(build))
+    pct = projected / applicable * Decimal("100")
+    return pct, pct > threshold
 
 
 def _prev_month(month: dt.date) -> dt.date:
@@ -535,7 +580,7 @@ def _quantity(rule: dict, value) -> str:
     A percentage CONDITION overrides the metric's own unit: the observed value
     for an increase_pct rule is a percentage change, whatever the metric counts.
     """
-    if rule["condition_type"] in ("increase_pct", "budget_pct"):
+    if rule["condition_type"] in ("increase_pct", "budget_pct", "forecast_budget_pct"):
         return f"{_round(value)}%"
     unit = alerts.METRIC_UNITS.get(rule["metric"], "money")
     if unit == "money":
@@ -549,6 +594,14 @@ def _message(event_type: str, rule: dict, observed: Decimal, threshold) -> str:
     verb = "triggered" if event_type == "triggered" else "resolved"
     comparison = "below" if rule["condition_type"] == "falls_below" else "vs"
     label = alerts.METRIC_LABELS.get(rule["metric"], rule["metric"])
+    if rule["condition_type"] == "forecast_budget_pct":
+        # Say it is a projection. "Observed 118%" of a budget nobody has
+        # exceeded yet reads as an overspend that already happened — the one
+        # thing this alert exists to get ahead of.
+        return (
+            f"{label} {verb}: projected to reach {_quantity(rule, observed)} of budget "
+            f"by month end, vs threshold {_quantity(rule, threshold)}."
+        )
     return (
         f"{label} {verb}: observed {_quantity(rule, observed)} "
         f"{comparison} threshold {_quantity(rule, threshold)}."
@@ -570,11 +623,19 @@ def _deep_link_path(scope_type: str, scope_ref) -> str:
     return "/"
 
 
+def _deep_link_for(rule: dict) -> str:
+    """Where a notification should open. A projected overspend opens the page
+    that explains it — which features are driving it — rather than the Overview."""
+    if rule["condition_type"] == "forecast_budget_pct":
+        return "/forecast"
+    return _deep_link_path(rule["scope_type"], rule["scope_ref"])
+
+
 def _payload(
     tenant_id: str, alert_id: str, event_type: str, observed, threshold, rule: dict
 ) -> dict:
     base = os.environ.get("APP_BASE_URL", "")
-    link = f"{base}{_deep_link_path(rule['scope_type'], rule['scope_ref'])}"
+    link = f"{base}{_deep_link_for(rule)}"
     org = _org_name(tenant_id)
     label = alerts.METRIC_LABELS.get(rule["metric"], rule["metric"])
     text = (

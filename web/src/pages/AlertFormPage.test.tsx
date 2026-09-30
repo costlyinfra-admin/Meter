@@ -271,3 +271,62 @@ describe("AlertFormPage — request-level metrics", () => {
     expect((screen.getByLabelText("Scope") as HTMLSelectElement).value).toBe("organization");
   });
 });
+
+describe("AlertFormPage — started from the Forecast page", () => {
+  // The Forecast page's "alert me before this happens" link arrives with the
+  // metric and condition in the query string, so the reader lands on a ready
+  // rule rather than a blank form they have to reconstruct.
+  const FORECAST_META: AlertMeta = {
+    ...META,
+    conditions: ["exceeds", "increase_pct", "budget_pct", "forecast_budget_pct"],
+    valid_conditions: {
+      inference_cost: ["exceeds", "increase_pct", "budget_pct", "forecast_budget_pct"],
+      combined_cost: ["exceeds", "increase_pct", "budget_pct", "forecast_budget_pct"],
+    },
+    has_budget: true,
+    budget_conditions: ["budget_pct", "forecast_budget_pct"],
+  };
+
+  function renderAt(url: string) {
+    return render(
+      <MemoryRouter initialEntries={[url]}>
+        <AuthProvider>
+          <AlertFormPage />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("prefills a projected-overspend rule from the link", async () => {
+    vi.mocked(api.alertsMeta).mockResolvedValue(FORECAST_META);
+    renderAt("/alerts/new?metric=combined_cost&condition=forecast_budget_pct");
+    const condition = (await screen.findByLabelText("Condition")) as HTMLSelectElement;
+    await waitFor(() => expect(condition.value).toBe("forecast_budget_pct"));
+    expect((screen.getByLabelText("Metric") as HTMLSelectElement).value).toBe("combined_cost");
+    expect((screen.getByLabelText("Alert name") as HTMLInputElement).value).toBe(
+      "Projected to exceed budget",
+    );
+  });
+
+  it("ignores names it does not know rather than trusting the URL", async () => {
+    // Checked on what is SUBMITTED, not on what a <select> displays: a select
+    // given a value it has no option for just shows its first option, so the
+    // screen would look right while the form held the junk.
+    vi.mocked(api.alertsMeta).mockResolvedValue(FORECAST_META);
+    vi.mocked(api.createAlert).mockResolvedValue({ id: "a1" } as never);
+    renderAt("/alerts/new?metric=drop_tables&condition=whatever");
+    await screen.findByLabelText("Condition");
+    fireEvent.change(screen.getByLabelText("Alert name"), { target: { value: "Spend" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create alert|Save/ }));
+    await waitFor(() => expect(api.createAlert).toHaveBeenCalled());
+    const sent = vi.mocked(api.createAlert).mock.calls[0][0];
+    expect(sent.metric).toBe("inference_cost");
+    expect(sent.condition_type).toBe("exceeds");
+  });
+
+  it("needs a budget for the projected rule, like the actual one", async () => {
+    vi.mocked(api.alertsMeta).mockResolvedValue({ ...FORECAST_META, has_budget: false });
+    renderAt("/alerts/new?metric=combined_cost&condition=forecast_budget_pct");
+    expect(await screen.findByText(/no budget is configured/i)).toBeInTheDocument();
+  });
+});

@@ -4,7 +4,7 @@
  * that adapt to the metric, org-timezone context, and masked channel secrets.
  */
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   api,
   ApiError,
@@ -42,6 +42,24 @@ const EMPTY: AlertInput = {
   channels: [{ channel: "in_app" }],
 };
 
+/** A new rule started from a link elsewhere in the product — the Forecast page's
+ *  "alert me before this happens" — arrives with its metric and condition in the
+ *  query string. Only names the form already knows are taken; anything else is
+ *  ignored rather than trusted, and the server validates the rule again anyway. */
+function prefilled(params: URLSearchParams): AlertInput {
+  const metric = params.get("metric");
+  const condition = params.get("condition");
+  const form = { ...EMPTY };
+  if (metric && metric in METRIC_LABELS) form.metric = metric;
+  if (condition && condition in CONDITION_LABELS) form.condition_type = condition;
+  if (form.condition_type === "forecast_budget_pct") {
+    // The point of arriving this way: be told before the budget is gone.
+    form.name = "Projected to exceed budget";
+    form.threshold = 100;
+  }
+  return form;
+}
+
 export function AlertFormPage() {
   const { id } = useParams();
   const editing = Boolean(id);
@@ -50,7 +68,8 @@ export function AlertFormPage() {
   const [meta, setMeta] = useState<AlertMeta | null>(null);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [applications, setApplications] = useState<AiApplication[]>([]);
-  const [form, setForm] = useState<AlertInput>(EMPTY);
+  const [params] = useSearchParams();
+  const [form, setForm] = useState<AlertInput>(() => (id ? EMPTY : prefilled(params)));
   const [timezone, setTimezone] = useState<string>("UTC");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -166,7 +185,10 @@ export function AlertFormPage() {
   const selected = (ch: string) => form.channels.some((c) => c.channel === ch);
   // A percentage CONDITION overrides the metric's units — an increase_pct rule
   // on cost per run is measured in %, not dollars.
-  const isPct = form.condition_type === "increase_pct" || form.condition_type === "budget_pct";
+  const isPct =
+    form.condition_type === "increase_pct" ||
+    form.condition_type === "budget_pct" ||
+    form.condition_type === "forecast_budget_pct";
   const unit = meta?.metric_units?.[form.metric] ?? METRIC_UNITS[form.metric] ?? "money";
   const thresholdLabel = isPct ? "Threshold (%)" : `Threshold (${UNIT_LABELS[unit] ?? unit})`;
   // Whether this rule needs a budget, and whether the organization has one. Both

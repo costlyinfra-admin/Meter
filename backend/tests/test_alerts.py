@@ -393,3 +393,135 @@ def test_deep_link_path_matches_scope():
     assert alerts_eval._deep_link_path("provider", "anthropic") == "/cost-sources"
     assert alerts_eval._deep_link_path("model", "claude") == "/cost-sources"
     assert alerts_eval._deep_link_path("organization", None) == "/"
+
+
+# ---- Projected overspend (forecast_budget_pct) ------------------------------
+# budget_pct compares ACTUAL month-to-date spend with the budget, so it can only
+# ever say "you have spent it". By then there is nothing left to do about the
+# month. This condition fires on where the month is heading, while there still is.
+
+
+def _pin_today(tenant_id, day):
+    from meter.db import admin_dsn
+
+    with connect(admin_dsn()) as conn, conn.transaction():
+        conn.execute("UPDATE tenant SET demo_as_of = %s WHERE id = %s", (day, tenant_id))
+
+
+def _add_daily(tenant_id, day, amount):
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO inference_cost_daily (tenant_id, feature_id, provider, model, amount,
+                                              day, environment, source, confidence)
+            VALUES (%s, NULL, 'anthropic', 'm', %s, %s, 'production', 'cost_api', 'high')
+            """,
+            (tenant_id, amount, day),
+        )
+
+
+def _month_running_at_100_a_day(tenant_id):
+    """Day 10 of May: $1,000 spent, on course for $3,100."""
+    _pin_today(tenant_id, dt.date(2026, 5, 10))
+    for d in range(1, 11):
+        _add_daily(tenant_id, dt.date(2026, 5, d), 100)
+    _add_inference(tenant_id, 1000)
+
+
+def test_a_projected_overspend_fires_while_actual_spend_is_still_under_budget(tenant_id):
+    """The whole point. A third of the budget is spent; the month will exceed it."""
+    _set_budget(tenant_id, 3000, "monthly")
+    _month_running_at_100_a_day(tenant_id)
+
+    projected = alerts.create_rule(
+        tenant_id, _rule(condition_type="forecast_budget_pct", threshold=100)
+    )
+    actual = alerts.create_rule(tenant_id, _rule(condition_type="budget_pct", threshold=100))
+
+    got = alerts_eval.evaluate_rule(tenant_id, projected["id"], now=NOW)
+    assert got["status"] == "triggered"
+    # The old condition, on the same data, has nothing to say yet: $1,000 of
+    # $3,000 is 33%. That silence is what this alert exists to fill.
+    assert alerts_eval.evaluate_rule(tenant_id, actual["id"], now=NOW)["status"] != "triggered"
+
+
+def test_a_projection_within_budget_does_not_fire(tenant_id):
+    _set_budget(tenant_id, 5000, "monthly")
+    _month_running_at_100_a_day(tenant_id)  # heading for $3,100 of $5,000 = 62%
+    rule = alerts.create_rule(tenant_id, _rule(condition_type="forecast_budget_pct", threshold=100))
+    assert alerts_eval.evaluate_rule(tenant_id, rule["id"], now=NOW)["status"] != "triggered"
+
+
+def test_the_combined_rule_adds_build_actual_to_projected_inference(tenant_id):
+    """A budget covers both. Build is billed monthly — its actual, never projected."""
+    _set_budget(tenant_id, 3500, "monthly")
+    _month_running_at_100_a_day(tenant_id)  # $3,100 inference projected
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            "INSERT INTO build_cost (tenant_id, feature_id, tool, period, amount, source, "
+            "confidence) VALUES (%s, NULL, 'cursor', %s, 600, 'seat_allocation', 'high')",
+            (tenant_id, MAY),
+        )
+
+    inference_only = alerts.create_rule(
+        tenant_id, _rule(condition_type="forecast_budget_pct", threshold=100)
+    )
+    combined = alerts.create_rule(
+        tenant_id,
+        _rule(metric="combined_cost", condition_type="forecast_budget_pct", threshold=100),
+    )
+    # $3,100 of $3,500 is under; $3,100 + $600 = $3,700 is over.
+    assert alerts_eval.evaluate_rule(tenant_id, inference_only["id"], now=NOW)["status"] != (
+        "triggered"
+    )
+    assert alerts_eval.evaluate_rule(tenant_id, combined["id"], now=NOW)["status"] == "triggered"
+
+
+def test_a_projected_alert_says_it_is_a_projection():
+    """ "Observed 118%" of a budget nobody has exceeded yet reads as an overspend
+    that already happened — the one thing this alert gets ahead of."""
+    rule = {"metric": "inference_cost", "condition_type": "forecast_budget_pct"}
+    msg = alerts_eval._message("triggered", rule, Decimal("118"), Decimal("100"))
+    assert "projected to reach 118% of budget by month end" in msg
+    assert "observed" not in msg
+    assert alerts_eval._deep_link_for(
+        {**rule, "scope_type": "organization", "scope_ref": None}
+    ) == ("/forecast")
+
+
+def test_nothing_to_project_is_insufficient_data_not_a_zero(tenant_id):
+    _set_budget(tenant_id, 3000, "monthly")
+    _pin_today(tenant_id, dt.date(2026, 5, 10))  # a budget, and no spend at all
+    rule = alerts.create_rule(tenant_id, _rule(condition_type="forecast_budget_pct", threshold=50))
+    assert alerts_eval.evaluate_rule(tenant_id, rule["id"], now=NOW)["status"] == (
+        "insufficient_data"
+    )
+
+
+def test_a_projected_budget_alert_needs_a_budget_to_be_saved(tenant_id):
+    with pytest.raises(alerts.AlertError, match="budget"):
+        alerts.create_rule(tenant_id, _rule(condition_type="forecast_budget_pct", threshold=100))
+
+
+def test_a_projected_budget_alert_is_offered_only_where_it_means_something(tenant_id):
+    _set_budget(tenant_id, 3000, "monthly")
+    # Build is billed monthly with no daily figures to project from.
+    assert "forecast_budget_pct" not in alerts.valid_conditions("build_cost")
+    assert "forecast_budget_pct" in alerts.valid_conditions("inference_cost")
+    assert "forecast_budget_pct" in alerts.valid_conditions("combined_cost")
+    with pytest.raises(alerts.AlertError):
+        alerts.create_rule(
+            tenant_id,
+            _rule(metric="build_cost", condition_type="forecast_budget_pct", threshold=100),
+        )
+    # The budget is org-wide; one feature projected against it answers nothing.
+    with pytest.raises(alerts.AlertError, match="whole organization"):
+        alerts.create_rule(
+            tenant_id,
+            _rule(
+                condition_type="forecast_budget_pct",
+                threshold=100,
+                scope_type="feature",
+                scope_ref="00000000-0000-0000-0000-000000000000",
+            ),
+        )
