@@ -74,12 +74,20 @@ describe("Sidebar nav", () => {
     // Written in sentence case and rendered uppercase by CSS.
     expect(groups).toEqual([
       { section: null, items: ["Overview"] },
-      { section: "Analyze", items: ["Applications", "Products", "Features", "Traces"] },
+      { section: "Analyze", items: ["Applications", "Products", "Features", "Traces", "Forecast"] },
       { section: "Optimize", items: ["Recommendations", "Prompts"] },
       { section: "Monitor", items: ["Alerts"] },
       { section: "Setup", items: ["Connect sources", "Install SDK", "Settings"] },
       { section: "Help", items: ["Knowledge base", "Provider pricing"] },
     ]);
+  });
+
+  it("puts the forecast under Analyze, after everything that looks backwards", async () => {
+    renderAt("/optimize");
+    const link = await screen.findByRole("link", { name: "Forecast" });
+    expect(link).toHaveAttribute("href", "/forecast");
+    const group = link.closest(".nav-group") as HTMLElement;
+    expect(within(group).getByText("Analyze")).toBeInTheDocument();
   });
 
   it("puts the price book under Help, where a reader goes to check something", async () => {

@@ -117,3 +117,24 @@ describe("questions about prompt caching", () => {
     expect(retrieve("should I turn on prompt caching")[0].id).toBe("optimize/prompt-caching");
   });
 });
+
+describe("questions about forecasting", () => {
+  // "budget" pulls towards the Settings and budget-alert topics, and "forecast"
+  // was only ever a word in the budget topic's summary. A reader asking what
+  // next quarter will cost has to land on the page that answers it.
+  it.each([
+    "what will we spend next quarter",
+    "forecast AI costs for the next three months",
+    "which feature is driving our spend up",
+    "how do I get warned before we go over budget",
+    "why is there no range on this month's forecast",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("dashboards/forecast");
+  });
+
+  it("leads with it, rather than with setting a budget", () => {
+    expect(retrieve("forecast AI costs for the next three months")[0].id).toBe(
+      "dashboards/forecast",
+    );
+  });
+});

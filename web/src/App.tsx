@@ -25,6 +25,7 @@ import { InstallSdkPage } from "./pages/InstallSdkPage";
 import { Login } from "./pages/Login";
 import { HelpPage } from "./pages/HelpPage";
 import { PricingPage } from "./pages/PricingPage";
+import { ForecastPage } from "./pages/ForecastPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { Signup } from "./pages/Signup";
 import { AdminConnectors } from "./pages/admin/AdminConnectors";
@@ -98,6 +99,7 @@ export function App() {
         <Route path="/applications/:id" element={<ApplicationDetail />} />
         <Route path="/traces" element={<TracesPage />} />
         <Route path="/traces/:id" element={<TraceDetail />} />
+        <Route path="/forecast" element={<ForecastPage />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="/features/:id" element={<FeatureDetail />} />
         <Route path="/install-sdk" element={<InstallSdkPage />} />

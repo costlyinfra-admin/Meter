@@ -17,6 +17,8 @@ export const APP_ROUTES = new Set([
   "/products",
   "/applications",
   "/traces",
+  "/forecast",
+  "/pricing",
   "/cost-sources",
   "/features",
   "/install-sdk",

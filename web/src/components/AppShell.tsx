@@ -28,6 +28,7 @@ type IconName =
   | "settings"
   | "help"
   | "pricing"
+  | "forecast"
   | "prompts"
   | "products"
   | "reconciliation";
@@ -52,6 +53,9 @@ const NAV: { section?: string; items: NavItem[] }[] = [
       { to: "/products", label: "Products", end: false, icon: "products" },
       { to: "/features", label: "Features", end: false, icon: "features" },
       { to: "/traces", label: "Traces", end: false, icon: "traces" },
+      // Last in Analyze: the other four describe spend that has happened, and
+      // this is the one that looks ahead of it.
+      { to: "/forecast", label: "Forecast", end: false, icon: "forecast" },
     ],
   },
   {
@@ -186,6 +190,12 @@ function NavIcon({ name }: { name: IconName }) {
           <path d="M4.5 2.75h7.2l3.8 3.8v10.7a.75.75 0 0 1-.75.75H4.5a.75.75 0 0 1-.75-.75V3.5a.75.75 0 0 1 .75-.75Z" />
           <path d="M11.5 2.9v3.9h3.9" />
           <path d="m6.6 12.4 1.8 1.8 3.5-3.5" />
+        </>
+      )}
+      {name === "forecast" && (
+        <>
+          <path d="M3 15.5 7.5 11l3 3L17 7.5" />
+          <path d="M13 7.5h4v4" strokeDasharray="1.6 1.6" />
         </>
       )}
       {name === "pricing" && (

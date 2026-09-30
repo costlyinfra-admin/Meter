@@ -785,10 +785,40 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "Set a monthly or annual budget in [Settings](/settings). There is no budget until you set one, and Meter never invents a default — a missing budget is a real answer the Overview will show you.",
           ),
           p(
-            "The Overview then forecasts the open month from the daily spend so far. A month that is over is never projected: it reports its final figure and says so.",
+            "The Overview then shows where the open month is heading. A month that is over is never projected: it reports its final figure and says so. For the next three months, and for which features are driving the number, see [Forecast](/help/dashboards/forecast).",
           ),
           p(
             "A window spanning several months gets its budget prorated by calendar days, and the panel shows how it arrived there. A number nobody can explain is not much use to a CFO.",
+          ),
+        ],
+      },
+      {
+        slug: "forecast",
+        title: "Forecast",
+        summary:
+          "Where AI spend is heading over the next three months, what is driving it, and how to hear about an overrun before it happens.",
+        blocks: [
+          p(
+            "[Forecast](/forecast), under Analyze, projects this month and the next three. It is the same projection the Overview's budget panel shows for this month, so the two never disagree.",
+          ),
+          p("**This month** is projected from what has already been spent, source by source:"),
+          list(
+            "**Spend a connector reports day by day** is projected from the recent run rate, leaning on the last seven days. How much daily spend moves around gives the range: where eight months in ten would land.",
+            "**Spend reported only as a monthly total** — the metering SDK sends monthly figures — is carried forward at its average so far. There is no daily shape to read, so there is no range, and the page says so rather than inventing one.",
+            "**Self-hosted capacity** is booked for the whole month when it is allocated, so it is reported as it stands, not projected.",
+            "**Build cost** is billed monthly with no daily detail, so this month's figure is what has been billed so far.",
+          ),
+          p(
+            "**The next three months** follow a straight-line trend through up to six months of history, plus this month when it is far enough along to trust. The range widens the further out it looks. Fewer than three months of history is too little to draw a line through, and Meter says so rather than guessing. Seasonal patterns are not modelled.",
+          ),
+          p(
+            "Inference and build are forecast separately. They are added together only where a figure is compared with your budget, which covers both — and that figure is labelled as a total.",
+          ),
+          p(
+            "**What is driving it** ranks each feature by how much more it is projected to cost this month than last, biggest increase first. Spend no feature has claimed yet appears as Unattributed, never dropped. Where Optimize has already found savings on a feature, they are one click away.",
+          ),
+          note(
+            '**Alert me before this happens.** The budget alert fires once actual spend has crossed the line — by then the month is spent. A projected-budget alert fires on where the month is heading, while there is still time to act. Start one from the Forecast page, or choose "Projected to exceed % of monthly budget" when creating an alert.',
           ),
         ],
       },

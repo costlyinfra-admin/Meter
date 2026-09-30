@@ -1596,6 +1596,70 @@ export interface PriceBook {
   families: PriceBookFamily[];
 }
 
+/** A projection with its 80% range. `low`/`high` are null where there was no
+ *  daily variation to draw a range from — the page says why rather than
+ *  inventing one. */
+export interface Projection {
+  projected: number | null;
+  low: number | null;
+  high: number | null;
+}
+
+export interface ForecastMonth {
+  month: string;
+  inference: Projection;
+  /** Projected separately from inference and never folded into it. */
+  build: Projection;
+  /** Inference + build, labelled as a total because a budget covers both. */
+  total_projected: number | null;
+  budget: number | null;
+  projected_budget_pct: number | null;
+}
+
+export interface ForecastDriver {
+  /** null is Unattributed — a row of its own, never dropped. */
+  feature_id: string | null;
+  name: string;
+  prior_month: number;
+  projected: number | null;
+  confidence: "none" | "low" | "medium" | "high";
+  change: number | null;
+  change_pct: number | null;
+  /** Measured + modelled savings Optimize has already found on this feature. */
+  identified_savings: number | null;
+}
+
+export interface Forecast {
+  as_of: string;
+  as_of_is_fixed: boolean;
+  currency: string;
+  has_budget: boolean;
+  open_month: {
+    month: string;
+    days_in_month: number;
+    observed_days: number;
+    inference: Projection & {
+      actual: number;
+      method: string;
+      confidence: "none" | "low" | "medium" | "high";
+    };
+    /** Billed per month with no day resolution: an actual, never projected. */
+    build: { actual: number };
+    total_projected: number | null;
+    budget: number | null;
+    projected_budget_pct: number | null;
+  };
+  horizon: {
+    status: "ok" | "insufficient";
+    history_months: number;
+    carried_open_month: boolean;
+    build_status: "ok" | "insufficient";
+  };
+  history: { month: string; inference: number; build: number }[];
+  months: ForecastMonth[];
+  drivers: ForecastDriver[];
+}
+
 export interface McpToken {
   id: string;
   label: string;
@@ -1928,6 +1992,9 @@ export const api = {
 
   // Takes the same window the Overview is showing, so the card and the chart
   // beside it can never disagree about which months are in view.
+  /** Where spend lands this month and the next three, and what is driving it. */
+  forecast: () => request<Forecast>("/forecast"),
+
   budgetForecast: (range?: ReviewRange) =>
     request<BudgetForecast>(`/budget/forecast${rangeQuery(range)}`),
 
