@@ -412,3 +412,74 @@ def test_the_forecast_endpoint_follows_the_window_the_overview_is_showing(client
     assert three["window_end"] == "2026-05-31"
     assert three["as_of"] == "2026-05-10"
     assert three["as_of_is_fixed"] is True
+
+
+# ---------------------------------------------------------------------------
+# The forecast reads spend the way the rest of the product does
+# ---------------------------------------------------------------------------
+# period_forecast summed inference_cost and inference_cost_daily raw. Every other
+# read of those tables in the product goes through dashboard's counting rule —
+# one dollar counted once, nothing the customer marked `ignore` — and a forecast
+# built on a different basis disagrees with the Overview chart beside it.
+
+
+def _cost(tenant_id, period, amount, *, source="cost_api", environment=None):
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO inference_cost (tenant_id, feature_id, provider, period, amount,
+                                        source, confidence, environment)
+            VALUES (%s, NULL, 'anthropic', %s, %s, %s, 'high', %s)
+            """,
+            (tenant_id, period, amount, source, environment),
+        )
+
+
+def _daily(tenant_id, day, amount, *, environment="production"):
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        conn.execute(
+            """
+            INSERT INTO inference_cost_daily (tenant_id, feature_id, provider, model, amount,
+                                              day, environment, source, confidence)
+            VALUES (%s, NULL, 'anthropic', 'claude-sonnet-4-6', %s, %s, %s,
+                    'cost_api', 'high')
+            """,
+            (tenant_id, amount, day, environment),
+        )
+
+
+def test_the_forecast_counts_a_metered_connector_provider_once(client):
+    """The connector reports the bill; the SDK reports the calls behind it.
+
+    Summing both doubles the actual, and the projection is built on top of the
+    actual, so the forecast doubled with it.
+    """
+    tenant = _signup(client)["tenant_id"]
+    _set_as_of(tenant, dt.date(2026, 5, 10))
+    for day in range(1, 11):
+        _daily(tenant, dt.date(2026, 5, day), 100.0)
+    _cost(tenant, dt.date(2026, 5, 1), 1000, source="cost_api")
+    _cost(tenant, dt.date(2026, 5, 1), 1000, source="hook")
+
+    got = budgets.period_forecast(tenant, dt.date(2026, 5, 1), dt.date(2026, 5, 1))
+    assert got["actual_inference"] == 1000.0
+    assert got["forecast"] == pytest.approx(1000 + 100 * 21, abs=0.01)
+
+
+def test_the_forecast_leaves_out_spend_marked_ignore(client):
+    """Ignored spend is in no total the product reports, so it is in no forecast.
+
+    It was being counted twice over: once in the actual, and again in the daily
+    run rate, which projected it across the rest of the month.
+    """
+    tenant = _signup(client)["tenant_id"]
+    _set_as_of(tenant, dt.date(2026, 5, 10))
+    for day in range(1, 11):
+        _daily(tenant, dt.date(2026, 5, day), 100.0)
+        _daily(tenant, dt.date(2026, 5, day), 500.0, environment="ignore")
+    _cost(tenant, dt.date(2026, 5, 1), 1000)
+    _cost(tenant, dt.date(2026, 5, 1), 5000, environment="ignore")
+
+    got = budgets.period_forecast(tenant, dt.date(2026, 5, 1), dt.date(2026, 5, 1))
+    assert got["actual_inference"] == 1000.0
+    assert got["forecast"] == pytest.approx(1000 + 100 * 21, abs=0.01)

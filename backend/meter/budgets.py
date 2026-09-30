@@ -281,24 +281,6 @@ def prorate(
 # ---------------------------------------------------------------------------
 # Forecast
 # ---------------------------------------------------------------------------
-def _daily_spend(conn, month: dt.date, through: dt.date) -> list[tuple[dt.date, Decimal]]:
-    """Observed inference spend per day for `month`, up to and including `through`.
-
-    Build cost has no day resolution — it is billed and recorded per month — so
-    only inference is projected. The month's build cost is added back whole.
-    """
-    rows = conn.execute(
-        """
-        SELECT day, COALESCE(SUM(amount), 0)
-        FROM inference_cost_daily
-        WHERE day >= %s AND day <= %s
-        GROUP BY day ORDER BY day
-        """,
-        (month, through),
-    ).fetchall()
-    return [(r[0], Decimal(str(r[1]))) for r in rows]
-
-
 def _run_rate(daily: list[tuple[dt.date, Decimal]], elapsed_days: int) -> tuple[Decimal, str]:
     """Spend per day for the rest of the month, and which method produced it.
 
@@ -355,23 +337,42 @@ def period_forecast(
     as_of, as_of_is_fixed = as_of_date(tenant_id)
     start, end_month = month_start(start), month_start(end_month)
     win_start, win_end = window_days(start, end_month)
-    current_month = month_start(as_of)
 
     budget = get_budget(tenant_id)
     proration = prorate(budget, start, end_month) if budget else None
 
+    # The projection itself lives in forecast.py, so this panel and the Forecast
+    # page are one computation rather than two that can drift. Imported here
+    # because forecast.py reads this module's run-rate helpers.
+    from . import dashboard
+    from . import forecast as forecasting
+
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
-        # Actual spend for the window, split as it always is.
-        row = conn.execute(
-            """
-            SELECT COALESCE((SELECT SUM(amount) FROM build_cost
-                             WHERE period >= %s AND period <= %s), 0),
-                   COALESCE((SELECT SUM(amount) FROM inference_cost
-                             WHERE period >= %s AND period <= %s), 0)
-            """,
-            (start, end_month, start, end_month),
-        ).fetchone()
-        build_actual, inference_actual = Decimal(str(row[0])), Decimal(str(row[1]))
+        # Actual spend for the window, split as it always is — and read the way
+        # every other total in the product is: one dollar counted once, nothing
+        # the customer marked `ignore`. The raw SUM this used to be doubled a
+        # month for any provider running both a connector and the SDK.
+        build_actual = Decimal(
+            str(
+                conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM build_cost "
+                    "WHERE period >= %s AND period <= %s",
+                    (start, end_month),
+                ).fetchone()[0]
+            )
+        )
+        inference_actual = Decimal(
+            str(
+                conn.execute(
+                    f"""
+                    SELECT COALESCE(SUM(amount), 0) FROM inference_cost
+                    WHERE period >= %s AND period <= %s
+                      AND {dashboard._ACTIVE_ENV} {dashboard._NOT_DOUBLE_COUNTED}
+                    """,  # noqa: S608
+                    (start, end_month, dashboard._connector_providers(conn, start, end_month)),
+                ).fetchone()[0]
+            )
+        )
         actual = build_actual + inference_actual
 
         closed = win_end < as_of
@@ -381,17 +382,17 @@ def period_forecast(
         if not closed:
             # Only the current month is open; anything after it has not started,
             # and projecting an unstarted month from nothing would be invention.
-            in_month = calendar.monthrange(current_month.year, current_month.month)[1]
-            through = min(as_of, next_month(current_month) - dt.timedelta(days=1))
-            daily = _daily_spend(conn, current_month, through)
-            observed_days = (through - current_month).days + 1
-            rate, method = _run_rate(daily, observed_days)
-            confidence = _confidence(observed_days, in_month, method)
-            if method == "none":
+            open_now = forecasting.open_month(conn, as_of)
+            org = open_now["org"]
+            observed_days = open_now["observed_days"]
+            method, confidence = org["method"], org["confidence"]
+            if org["projected"] is None:
                 forecast = None
             else:
-                remaining = max(in_month - observed_days, 0)
-                forecast = actual + rate * Decimal(remaining)
+                # What the rest of the open month adds on top of the window's
+                # actual — the same quantity `rate x remaining` used to be,
+                # now including SDK-metered spend the daily rows never covered.
+                forecast = actual + (org["projected"] - org["actual"])
 
     optimized = None
     if forecast is not None and identified_savings is not None:

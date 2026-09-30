@@ -49,6 +49,7 @@ from . import (
     entra,
     features,
     focus,
+    forecast,
     hook,
     human_effort,
     inference,
@@ -979,6 +980,15 @@ def create_app() -> FastAPI:
         except Exception:  # noqa: BLE001 - a slow/failing Optimize must not take the card down
             savings = None
         return budgets.period_forecast(tenant_id, win_start, win_end, identified_savings=savings)
+
+    @app.get("/api/forecast")
+    def get_forecast(user: CurrentUser) -> dict:
+        """Where spend lands this month and the next three, and what drives it.
+
+        Not windowed like /api/budget/forecast: a forecast is always about the
+        months after "today", whatever range the Overview happens to be showing.
+        """
+        return forecast.forecast(user["tenant_id"])
 
     @app.get("/api/connectors")
     def list_connectors(user: CurrentUser) -> list[credentials.ConnectorStatus]:
