@@ -159,6 +159,12 @@ export function previewText(r: {
     cond = `falls below ${quantity(r.metric, r.threshold)}`;
   else if (r.condition_type === "increase_pct")
     cond = `increases by more than ${r.threshold}% vs the previous ${r.window} period`;
+  else if (r.condition_type === "forecast_budget_pct")
+    // Not "exceeds": nothing has been exceeded yet, and the sentence has to say
+    // so or the rule reads as the actual-spend alert it exists to get ahead of.
+    // No window either — the question is where the MONTH ends, checked however
+    // often the rule runs.
+    return `Notify me when ${metric}${scopePart} is projected to exceed ${r.threshold}% of the monthly budget by month end.`;
   else cond = `exceeds ${r.threshold}% of the monthly budget`;
   return `Notify me when ${r.window} ${metric}${scopePart} ${cond}.`;
 }

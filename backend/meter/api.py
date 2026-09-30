@@ -357,7 +357,12 @@ class AlertRequest(BaseModel):
     metric: str = Field(min_length=1, max_length=32)
     scope_type: str = Field(default="organization", max_length=16)
     scope_ref: Optional[str] = Field(default=None, max_length=256)
-    condition_type: str = Field(min_length=1, max_length=16)
+    # A length guard, not the validation: alerts.valid_conditions decides what
+    # is accepted. It was 16, and "forecast_budget_pct" is 19 — so the API
+    # rejected a condition the application accepts, with a 422 the form did not
+    # show, and every test of the condition went round this model rather than
+    # through it.
+    condition_type: str = Field(min_length=1, max_length=32)
     threshold: float
     budget_amount: Optional[float] = None
     window: str = Field(min_length=1, max_length=16)

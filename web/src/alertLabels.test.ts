@@ -34,6 +34,29 @@ describe("alertLabels", () => {
     ).toContain("for anthropic");
   });
 
+  it("phrases the projected-budget condition as a projection, not an overspend", () => {
+    // Caught in the browser: the form described this rule as "daily combined
+    // ai cost exceeds 100% of the monthly budget" — the actual-spend alert, the
+    // very thing this one exists to get ahead of.
+    const text = previewText({
+      metric: "combined_cost",
+      scope_type: "organization",
+      condition_type: "forecast_budget_pct",
+      threshold: 100,
+      window: "daily",
+    });
+    expect(text).toBe(
+      "Notify me when combined ai cost is projected to exceed 100% of the monthly budget by month end.",
+    );
+    expect(text).not.toMatch(/\bexceeds\b/);
+  });
+
+  it("formats a projected-budget value as a percentage", () => {
+    expect(
+      ruleQuantity({ metric: "combined_cost", condition_type: "forecast_budget_pct" }, 118),
+    ).toBe("118%");
+  });
+
   it("phrases the budget-percentage condition", () => {
     expect(
       previewText({
