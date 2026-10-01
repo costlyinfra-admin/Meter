@@ -12,11 +12,12 @@
  * never merged into one series — and the only combined figure is labelled as
  * the total a budget is measured against.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, type Forecast, type ForecastDriver } from "../api";
 import { monthLabel } from "../budget";
-import { FINE_STEPS, niceCeil } from "../components/chartAxis";
+import { FINE_STEPS, GRID_LEVELS, niceCeil } from "../components/chartAxis";
+import { ChartHoverCard, HoverRow } from "../components/ChartHoverCard";
 import { compactMoney, money, wholeMoney } from "../format";
 
 /** The query string the "alert me" link carries, which AlertFormPage prefills. */
@@ -149,12 +150,35 @@ function MonthCard({
 // ---------------------------------------------------------------------------
 // Chart
 // ---------------------------------------------------------------------------
-const VB_W = 640;
-const VB_H = 220;
-const AXIS_W = 52;
-const TOP = 14;
-const BOTTOM = 186;
-const GRID = [0, 0.25, 0.5, 0.75, 1] as const;
+// Drawn at the width it is shown at, so one viewBox unit is one pixel and the
+// labels come out at the Overview's size on any screen. A chart this wide on a
+// fixed grid would scale its text with it: oversized on a desktop, unreadable
+// on a phone. The fallback is only for the first paint and for tests.
+const FALLBACK_W = 640;
+const VB_H = 240;
+const AXIS_W = 56;
+const PAD_RIGHT = 8;
+const TOP = 12;
+const BOTTOM = 214; // baseline; month labels sit below it
+/** The Overview bar's on-screen width, so a bar here looks like a bar there. */
+const MAX_BAR_W = 38;
+
+function useWidth<T extends HTMLElement>(): [RefObject<T>, number] {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  // Measured once before the first paint, so the chart never depends on the
+  // observer to appear; the observer only follows later resizes.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(Math.round(el.getBoundingClientRect().width));
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => setWidth(Math.round(entry.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
 
 interface Bar {
   month: string;
@@ -206,38 +230,45 @@ function bars(f: Forecast): Bar[] {
 }
 
 function ForecastChart({ f }: { f: Forecast }) {
+  const [wrapRef, measured] = useWidth<HTMLDivElement>();
+  // Which month the pointer is over; null is "not hovering".
+  const [hover, setHover] = useState<number | null>(null);
   const data = bars(f);
   if (data.length === 0) return null;
+
+  const vbW = measured || FALLBACK_W;
+
   const top = Math.max(
     ...data.map((d) => Math.max(d.build + d.inference, d.high ?? 0, d.budget ?? 0)),
   );
   const ceiling = niceCeil(top || 1, FINE_STEPS);
-  const slot = (VB_W - AXIS_W - 8) / data.length;
-  const barW = slot * 0.6;
-  const x = (i: number) => AXIS_W + i * slot + (slot - barW) / 2;
+  const slot = (vbW - AXIS_W - PAD_RIGHT) / data.length;
+  const barW = Math.min(slot * 0.55, MAX_BAR_W);
+  const centre = (i: number) => AXIS_W + i * slot + slot / 2;
   const y = (v: number) => BOTTOM - (v / ceiling) * (BOTTOM - TOP);
+  const hovered = hover === null ? null : data[hover];
 
   return (
-    <div className="trend-line-wrap">
+    <div className="trend-line-wrap" ref={wrapRef} onMouseLeave={() => setHover(null)}>
       <svg
         className="trend-svg forecast-svg"
-        viewBox={`0 0 ${VB_W} ${VB_H}`}
+        viewBox={`0 0 ${vbW} ${VB_H}`}
         role="img"
         aria-label={`Monthly AI spend: ${f.history.length} months actual, then this month and the next ${f.months.length} projected.`}
       >
-        {GRID.map((level) => (
+        {GRID_LEVELS.map((level) => (
           <g key={level}>
             <line
               className="trend-grid-line"
               x1={AXIS_W}
               y1={y(level * ceiling)}
-              x2={VB_W - 8}
+              x2={vbW - PAD_RIGHT}
               y2={y(level * ceiling)}
             />
             <text
               className="trend-axis-label"
               x={AXIS_W - 6}
-              y={y(level * ceiling) + 3}
+              y={y(level * ceiling) + 4}
               textAnchor="end"
             >
               {wholeMoney(level * ceiling)}
@@ -246,32 +277,38 @@ function ForecastChart({ f }: { f: Forecast }) {
         ))}
 
         {data.map((d, i) => {
-          const bx = x(i);
+          const bx = centre(i) - barW / 2;
           const buildTop = y(d.build);
           const totalTop = y(d.build + d.inference);
           const soFarTop = d.inferenceSoFar !== undefined ? y(d.build + d.inferenceSoFar) : null;
+          const dim = hover !== null && hover !== i;
           return (
-            <g key={d.month} className={`forecast-bar forecast-bar-${d.kind}`}>
-              {/* Build at the bottom, inference on top: two segments, never one. */}
+            <g
+              key={d.month}
+              className={`trend-bar-group forecast-bar forecast-bar-${d.kind}${dim ? " dim" : ""}`}
+            >
+              {/* Inference on top of build: two segments, never one (invariant 2).
+                  Same order, colours and corner as the Overview's spend trend. */}
               <rect
-                className="forecast-seg-build"
+                className="trend-bar-run"
+                x={bx}
+                y={totalTop}
+                width={barW}
+                height={Math.max(buildTop - totalTop, 0)}
+                rx={2}
+              />
+              <rect
+                className="trend-bar-build"
                 x={bx}
                 y={buildTop}
                 width={barW}
                 height={Math.max(BOTTOM - buildTop, 0)}
               />
-              <rect
-                className="forecast-seg-inference"
-                x={bx}
-                y={totalTop}
-                width={barW}
-                height={Math.max(buildTop - totalTop, 0)}
-              />
               {/* The open month: solid to where spend has reached today, lighter
                   above it for the part that is still a projection. */}
               {soFarTop !== null && (
                 <rect
-                  className="forecast-seg-sofar"
+                  className="trend-bar-run forecast-seg-sofar"
                   x={bx}
                   y={soFarTop}
                   width={barW}
@@ -279,43 +316,110 @@ function ForecastChart({ f }: { f: Forecast }) {
                 />
               )}
               {d.high !== null && d.low !== null && d.high !== d.low && (
-                <line
-                  className="forecast-range-whisker"
-                  x1={bx + barW / 2}
-                  x2={bx + barW / 2}
-                  y1={y(d.high)}
-                  y2={y(d.low)}
-                />
+                <g className="forecast-range-whisker">
+                  <line x1={centre(i)} x2={centre(i)} y1={y(d.high)} y2={y(d.low)} />
+                  <line x1={centre(i) - 4} x2={centre(i) + 4} y1={y(d.high)} y2={y(d.high)} />
+                  <line x1={centre(i) - 4} x2={centre(i) + 4} y1={y(d.low)} y2={y(d.low)} />
+                </g>
               )}
               {d.budget !== null && (
                 <line
                   className="budget-line"
-                  x1={bx - (slot - barW) / 2}
-                  x2={bx + barW + (slot - barW) / 2}
+                  x1={centre(i) - slot / 2}
+                  x2={centre(i) + slot / 2}
                   y1={y(d.budget)}
                   y2={y(d.budget)}
                 />
               )}
-              <text
-                className="trend-axis-label"
-                x={bx + barW / 2}
-                y={BOTTOM + 14}
-                textAnchor="middle"
-              >
-                {monthLabel(d.month)}
+              <text className="trend-axis-label" x={centre(i)} y={BOTTOM + 18} textAnchor="middle">
+                {/* Ten months on a phone leave about 24px each: the initial fits, the
+                    name does not, and the hover card still gives it in full. */}
+                {slot < 32 ? monthLabel(d.month).slice(0, 1) : monthLabel(d.month)}
               </text>
             </g>
           );
         })}
+
+        {/* One invisible band per month, so a short bar is as easy to hit as a
+            tall one and the pointer never falls between two of them. */}
+        {data.map((d, i) => (
+          <rect
+            key={`hit-${d.month}`}
+            x={centre(i) - slot / 2}
+            y={0}
+            width={slot}
+            height={BOTTOM}
+            fill="transparent"
+            onMouseEnter={() => setHover(i)}
+          />
+        ))}
       </svg>
-      <div className="forecast-legend muted">
-        <span className="forecast-key forecast-key-inference">Inference</span>
-        <span className="forecast-key forecast-key-build">Build</span>
-        <span className="forecast-key forecast-key-projected">Projected</span>
-        {f.has_budget && <span className="forecast-key forecast-key-budget">Budget</span>}
-        <span className="forecast-key forecast-key-range">80% range</span>
+
+      {hovered && <ForecastHover bar={hovered} pct={(centre(hover!) / vbW) * 100} />}
+
+      <div className="trend-key forecast-key">
+        <span className="trend-key-item">
+          <span className="trend-key-swatch build" aria-hidden /> Build
+        </span>
+        <span className="trend-key-item">
+          <span className="trend-key-swatch run" aria-hidden /> Inference
+        </span>
+        <span className="trend-key-item">
+          <span className="trend-key-swatch run forecast-swatch-projected" aria-hidden /> Projected
+        </span>
+        {f.has_budget && (
+          <span className="trend-key-item">
+            <span className="forecast-swatch-budget" aria-hidden /> Budget
+          </span>
+        )}
+        <span className="trend-key-item">
+          <span className="forecast-swatch-range" aria-hidden /> 80% range
+        </span>
       </div>
     </div>
+  );
+}
+
+/** The Overview's hover card, with what this month's bar is made of. */
+function ForecastHover({ bar, pct }: { bar: Bar; pct: number }) {
+  const label =
+    bar.kind === "actual"
+      ? monthLabel(bar.month)
+      : `${monthLabel(bar.month)} · ${bar.kind === "open" ? "this month" : "projected"}`;
+  return (
+    <ChartHoverCard pct={pct} title={label} total={money(bar.build + bar.inference)}>
+      <ul className="trend-hover-list">
+        <HoverRow
+          swatch="trend-key-swatch build"
+          label={bar.kind === "open" ? "Build to date" : "Build"}
+          value={money(bar.build)}
+        />
+        {bar.inferenceSoFar !== undefined && (
+          <HoverRow
+            swatch="trend-key-swatch run"
+            label="Inference so far"
+            value={money(bar.inferenceSoFar)}
+          />
+        )}
+        <HoverRow
+          swatch={
+            bar.kind === "actual"
+              ? "trend-key-swatch run"
+              : "trend-key-swatch run forecast-swatch-projected"
+          }
+          label={bar.kind === "actual" ? "Inference" : "Inference projected"}
+          value={money(bar.inference)}
+        />
+        {bar.low !== null && bar.high !== null && bar.high !== bar.low && (
+          <HoverRow
+            label="Total, 80% range"
+            value={`${money(bar.low)} – ${money(bar.high)}`}
+            muted
+          />
+        )}
+        {bar.budget !== null && <HoverRow label="Budget" value={money(bar.budget)} muted />}
+      </ul>
+    </ChartHoverCard>
   );
 }
 

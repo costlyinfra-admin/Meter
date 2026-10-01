@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type Forecast } from "../api";
 import { ForecastPage } from "./ForecastPage";
 
@@ -202,6 +202,53 @@ describe("Forecast", () => {
     expect(text).toContain("carried forward at its average so far");
     // No internal method name reaches the reader.
     expect(text).not.toMatch(/monthly_allocation|month_to_date_prorata|recent_weighted/);
+  });
+
+  it("is drawn as the Overview draws its spend trend, hover card included", async () => {
+    renderPage();
+    const svg = await screen.findByRole("img", { name: /Monthly AI spend/ });
+    // The Overview's bar classes, so the colours are the Overview's colours.
+    // Every bar, not just some: the open month's "so far" segment is excluded
+    // because it carries the class too and would hide a bar that lost it.
+    const bars = svg.querySelectorAll(".forecast-bar").length;
+    expect(bars).toBe(4);
+    expect(svg.querySelectorAll(".trend-bar-run:not(.forecast-seg-sofar)")).toHaveLength(bars);
+    expect(svg.querySelectorAll(".trend-bar-build")).toHaveLength(bars);
+    // Two months of history, so the open month is the third hover band.
+    const bands = svg.querySelectorAll('rect[fill="transparent"]');
+    fireEvent.mouseEnter(bands[2]);
+    const card = document.querySelector(".trend-hover-card")!;
+    expect(card).toHaveTextContent("May · this month");
+    expect(card).toHaveTextContent("Inference so far$21,000");
+    expect(card).toHaveTextContent("Inference projected$31,000");
+    // The range is the month's total, build included, and says so.
+    expect(card).toHaveTextContent("Total, 80% range$35,000 – $37,000");
+  });
+
+  describe("on a narrow screen", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("measures itself and shortens the months to their initials", async () => {
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        width: 160,
+      } as DOMRect);
+      renderPage();
+      const svg = await screen.findByRole("img", { name: /Monthly AI spend/ });
+      expect(svg.getAttribute("viewBox")).toBe("0 0 160 240");
+      const months = [...svg.querySelectorAll(".forecast-bar .trend-axis-label")].map(
+        (t) => t.textContent,
+      );
+      expect(months).toEqual(["M", "A", "M", "J"]);
+    });
+  });
+
+  it("names the months in full when there is room", async () => {
+    renderPage();
+    const svg = await screen.findByRole("img", { name: /Monthly AI spend/ });
+    const months = [...svg.querySelectorAll(".forecast-bar .trend-axis-label")].map(
+      (t) => t.textContent,
+    );
+    expect(months).toEqual(["Mar", "Apr", "May", "Jun"]);
   });
 
   it("reports a failure instead of an empty page", async () => {
