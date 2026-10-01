@@ -116,9 +116,17 @@ export DATABASE_READ_URL="host=$TMPD port=5544 dbname=meter user=meter_read"
 # by Vite, so that is where an in-product client would be.
 export METER_APP_ORIGIN="http://localhost:5173"
 export APP_SECRET_KEY="demo-secret-change-me"
+
+# Ask the seeder for the account it actually creates, so the admin list and the
+# banner below can never drift from it (and any DEMO_USER_* override is honoured).
+[ -x backend/.venv/bin/python ] || { echo "✖ Backend venv not found. Run: make install"; exit 1; }
+DEMO_CREDS="$( cd backend && .venv/bin/python -c 'import seed; print(seed.DEMO_USER_EMAIL); print(seed.DEMO_USER_PASSWORD)' )"
+DEMO_EMAIL="$(printf '%s\n' "$DEMO_CREDS" | sed -n 1p)"
+DEMO_PASSWORD="$(printf '%s\n' "$DEMO_CREDS" | sed -n 2p)"
+
 # The demo account is an admin here so the internal Admin Portal is explorable in
 # the throwaway demo. In production, set METER_ADMIN_EMAILS to your own admins.
-export METER_ADMIN_EMAILS="demo@costlyinfra.com"
+export METER_ADMIN_EMAILS="$DEMO_EMAIL"
 # Names the model that would see prompts, which prompt optimization's consent
 # screen has to state. No key: discovery and the assistant fall back as usual,
 # and the demo's prompt data is seeded rather than collected.
@@ -132,11 +140,19 @@ echo "▶ Starting API on http://localhost:8000 …"
 ( cd backend && exec .venv/bin/python -m uvicorn --factory meter.api:create_app --port 8000 --log-level warning ) &
 UVPID=$!
 
+# Box drawn to fit its contents, so a longer demo address stays aligned.
+BOX_L1="Open http://localhost:5173"
+BOX_L2="Login:  $DEMO_EMAIL  /  $DEMO_PASSWORD"
+BOX_W=56
+[ ${#BOX_L1} -gt $((BOX_W - 4)) ] && BOX_W=$((${#BOX_L1} + 4))
+[ ${#BOX_L2} -gt $((BOX_W - 4)) ] && BOX_W=$((${#BOX_L2} + 4))
+BOX_RULE="$(printf '─%.0s' $(seq 1 "$BOX_W"))"
+
 echo ""
-echo "  ┌────────────────────────────────────────────────────────┐"
-echo "  │  Open http://localhost:5173                            │"
-echo "  │  Login:  demo@costlyinfra.com  /  meter-demo           │"
-echo "  └────────────────────────────────────────────────────────┘"
+printf '  ┌%s┐\n' "$BOX_RULE"
+printf '  │  %-*s  │\n' "$((BOX_W - 4))" "$BOX_L1"
+printf '  │  %-*s  │\n' "$((BOX_W - 4))" "$BOX_L2"
+printf '  └%s┘\n' "$BOX_RULE"
 echo ""
 echo "▶ Starting web on http://localhost:5173  (Ctrl-C to stop everything)…"
 cd web && npm run dev
