@@ -76,7 +76,9 @@ CREATE UNIQUE INDEX experiment_one_waiting
     WHERE status IN ('waiting_for_data', 'waiting_for_results');
 
 CREATE TABLE experiment_token (
-    experiment_id  uuid PRIMARY KEY REFERENCES experiment(id) ON DELETE CASCADE,
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- One token per test: a new one means a new test.
+    experiment_id  uuid NOT NULL UNIQUE REFERENCES experiment(id) ON DELETE CASCADE,
     tenant_id      uuid NOT NULL REFERENCES tenant(id) ON DELETE CASCADE,
     token_hash     text NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT now(),
