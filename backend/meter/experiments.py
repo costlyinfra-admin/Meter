@@ -40,11 +40,13 @@ import uuid
 from decimal import Decimal
 from typing import Optional
 
-from . import dashboard, pricing
+from . import dashboard, offline_tests, pricing
 from .db import app_dsn, connect, tenant_tx
 
 #: What can be tested, and how. Grows with EX-2 (offline) and EX-3 (live).
 SIMULATABLE = ("duplicate_calls", "prompt_caching")
+#: Tested offline, on the customer's machine (EX-2, offline_tests.py).
+OFFLINE = ("model_rightsizing",)
 #: Freshness limits a customer can choose for a response cache, in seconds.
 #: The same four the SDK counts at (hook.SIMULATION_LIMITS).
 TTL_CHOICES = {60: "1 minute", 600: "10 minutes", 3600: "1 hour", 86400: "24 hours"}
@@ -260,13 +262,15 @@ def _simulate(conn, lever: str, feature_id: str, period: dt.date, setting: dict)
 _COLUMNS = (
     "id, feature_id, lever, mode, runs_at, status, outcome, outcome_reason, ttl_seconds, "
     "scoped_only, cache_ttl, period, baseline_monthly, baseline_savings_type, "
-    "baseline_confidence, result, created_by, created_at, completed_at, cancelled_at"
+    "baseline_confidence, result, created_by, created_at, completed_at, cancelled_at, "
+    "provider, control_model, candidate_model, loss_margin, min_cases, results_source, "
+    "judge_model, test_cost"
 )
 
 
 def _setting(lever: str, ttl_seconds, scoped_only, cache_ttl) -> dict:
     """The customer's choice, checked against what this lever can be tested on."""
-    if lever not in SIMULATABLE:
+    if lever not in SIMULATABLE + OFFLINE:
         raise ExperimentError("This recommendation cannot be tested yet.")
     if lever == "duplicate_calls":
         if ttl_seconds not in TTL_CHOICES:
@@ -282,6 +286,14 @@ def _setting(lever: str, ttl_seconds, scoped_only, cache_ttl) -> dict:
 
 
 def _setting_of(row: dict) -> dict:
+    if row["lever"] == "model_rightsizing":
+        return {
+            "provider": row["provider"],
+            "control_model": row["control_model"],
+            "candidate_model": row["candidate_model"],
+            "loss_margin": float(row["loss_margin"]),
+            "min_cases": row["min_cases"],
+        }
     if row["lever"] == "duplicate_calls":
         return {"ttl_seconds": row["ttl_seconds"], "scoped_only": row["scoped_only"]}
     return {"cache_ttl": row["cache_ttl"]}
@@ -289,6 +301,11 @@ def _setting_of(row: dict) -> dict:
 
 def setting_label(lever: str, setting: dict) -> str:
     """The choice in words, for the screen and the recommendation card."""
+    if lever == "model_rightsizing":
+        text = f"{setting['candidate_model']} in place of {setting['control_model']}"
+        if offline_tests.relaxed(setting):
+            text += f", under a loosened rule ({offline_tests.rule_words(setting)})"
+        return text
     if lever == "duplicate_calls":
         text = f"answers reused for up to {TTL_CHOICES[setting['ttl_seconds']]}"
         if setting["scoped_only"]:
@@ -325,6 +342,10 @@ def _to_dict(row) -> dict:
         "created_at": d["created_at"].isoformat(),
         "completed_at": d["completed_at"].isoformat() if d["completed_at"] else None,
         "cancelled_at": d["cancelled_at"].isoformat() if d["cancelled_at"] else None,
+        "results_source": d["results_source"],
+        "judge_model": d["judge_model"],
+        # What the run cost, priced by Meter. Already on the provider's bill.
+        "test_cost": float(d["test_cost"]) if d["test_cost"] is not None else None,
     }
     out["setting_label"] = setting_label(out["lever"], out["setting"])
     return out
@@ -383,42 +404,67 @@ def create(
     ttl_seconds: Optional[int] = None,
     scoped_only: Optional[bool] = None,
     cache_ttl: Optional[str] = None,
+    control_model: Optional[str] = None,
+    candidate_model: Optional[str] = None,
+    loss_margin: Optional[float] = None,
+    min_cases: Optional[int] = None,
 ) -> Optional[dict]:
     """Start a test of one recommendation. Returns None if the feature is not found.
 
-    A test still waiting for data on the same recommendation is cancelled, not
-    left running beside this one: the customer has changed their mind about the
-    setting, and two answers to two questions would sit on one card.
+    A test still waiting on the same recommendation is cancelled, not left
+    running beside this one: the customer has changed their mind about the
+    setting, and two answers to two questions would sit on one card. A
+    cancelled offline run's token stops working with it.
+
+    An offline test (model right-sizing) comes back with `token`: the one
+    credential its run holds, shown this once and never again.
     """
-    setting = _setting(lever, ttl_seconds, scoped_only, cache_ttl)
+    offline = lever in OFFLINE
+    if offline:
+        if any(v is not None for v in (ttl_seconds, scoped_only, cache_ttl)):
+            raise ExperimentError("A freshness limit or cache lifetime does not apply here.")
+    else:
+        if any(v is not None for v in (control_model, candidate_model, loss_margin, min_cases)):
+            raise ExperimentError("Models and a decision rule apply to model right-sizing only.")
+        setting = _setting(lever, ttl_seconds, scoped_only, cache_ttl)
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         if conn.execute("SELECT 1 FROM feature WHERE id = %s", (feature_id,)).fetchone() is None:
             return None
         period = dashboard._resolve_period(conn, None)
+        if offline:
+            try:
+                setting = offline_tests.validate_setting(
+                    conn, feature_id, period, control_model, candidate_model, loss_margin,
+                    min_cases,
+                )
+            except offline_tests.OfflineTestError as exc:
+                raise ExperimentError(str(exc)) from exc
         baseline = _baseline(conn, feature_id, period, lever)
-        conn.execute(
-            """
-            UPDATE experiment SET status = 'cancelled', cancelled_at = now()
-             WHERE feature_id = %s AND lever = %s AND status = 'waiting_for_data'
-            """,
-            (feature_id, lever),
-        )
+        _cancel_waiting(conn, "feature_id = %s AND lever = %s", (feature_id, lever))
         row = conn.execute(
             """
             INSERT INTO experiment
                 (tenant_id, feature_id, lever, mode, status, ttl_seconds, scoped_only,
-                 cache_ttl, period, baseline_monthly, baseline_savings_type,
-                 baseline_confidence, created_by)
-            VALUES (%s, %s, %s, 'simulate', 'waiting_for_data', %s, %s, %s, %s, %s, %s, %s, %s)
+                 cache_ttl, provider, control_model, candidate_model, loss_margin, min_cases,
+                 period, baseline_monthly, baseline_savings_type, baseline_confidence,
+                 created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
                 tenant_id,
                 feature_id,
                 lever,
+                "offline" if offline else "simulate",
+                "waiting_for_results" if offline else "waiting_for_data",
                 setting.get("ttl_seconds"),
                 setting.get("scoped_only"),
                 setting.get("cache_ttl"),
+                setting.get("provider"),
+                setting.get("control_model"),
+                setting.get("candidate_model"),
+                setting.get("loss_margin"),
+                setting.get("min_cases"),
                 period,
                 baseline["projected_monthly_savings"] if baseline else None,
                 baseline["savings_type"] if baseline else None,
@@ -427,10 +473,31 @@ def create(
             ),
         ).fetchone()
         experiment_id = str(row[0])
+        if offline:
+            token = offline_tests.issue_token(conn, tenant_id, experiment_id)
+            return {**_to_dict(_fetch(conn, experiment_id)), "token": token}
         _apply_result(
             conn, experiment_id, _simulate(conn, lever, feature_id, period, setting), period
         )
         return _to_dict(_fetch(conn, experiment_id))
+
+
+def _cancel_waiting(conn, where: str, params: tuple) -> None:
+    """Cancel tests still waiting, and revoke any run token they held.
+
+    `where` is one of this module's own fixed clauses, never caller input.
+    """
+    waiting = "status IN ('waiting_for_data', 'waiting_for_results')"
+    conn.execute(
+        f"DELETE FROM experiment_token WHERE experiment_id IN "  # noqa: S608 - constants
+        f"(SELECT id FROM experiment WHERE {where} AND {waiting})",
+        params,
+    )
+    conn.execute(
+        f"UPDATE experiment SET status = 'cancelled', cancelled_at = now() "  # noqa: S608
+        f"WHERE {where} AND {waiting}",
+        params,
+    )
 
 
 def get(tenant_id: str, experiment_id: str) -> Optional[dict]:
@@ -451,6 +518,13 @@ def get(tenant_id: str, experiment_id: str) -> Optional[dict]:
                 period,
             )
             current = _to_dict(_fetch(conn, experiment_id))
+        if current["status"] == "waiting_for_results":
+            # When the run's token stops working, so the page can say so.
+            expiry = conn.execute(
+                "SELECT expires_at FROM experiment_token WHERE experiment_id = %s",
+                (experiment_id,),
+            ).fetchone()
+            current["run_expires_at"] = expiry[0].isoformat() if expiry else None
         name = conn.execute(
             "SELECT name FROM feature WHERE id = %s", (current["feature_id"],)
         ).fetchone()
@@ -470,17 +544,11 @@ def get(tenant_id: str, experiment_id: str) -> Optional[dict]:
 
 
 def cancel(tenant_id: str, experiment_id: str) -> Optional[dict]:
-    """Stop a test that is waiting for data. A finished one is history and stays."""
+    """Stop a test that is still waiting. A finished one is history and stays."""
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         if _fetch(conn, experiment_id) is None:
             return None
-        conn.execute(
-            """
-            UPDATE experiment SET status = 'cancelled', cancelled_at = now()
-             WHERE id = %s AND status = 'waiting_for_data'
-            """,
-            (experiment_id,),
-        )
+        _cancel_waiting(conn, "id = %s", (experiment_id,))
         return _to_dict(_fetch(conn, experiment_id))
 
 
@@ -491,6 +559,12 @@ def testable(opportunity: dict) -> bool:
     """Whether "Test this" applies to this recommendation."""
     if opportunity["lever"] == "duplicate_calls":
         return True
+    if opportunity["lever"] == "model_rightsizing":
+        # Where the runner can call the model being replaced.
+        return any(
+            pricing._vendor_of(t.get("from_model") or "") in offline_tests.RUNNABLE
+            for t in opportunity["trail"]
+        )
     if opportunity["lever"] == "prompt_caching":
         # Only where there is a lifetime to choose. On a provider that caches
         # automatically the test would only repeat the recommendation.
@@ -511,7 +585,8 @@ def annotate(conn, feature_id: str, period: dt.date, unified: list) -> list:
         for r in conn.execute(
             f"""
             SELECT DISTINCT ON (lever) {_COLUMNS} FROM experiment
-             WHERE feature_id = %s AND status IN ('completed', 'waiting_for_data')
+             WHERE feature_id = %s
+               AND status IN ('completed', 'waiting_for_data', 'waiting_for_results')
              ORDER BY lever, created_at DESC
             """,  # noqa: S608 - constant
             (feature_id,),
@@ -535,6 +610,11 @@ def annotate(conn, feature_id: str, period: dt.date, unified: list) -> list:
             }
         )
         if exp is None or exp["status"] != "completed":
+            continue
+        if exp["mode"] == "offline":
+            o["experiment"]["note"] = exp["outcome_reason"]
+            if offline_tests.layer(conn, o, exp, feature_id, period):
+                changed.append(o)
             continue
         now = _simulate(conn, o["lever"], feature_id, period, exp["setting"])
         outcome = now["outcome"] or exp["outcome"]

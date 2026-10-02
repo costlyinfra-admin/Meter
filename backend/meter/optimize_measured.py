@@ -161,7 +161,7 @@ _EXCLUSION_GROUPS = [
     # rather than both being added as if they were independent.
     {"duplicate_calls", "prompt_caching"},
 ]
-_SAVINGS_TYPE_RANK = {"measured": 2, "modeled_ceiling": 1, "directional": 0}
+_SAVINGS_TYPE_RANK = {"measured": 3, "tested": 2, "modeled_ceiling": 1, "directional": 0}
 
 
 def _apply_exclusions(unified: list) -> None:
@@ -735,6 +735,12 @@ def _rightsizing_opportunity(conn, feature_id, start) -> Optional[dict]:
             {
                 "model": f"{model} → {dc['target']}",
                 "note": f"up to {_usd(saving)}/mo ({pct}% cheaper)",
+                # Structured, so a test of one model (experiments.py) can
+                # replace that model's part of the figure and no other.
+                "from_model": model,
+                "to_model": dc["target"],
+                "spend": round(float(amount), 2),
+                "monthly": round(float(saving), 2),
             }
         )
         if top is None or saving > top["saving"]:
@@ -1057,11 +1063,13 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date, annotate: bool
             ),
             2,
         )
-        for kind in ("measured", "modeled_ceiling", "directional")
+        # "tested" (EX-2): measured on the customer's own test cases, not on
+        # their traffic, so neither measured nor a ceiling — its own figure.
+        for kind in ("measured", "tested", "modeled_ceiling", "directional")
     }
     return {
         "opportunities": unified,
-        "totals": totals,  # measured / modeled_ceiling / directional — never combined
+        "totals": totals,  # measured / tested / modeled_ceiling / directional — never combined
         "cache_utilization": cache_utilization,
         "actions": actions,  # applied optimizations: projected vs realized (opt spec §11)
     }
@@ -1077,7 +1085,7 @@ def copilot_overview(tenant_id: str, period: Optional[dt.date] = None) -> dict:
         start = dashboard._resolve_period(conn, period)
         features = conn.execute("SELECT id, name FROM feature ORDER BY name").fetchall()
 
-        totals = {"measured": 0.0, "modeled_ceiling": 0.0, "directional": 0.0}
+        totals = {"measured": 0.0, "tested": 0.0, "modeled_ceiling": 0.0, "directional": 0.0}
         verified_monthly = 0.0
         actionable = []  # measured + modeled_ceiling opps, tagged with their feature
         by_feature = []
@@ -1153,7 +1161,10 @@ def copilot_overview(tenant_id: str, period: Optional[dt.date] = None) -> dict:
         )
 
         top = sorted(actionable, key=lambda o: o["priority_score"], reverse=True)[:8]
-        by_feature.sort(key=lambda f: f["measured"] + f["modeled_ceiling"], reverse=True)
+        # A sort key, not a figure anyone sees: where the money is, all kinds.
+        by_feature.sort(
+            key=lambda f: f["measured"] + f["tested"] + f["modeled_ceiling"], reverse=True
+        )
         by_lever = sorted(lever_map.values(), key=lambda e: e["monthly"], reverse=True)
         for e in by_lever:
             e["monthly"] = round(e["monthly"], 2)

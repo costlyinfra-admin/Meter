@@ -12,6 +12,8 @@ ALL_TABLES = [
     "tenant",
     "usage_simulation",
     "experiment",
+    "experiment_token",
+    "experiment_case",
     "feature",
     "feature_signal",
     "build_cost",

@@ -375,12 +375,15 @@ def test_a_driver_carries_the_savings_optimize_has_already_found_on_it(client, m
         optimize_measured,
         "copilot_overview",
         lambda *_a, **_k: {
-            "by_feature": [{"feature_id": triage, "measured": 120.0, "modeled_ceiling": 80.0}]
+            "by_feature": [
+                {"feature_id": triage, "measured": 120.0, "tested": 30.0, "modeled_ceiling": 80.0}
+            ]
         },
     )
     driver = forecast.forecast(tenant)["drivers"][0]
-    # Measured plus modeled ceiling — the same figure the Optimize screen shows.
-    assert driver["identified_savings"] == 200.0
+    # Measured, tested and modeled ceiling — the same figure the Optimize screen
+    # shows. A saving that passed a test must not drop out by passing.
+    assert driver["identified_savings"] == 230.0
 
 
 def test_a_failing_optimizer_does_not_take_the_forecast_down(client, monkeypatch):

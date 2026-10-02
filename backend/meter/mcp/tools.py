@@ -32,7 +32,7 @@ GROUPINGS = ("feature", "provider", "model", "workspace", "product", "customer",
 #: The savings taxonomy, in the order a reader should trust it. Repeated in the
 #: tool description because an agent acting on "modeled_ceiling" as if it were
 #: "measured" would write a change nobody asked for.
-SAVINGS_TYPES = ("measured", "modeled_ceiling", "directional")
+SAVINGS_TYPES = ("measured", "tested", "modeled_ceiling", "directional")
 
 #: Page ceilings. An agent asking for everything is an agent filling its context
 #: with rows it will not read.
@@ -434,17 +434,20 @@ def find_optimization_opportunities(tenant_id: str, args: dict) -> dict:
         "scope": scope,
         "period": source["period"],
         "currency": "USD",
-        # Three totals, never one. `measured` is what the traffic guarantees,
-        # `modeled_ceiling` is an upper bound whose realization depends on an
-        # assumption Meter cannot verify, and `directional` is a rule of thumb.
+        # Four totals, never one. `measured` is what the traffic guarantees,
+        # `tested` held up on the customer's own test cases (EX-2), `modeled_
+        # ceiling` is an upper bound whose realization depends on an assumption
+        # Meter cannot verify, and `directional` is a rule of thumb.
         "totals_by_savings_type": source["totals"],
         "opportunities": found[:limit],
         "by_lever": by_lever,
         "applied": applied,
         "note": (
             "savings_type says how much to trust a number: measured is counted from "
-            "traffic; modeled_ceiling is an upper bound that assumes every candidate "
-            "was safely avoidable; directional is a heuristic. An opportunity with "
+            "traffic; tested was measured on the customer's own test cases, which may "
+            "not look like their traffic; modeled_ceiling is an upper bound that assumes "
+            "every candidate was safely avoidable; directional is a heuristic. An "
+            "opportunity with "
             "`overlaps` set is already priced by another one — never add the two. "
             "Call get_optimization_details with an opportunity_id before changing code."
         ),
@@ -620,8 +623,9 @@ TOOLS = [
             "feature_id this is the organization-wide shortlist Meter ranks by "
             "priority (savings x confidence x engineering effort) — the same one "
             "the Optimize screen shows. Pass feature_id for every opportunity on "
-            "one feature. Each carries a savings_type — measured, modeled_ceiling "
-            "or directional — and an opportunity_id for get_optimization_details."
+            "one feature. Each carries a savings_type — measured, tested, "
+            "modeled_ceiling or directional — and an opportunity_id for "
+            "get_optimization_details."
         ),
         "inputSchema": {
             "type": "object",

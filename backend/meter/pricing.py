@@ -531,6 +531,35 @@ def downgrade_ceiling(model: str, tokens_in: int, tokens_out: int) -> Optional[d
     return {"target": target, "save_fraction": float((current - cheaper) / current)}
 
 
+def cheaper_same_vendor(model: str, tokens_in: int, tokens_out: int) -> list:
+    """Every priced model from the same vendor that would cost less at this
+    token mix, closest in price first — the models a customer may test as a
+    replacement (experiments, EX-2). Empty for an unknown model, or no mix.
+
+    Each entry: {"model", "save_fraction"}. The fraction is a list-price ratio
+    at the feature's own mix, which is what the recommendation is priced on;
+    the test then measures the real one on the customer's cases.
+    """
+    vendor = _vendor_of(model)
+    current = price(model, tokens_in, tokens_out)
+    if vendor is None or current <= 0:
+        return []
+    out = []
+    for other in _PRICES:
+        if other == model or _vendor_of(other) != vendor:
+            continue
+        cost = price(other, tokens_in, tokens_out)
+        if 0 < cost < current:
+            out.append({"model": other, "save_fraction": float((current - cost) / current)})
+    out.sort(key=lambda c: c["save_fraction"])
+    return out
+
+
+def downgrade_target(model: str) -> Optional[str]:
+    """The one-step-down tier the recommendation names, or None."""
+    return _DOWNGRADE_TARGET.get(model)
+
+
 def _vendor_of(model: str) -> Optional[str]:
     """Which provider publishes this single-vendor model."""
     for prefix, provider in _MODEL_VENDOR:

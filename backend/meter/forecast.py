@@ -484,7 +484,9 @@ def forecast(tenant_id: str) -> dict:
     try:
         overview = optimize_measured.copilot_overview(tenant_id, current)
         savings = {
-            f["feature_id"]: f["measured"] + f["modeled_ceiling"] for f in overview["by_feature"]
+            # Tested included: passing a test must not remove a saving from here.
+            f["feature_id"]: f["measured"] + f["tested"] + f["modeled_ceiling"]
+            for f in overview["by_feature"]
         }
     except Exception:  # noqa: BLE001
         savings = {}

@@ -20,7 +20,7 @@ from typing import Annotated, Literal, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -55,6 +55,7 @@ from . import (
     human_effort,
     inference,
     infrastructure,
+    offline_tests,
     okta,
     optimize_measured,
     otel,
@@ -735,6 +736,56 @@ class ExperimentRequest(BaseModel):
     ttl_seconds: Optional[int] = Field(default=None, ge=0, le=10_000_000)
     scoped_only: Optional[bool] = None
     cache_ttl: Optional[str] = Field(default=None, min_length=1, max_length=16)
+    # Model right-sizing (EX-2): which model to test in place of which, and the
+    # decision rule's two dials. offline_tests.validate_setting decides.
+    control_model: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    candidate_model: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    loss_margin: Optional[float] = Field(default=None, ge=-1, le=10)
+    min_cases: Optional[int] = Field(default=None, ge=-1, le=100_000)
+
+
+class _RunCall(BaseModel):
+    """One model call in an offline test case: numbers only."""
+
+    model_config = ConfigDict(extra="forbid")
+    tokens_in: int = Field(ge=0, le=100_000_000)
+    tokens_out: int = Field(ge=0, le=100_000_000)
+    latency_ms: int = Field(ge=0, le=86_400_000)
+    error: bool
+
+
+class _RunCase(BaseModel):
+    """One compared case. `case` is a hash the runner salts per run."""
+
+    model_config = ConfigDict(extra="forbid")
+    case: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control: _RunCall
+    candidate: _RunCall
+    check_failures: int = Field(ge=0, le=10)
+    verdict: Literal["better", "same", "worse", "unjudged"]
+
+
+class _JudgeUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: Literal["anthropic", "openai"]
+    tokens_in: int = Field(ge=0, le=1_000_000_000)
+    tokens_out: int = Field(ge=0, le=1_000_000_000)
+
+
+class ExperimentResultsRequest(BaseModel):
+    """An offline run's results. A closed shape: any field not named here —
+    a prompt, an answer, a judge's reasoning — is refused, not ignored.
+
+    The bounds match migration 0066 and offline_tests, checked by a tripwire
+    test (test_offline_tests_api) so this guard cannot be tighter than them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["runner", "promptfoo", "inspect"]
+    runner_version: str = Field(pattern=r"^[0-9A-Za-z.+-]{1,40}$")
+    judge_model: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9._:/@-]{1,120}$")
+    judge_usage: Optional[_JudgeUsage] = None
+    cases: list[_RunCase] = Field(min_length=1, max_length=500)
 
 
 class McpTokenRequest(BaseModel):
@@ -998,7 +1049,10 @@ def create_app() -> FastAPI:
         # handed a savings figure the rest of the product would not agree with.
         try:
             overview = optimize_measured.copilot_overview(tenant_id, win_end)
-            savings = overview["totals"]["measured"] + overview["totals"]["modeled_ceiling"]
+            totals = overview["totals"]
+            # Tested (EX-2) sits between the two: a right-sizing ceiling that
+            # passed a test must not drop out of "identified" by passing.
+            savings = totals["measured"] + totals["tested"] + totals["modeled_ceiling"]
         except Exception:  # noqa: BLE001 - a slow/failing Optimize must not take the card down
             savings = None
         return budgets.period_forecast(tenant_id, win_start, win_end, identified_savings=savings)
@@ -1955,12 +2009,62 @@ def create_app() -> FastAPI:
                 ttl_seconds=body.ttl_seconds,
                 scoped_only=body.scoped_only,
                 cache_ttl=body.cache_ttl,
+                control_model=body.control_model,
+                candidate_model=body.candidate_model,
+                loss_margin=body.loss_margin,
+                min_cases=body.min_cases,
             )
         except experiments.ExperimentError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if result is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found")
         return result
+
+    @app.get("/api/features/{feature_id}/experiments/options")
+    def experiment_options(feature_id: str, user: CurrentUser) -> dict:
+        """The models a customer can test on this feature, and the rule's dials."""
+        result = offline_tests.options(user["tenant_id"], feature_id)
+        if result is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found")
+        return result
+
+    def _run_token(request: Request) -> tuple:
+        # An offline run authenticates with its own token, never a session or
+        # the ingest token. The token is how the tenant and the experiment are
+        # known; nothing in the request body can name either.
+        header = request.headers.get("authorization", "")
+        token = header[7:] if header.lower().startswith("bearer ") else header
+        resolved = offline_tests.resolve_token(token)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="This test's token is not valid: it expired, was used, or was cancelled.",
+            )
+        return resolved
+
+    @app.get("/api/experiment-runs/spec")
+    def experiment_run_spec(request: Request) -> dict:
+        tenant_id, experiment_id = _run_token(request)
+        result = offline_tests.spec(tenant_id, experiment_id)
+        if result is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+        return result
+
+    @app.post("/api/experiment-runs/results")
+    def experiment_run_results(body: ExperimentResultsRequest, request: Request) -> dict:
+        tenant_id, experiment_id = _run_token(request)
+        try:
+            result = offline_tests.submit(tenant_id, experiment_id, body.model_dump())
+        except offline_tests.OfflineTestError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Results for this test have already been received.",
+            )
+        # The run learns the outcome; it gets no figures about the business.
+        return {"status": result["status"], "outcome": result["outcome"],
+                "outcome_reason": result["outcome_reason"]}
 
     @app.get("/api/experiments/{experiment_id}")
     def get_experiment(experiment_id: str, user: CurrentUser) -> dict:

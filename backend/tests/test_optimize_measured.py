@@ -245,7 +245,8 @@ def test_combines_measured_and_estimated_tiers(tenant_id):
     # dropped rather than both being summed as if they were independent.
     dup = _opp(result, "duplicate_calls")
     assert dup["overlaps"] == "Prompt caching"
-    assert set(result["totals"]) == {"measured", "modeled_ceiling", "directional"}
+    # Four figures, never combined; "tested" is the customer's own test cases (EX-2).
+    assert set(result["totals"]) == {"measured", "tested", "modeled_ceiling", "directional"}
     # Only the right-sizing ceiling remains ($60 × 0.6667 = $40.00).
     assert result["totals"]["modeled_ceiling"] == 40.0
 
@@ -254,7 +255,12 @@ def test_no_signals_no_cost_yields_no_opportunities(tenant_id):
     triage = features.add_feature(tenant_id, "AI threat triage")
     result = optimize_measured.opportunities(tenant_id, triage["id"], PERIOD)
     assert result["opportunities"] == []  # no signals, no inference cost
-    assert result["totals"] == {"measured": 0.0, "modeled_ceiling": 0.0, "directional": 0.0}
+    assert result["totals"] == {
+        "measured": 0.0,
+        "tested": 0.0,
+        "modeled_ceiling": 0.0,
+        "directional": 0.0,
+    }
     assert result["cache_utilization"] is None
 
 
