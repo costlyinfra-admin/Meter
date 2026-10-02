@@ -308,3 +308,35 @@ def test_the_real_runner_completes_a_test_and_the_recommendation_becomes_tested(
     rs = next(o for o in opps["opportunities"] if o["lever"] == "model_rightsizing")
     assert rs["savings_type"] == "tested" and rs["validation"] == "tested_offline"
     assert opps["totals"]["tested"] == rs["projected_monthly_savings"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Live tests (EX-3), over HTTP
+# ---------------------------------------------------------------------------
+def test_a_live_test_can_be_started_and_ended_over_http(client, feature):
+    resp = client.post(
+        f"/api/features/{feature}/experiments",
+        json={
+            "lever": "model_rightsizing",
+            "mode": "live",
+            "control_model": "claude-sonnet-4-6",
+            "candidate_model": "claude-haiku-4-5",
+            "traffic_share": 10,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    exp = resp.json()
+    assert (exp["mode"], exp["status"]) == ("live", "running")
+    assert "token" not in exp  # a live test needs none: the SDK's ingest token tags calls
+    assert client.get(f"/api/experiments/{exp['id']}").json()["status"] == "running"
+    assert client.post(f"/api/experiments/{exp['id']}/cancel").json()["status"] == "cancelled"
+
+
+def test_every_live_dial_the_application_accepts_fits_the_request_model():
+    from meter import live_tests
+
+    for name, (lo, hi) in live_tests.RANGES.items():
+        for value in (lo, hi):
+            ExperimentRequest(lever="model_rightsizing", mode="live", **{name: value})
+    for mode in ("simulate", "offline", "live"):
+        ExperimentRequest(lever="model_rightsizing", mode=mode)

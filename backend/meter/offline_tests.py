@@ -542,8 +542,9 @@ def layer(conn, o: dict, done: dict, feature_id: str, period: dt.date) -> bool:
         else:  # untested, or a test that could not decide
             total += float(t.get("monthly", 0.0))
             open_parts += 1
+    all_live = bool(passed) and all(e["mode"] == "live" for e in passed)
     if passed:
-        o["validation"] = "tested_offline"
+        o["validation"] = "tested_live" if all_live else "tested_offline"
     elif failed:
         o["validation"] = "failed"
     else:
@@ -555,21 +556,31 @@ def layer(conn, o: dict, done: dict, feature_id: str, period: dt.date) -> bool:
         return False
     if passed and not open_parts:
         o["savings_type"] = "tested"
-        # A sample is not the traffic: right-sizing tops out at med (spec §7.3).
-        o["confidence"] = "med"
+        # A sample of cases is not the traffic: offline right-sizing tops out at
+        # med. Real traffic that held up earns high (spec §7.3).
+        o["confidence"] = "high" if all_live else "med"
     _set(o, total)  # after the confidence, which the ranking reads
     sentences = []
     for exp in passed:
         r = exp["result"]
-        sentences.append(
-            f"Tested on {r['compared']} of your own cases: {exp['setting']['candidate_model']} "
-            f"in place of {exp['setting']['control_model']} — better on {r['better']}, same on "
-            f"{r['same']}, worse on {r['worse']}, nothing broken, "
-            f"{round(float(r['saving_fraction']) * 100)}% less per call."
-        )
+        pct = round(float(r["saving_fraction"]) * 100)
+        swap = f"{exp['setting']['candidate_model']} in place of {exp['setting']['control_model']}"
+        if exp["mode"] == "live":
+            g = r["groups"]["candidate"]
+            sentences.append(
+                f"Tested on live traffic: {swap} over {g['calls']:,} calls — {pct}% less per "
+                "call, within the error and latency guardrails."
+            )
+        else:
+            sentences.append(
+                f"Tested on {r['compared']} of your own cases: {swap} — better on "
+                f"{r['better']}, same on {r['same']}, worse on {r['worse']}, nothing broken, "
+                f"{pct}% less per call."
+            )
     for exp in failed:
+        where = "on live traffic" if exp["mode"] == "live" else "on your own cases"
         sentences.append(
-            f"{exp['setting']['control_model']} was tested on your own cases and did not hold, "
+            f"{exp['setting']['control_model']} was tested {where} and did not hold, "
             "so its part is left out."
         )
     if open_parts:

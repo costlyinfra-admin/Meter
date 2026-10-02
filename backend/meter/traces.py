@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import uuid
 from decimal import Decimal
 from typing import Optional
 
@@ -71,7 +72,13 @@ TRACE_EVENTS = (
     "trace.cancelled",
 )
 SPAN_EVENTS = ("span.started", "span.completed", "span.failed", "span.cancelled")
-EVENT_TYPES = TRACE_EVENTS + SPAN_EVENTS
+#: A quality score for one group of a live test (EX-3): a number, nothing else.
+SCORE_EVENTS = ("experiment.score",)
+EVENT_TYPES = TRACE_EVENTS + SPAN_EVENTS + SCORE_EVENTS
+EXPERIMENT_GROUPS = ("control", "candidate")
+#: Bounds a score must sit inside. Scores come on any scale (the OpenTelemetry
+#: convention's own example is 4.0), but a billion is a bug, not a rating.
+MAX_SCORE = 1e9
 
 SPAN_KINDS = ("workflow", "llm", "embedding", "retrieval", "tool", "guardrail", "evaluation")
 
@@ -217,6 +224,8 @@ def validate(event: dict, now: dt.datetime) -> dict:
     kind = event.get("event_type")
     if kind not in EVENT_TYPES:
         raise TraceError(f"event_type must be one of: {', '.join(EVENT_TYPES)}.")
+    if kind in SCORE_EVENTS:
+        return _score_event(event, now)
 
     out: dict = {
         "event_type": kind,
@@ -253,7 +262,47 @@ def validate(event: dict, now: dt.datetime) -> dict:
         out["prompt_version"] = _text(event.get("prompt_version"), MAX_TINY, "prompt_version")
         out["prompt_hash"] = _text(event.get("prompt_hash"), 128, "prompt_hash")
         out["signal"] = _signal(event.get("signal"))
+        out["experiment_id"], out["experiment_group"] = _experiment_tag(event)
     return out
+
+
+def _experiment_tag(event: dict) -> tuple:
+    """Which live test, and which group of it, a call belongs to (EX-3).
+
+    A malformed tag is dropped, not refused: like an unknown feature, it must
+    not cost the batch its spend. Whether the test exists, belongs to this
+    organization and is running is checked at ingest, against the database.
+    """
+    raw_id, group = event.get("experiment_id"), event.get("experiment_group")
+    if raw_id is None and group is None:
+        return None, None
+    try:
+        experiment_id = str(uuid.UUID(str(raw_id)))
+    except ValueError:
+        return None, None
+    if group not in EXPERIMENT_GROUPS:
+        return None, None
+    return experiment_id, group
+
+
+def _score_event(event: dict, now: dt.datetime) -> dict:
+    """A quality score for one group of a live test. A number, a test, a group."""
+    experiment_id, group = _experiment_tag(event)
+    if experiment_id is None:
+        raise TraceError("A score needs experiment_id and experiment_group (control or candidate).")
+    value = event.get("score")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TraceError("score must be a number.")
+    value = float(value)
+    if value != value or abs(value) > MAX_SCORE:  # NaN, or implausibly large
+        raise TraceError("score is not a usable number.")
+    return {
+        "event_type": "experiment.score",
+        "experiment_id": experiment_id,
+        "experiment_group": group,
+        "score": value,
+        "occurred_at": _when(event.get("occurred_at"), now),
+    }
 
 
 def _signal(raw) -> Optional[dict]:
@@ -470,9 +519,10 @@ def _upsert_span(conn, tenant_id, trace_id, ev, status, salt) -> tuple[str, bool
             (tenant_id, trace_id, external_span_id, parent_span_id, span_kind,
              operation_name, provider, model, tokens_in, tokens_out, cache_read_tokens,
              cache_write_tokens, reasoning_tokens, latency_ms, status,
-             prompt_id, prompt_version, prompt_hash, started_at, ended_at, occurred_at)
+             prompt_id, prompt_version, prompt_hash, started_at, ended_at, occurred_at,
+             experiment_id, experiment_group)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s)
+                %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (trace_id, external_span_id) DO UPDATE SET
             parent_span_id = COALESCE(ai_span.parent_span_id, EXCLUDED.parent_span_id),
             span_kind      = CASE WHEN %s THEN EXCLUDED.span_kind ELSE ai_span.span_kind END,
@@ -491,6 +541,12 @@ def _upsert_span(conn, tenant_id, trace_id, ev, status, salt) -> tuple[str, bool
             prompt_id      = COALESCE(EXCLUDED.prompt_id, ai_span.prompt_id),
             prompt_version = COALESCE(EXCLUDED.prompt_version, ai_span.prompt_version),
             prompt_hash    = COALESCE(EXCLUDED.prompt_hash, ai_span.prompt_hash),
+            -- Both or neither (ai_span_experiment_tag_check): a later event
+            -- without a tag must not strip one, nor half of one.
+            experiment_id    = COALESCE(ai_span.experiment_id, EXCLUDED.experiment_id),
+            experiment_group = CASE WHEN ai_span.experiment_id IS NOT NULL
+                                    THEN ai_span.experiment_group
+                                    ELSE EXCLUDED.experiment_group END,
             started_at     = LEAST(ai_span.started_at, EXCLUDED.started_at),
             -- Terminal is sticky, so a start arriving after a completion cannot
             -- put the span back into `running`.
@@ -522,6 +578,8 @@ def _upsert_span(conn, tenant_id, trace_id, ev, status, salt) -> tuple[str, bool
             ev["occurred_at"],
             ev["occurred_at"] if terminal else None,
             ev["occurred_at"],
+            ev.get("experiment_id"),
+            ev.get("experiment_group"),
             terminal,
             terminal,
         ),
@@ -629,8 +687,28 @@ def ingest(
         signal_acc: dict = {}
         sim_acc: dict = {}
         pool_acc: dict = {}
+        score_acc: dict = {}
+        # Live tests a call may be tagged with: this organization's (RLS), and
+        # only while running. A tag naming anything else is dropped.
+        running = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT id FROM experiment WHERE mode = 'live' AND status = 'running'"
+            ).fetchall()
+        }
 
         for ev in parsed:
+            if ev["event_type"] == "experiment.score":
+                if ev["experiment_id"] in running:
+                    key = (ev["experiment_id"], ev["experiment_group"], ev["occurred_at"].date())
+                    entry = score_acc.setdefault(key, [0, 0.0, 0.0])
+                    entry[0] += 1
+                    entry[1] += ev["score"]
+                    entry[2] += ev["score"] ** 2
+                accepted += 1
+                continue
+            if ev.get("experiment_id") not in running:
+                ev["experiment_id"] = ev["experiment_group"] = None
             # An unknown feature is Unattributed, never a rejected event: the
             # money was still spent and must not vanish because a feature was
             # renamed or deleted between instrumenting and sending.
@@ -774,6 +852,20 @@ def ingest(
             )
         for skey, sentry in sim_acc.items():
             hook.upsert_simulation(conn, tenant_id, skey, sentry)
+        for (experiment_id, group, day), (n, total, squares) in score_acc.items():
+            conn.execute(
+                """
+                INSERT INTO experiment_score
+                    (tenant_id, experiment_id, experiment_group, day, n, total, total_squares)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (experiment_id, experiment_group, day) DO UPDATE SET
+                    n = experiment_score.n + EXCLUDED.n,
+                    total = experiment_score.total + EXCLUDED.total,
+                    total_squares = experiment_score.total_squares + EXCLUDED.total_squares,
+                    updated_at = now()
+                """,
+                (tenant_id, experiment_id, group, day, n, total, squares),
+            )
 
         if batch_id:
             hook.record_batch(conn, tenant_id, batch_id, accepted, costed)

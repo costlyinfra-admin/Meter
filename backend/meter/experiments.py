@@ -40,7 +40,7 @@ import uuid
 from decimal import Decimal
 from typing import Optional
 
-from . import dashboard, offline_tests, pricing
+from . import dashboard, live_tests, offline_tests, pricing
 from .db import app_dsn, connect, tenant_tx
 
 #: What can be tested, and how. Grows with EX-2 (offline) and EX-3 (live).
@@ -264,7 +264,8 @@ _COLUMNS = (
     "scoped_only, cache_ttl, period, baseline_monthly, baseline_savings_type, "
     "baseline_confidence, result, created_by, created_at, completed_at, cancelled_at, "
     "provider, control_model, candidate_model, loss_margin, min_cases, results_source, "
-    "judge_model, test_cost"
+    "judge_model, test_cost, traffic_share, min_calls, min_days, max_error_increase, "
+    "max_latency_increase, quality_margin, guardrail_alert_id, last_evaluated_at"
 )
 
 
@@ -286,6 +287,18 @@ def _setting(lever: str, ttl_seconds, scoped_only, cache_ttl) -> dict:
 
 
 def _setting_of(row: dict) -> dict:
+    if row["lever"] == "model_rightsizing" and row["mode"] == "live":
+        return {
+            "provider": row["provider"],
+            "control_model": row["control_model"],
+            "candidate_model": row["candidate_model"],
+            "traffic_share": row["traffic_share"],
+            "min_calls": row["min_calls"],
+            "min_days": row["min_days"],
+            "max_error_increase": float(row["max_error_increase"]),
+            "max_latency_increase": float(row["max_latency_increase"]),
+            "quality_margin": float(row["quality_margin"]),
+        }
     if row["lever"] == "model_rightsizing":
         return {
             "provider": row["provider"],
@@ -301,6 +314,14 @@ def _setting_of(row: dict) -> dict:
 
 def setting_label(lever: str, setting: dict) -> str:
     """The choice in words, for the screen and the recommendation card."""
+    if lever == "model_rightsizing" and "traffic_share" in setting:
+        text = (
+            f"{setting['candidate_model']} in place of {setting['control_model']} on "
+            f"{setting['traffic_share']}% of live traffic"
+        )
+        if live_tests.relaxed(setting):
+            text += f", under a loosened rule ({live_tests.rule_words(setting)})"
+        return text
     if lever == "model_rightsizing":
         text = f"{setting['candidate_model']} in place of {setting['control_model']}"
         if offline_tests.relaxed(setting):
@@ -346,6 +367,8 @@ def _to_dict(row) -> dict:
         "judge_model": d["judge_model"],
         # What the run cost, priced by Meter. Already on the provider's bill.
         "test_cost": float(d["test_cost"]) if d["test_cost"] is not None else None,
+        "guardrail_alert_id": str(d["guardrail_alert_id"]) if d["guardrail_alert_id"] else None,
+        "last_evaluated_at": d["last_evaluated_at"].isoformat() if d["last_evaluated_at"] else None,
     }
     out["setting_label"] = setting_label(out["lever"], out["setting"])
     return out
@@ -408,6 +431,8 @@ def create(
     candidate_model: Optional[str] = None,
     loss_margin: Optional[float] = None,
     min_cases: Optional[int] = None,
+    mode: Optional[str] = None,
+    live: Optional[dict] = None,
 ) -> Optional[dict]:
     """Start a test of one recommendation. Returns None if the feature is not found.
 
@@ -419,8 +444,24 @@ def create(
     An offline test (model right-sizing) comes back with `token`: the one
     credential its run holds, shown this once and never again.
     """
-    offline = lever in OFFLINE
-    if offline:
+    is_live = mode == "live"
+    if is_live and lever not in OFFLINE:
+        raise ExperimentError("Only model right-sizing can be tested on live traffic yet.")
+    if mode not in (None, "simulate", "offline", "live"):
+        raise ExperimentError("Choose how to test: a simulation, your own cases, or live traffic.")
+    if mode is not None and lever in SIMULATABLE and mode != "simulate":
+        raise ExperimentError("This recommendation is tested by simulation.")
+    if mode == "simulate" and lever in OFFLINE:
+        raise ExperimentError("Model right-sizing is tested on your own cases or live traffic.")
+    if not is_live and any(v is not None for v in (live or {}).values()):
+        raise ExperimentError("Traffic share, minimums and guardrails apply to live tests only.")
+    offline = lever in OFFLINE and not is_live
+    if is_live:
+        if any(
+            v is not None for v in (ttl_seconds, scoped_only, cache_ttl, loss_margin, min_cases)
+        ):
+            raise ExperimentError("A live test is set with its own dials, not those.")
+    elif offline:
         if any(v is not None for v in (ttl_seconds, scoped_only, cache_ttl)):
             raise ExperimentError("A freshness limit or cache lifetime does not apply here.")
     else:
@@ -431,7 +472,14 @@ def create(
         if conn.execute("SELECT 1 FROM feature WHERE id = %s", (feature_id,)).fetchone() is None:
             return None
         period = dashboard._resolve_period(conn, None)
-        if offline:
+        if is_live:
+            try:
+                setting = live_tests.validate_setting(
+                    conn, feature_id, period, control_model, candidate_model, live or {}
+                )
+            except live_tests.LiveTestError as exc:
+                raise ExperimentError(str(exc)) from exc
+        elif offline:
             try:
                 setting = offline_tests.validate_setting(
                     conn,
@@ -445,7 +493,7 @@ def create(
             except offline_tests.OfflineTestError as exc:
                 raise ExperimentError(str(exc)) from exc
         baseline = _baseline(conn, feature_id, period, lever)
-        if offline and baseline:
+        if (offline or is_live) and baseline:
             # A test covers one model, so it is compared with that model's part
             # of the recommendation, not with every model's added together.
             part = next(
@@ -462,16 +510,18 @@ def create(
                 (tenant_id, feature_id, lever, mode, status, ttl_seconds, scoped_only,
                  cache_ttl, provider, control_model, candidate_model, loss_margin, min_cases,
                  period, baseline_monthly, baseline_savings_type, baseline_confidence,
-                 created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 created_by, traffic_share, min_calls, min_days, max_error_increase,
+                 max_latency_increase, quality_margin)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
                 tenant_id,
                 feature_id,
                 lever,
-                "offline" if offline else "simulate",
-                "waiting_for_results" if offline else "waiting_for_data",
+                "live" if is_live else "offline" if offline else "simulate",
+                "running" if is_live else "waiting_for_results" if offline else "waiting_for_data",
                 setting.get("ttl_seconds"),
                 setting.get("scoped_only"),
                 setting.get("cache_ttl"),
@@ -485,9 +535,20 @@ def create(
                 baseline["savings_type"] if baseline else None,
                 baseline["confidence"] if baseline else None,
                 actor,
+                setting.get("traffic_share"),
+                setting.get("min_calls"),
+                setting.get("min_days"),
+                setting.get("max_error_increase"),
+                setting.get("max_latency_increase"),
+                setting.get("quality_margin"),
             ),
         ).fetchone()
         experiment_id = str(row[0])
+        if is_live:
+            live_tests.register_guardrail(
+                conn, tenant_id, experiment_id, feature_id, setting, actor
+            )
+            return _to_dict(_fetch(conn, experiment_id))
         if offline:
             token = offline_tests.issue_token(conn, tenant_id, experiment_id)
             return {**_to_dict(_fetch(conn, experiment_id)), "token": token}
@@ -502,10 +563,16 @@ def _cancel_waiting(conn, where: str, params: tuple) -> None:
 
     `where` is one of this module's own fixed clauses, never caller input.
     """
-    waiting = "status IN ('waiting_for_data', 'waiting_for_results')"
+    waiting = "status IN ('waiting_for_data', 'waiting_for_results', 'running')"
     conn.execute(
         f"DELETE FROM experiment_token WHERE experiment_id IN "  # noqa: S608 - constants
         f"(SELECT id FROM experiment WHERE {where} AND {waiting})",
+        params,
+    )
+    # A cancelled live test has nothing left to guard.
+    conn.execute(
+        f"UPDATE alert_rule SET enabled = false WHERE id IN "  # noqa: S608 - constants
+        f"(SELECT guardrail_alert_id FROM experiment WHERE {where} AND {waiting})",
         params,
     )
     conn.execute(
@@ -532,6 +599,14 @@ def get(tenant_id: str, experiment_id: str) -> Optional[dict]:
                 ),
                 period,
             )
+            current = _to_dict(_fetch(conn, experiment_id))
+        if current["status"] == "running":
+            # Brought up to date when looked at, at most every few minutes; the
+            # scheduled job does the same for tests nobody is watching.
+            row = conn.execute(
+                "SELECT last_evaluated_at FROM experiment WHERE id = %s", (experiment_id,)
+            ).fetchone()
+            live_tests.evaluate_if_due(conn, experiment_id, row[0] if row else None)
             current = _to_dict(_fetch(conn, experiment_id))
         if current["status"] == "waiting_for_results":
             # When the run's token stops working, so the page can say so.
@@ -618,7 +693,8 @@ def annotate(conn, feature_id: str, period: dt.date, unified: list) -> list:
             f"""
             SELECT DISTINCT ON (lever) {_COLUMNS} FROM experiment
              WHERE feature_id = %s
-               AND status IN ('completed', 'waiting_for_data', 'waiting_for_results')
+               AND status IN ('completed', 'waiting_for_data', 'waiting_for_results',
+                              'running')
              ORDER BY lever, created_at DESC
             """,  # noqa: S608 - constant
             (feature_id,),
@@ -631,7 +707,7 @@ def annotate(conn, feature_id: str, period: dt.date, unified: list) -> list:
             for row in conn.execute(
                 f"""
                 SELECT DISTINCT ON (control_model) {_COLUMNS} FROM experiment
-                 WHERE feature_id = %s AND mode = 'offline' AND status = 'completed'
+                 WHERE feature_id = %s AND mode IN ('offline', 'live') AND status = 'completed'
                  ORDER BY control_model, completed_at DESC
                 """,  # noqa: S608 - constant
                 (feature_id,),

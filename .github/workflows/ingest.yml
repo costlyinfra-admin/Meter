@@ -89,6 +89,17 @@ jobs:
           METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
         run: python -m meter.prompt_capture
+      - name: Bring live tests up to date
+        working-directory: backend
+        # Before the alerts: a live test whose cheaper model breached a guardrail
+        # is stopped here, and its guardrail alert notifies in the step below.
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+        run: python -m meter.live_tests
+
       - name: Evaluate alert rules
         working-directory: backend
         # Runs even if ingest fails, so alerts still evaluate on the last-good data.

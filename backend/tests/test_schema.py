@@ -14,6 +14,7 @@ ALL_TABLES = [
     "experiment",
     "experiment_token",
     "experiment_case",
+    "experiment_score",
     "feature",
     "feature_signal",
     "build_cost",

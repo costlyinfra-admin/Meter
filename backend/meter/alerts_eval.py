@@ -302,6 +302,12 @@ def _observed_and_breach(
     """
     threshold = Decimal(str(rule["threshold"]))
     cond = rule["condition_type"]
+    if rule["metric"] == "experiment_guardrail":
+        # A live test's guardrails (EX-3): how many the cheaper model has
+        # breached. The test itself decides; this only carries the news.
+        from . import live_tests
+
+        return live_tests.guardrail_observed(conn, str(rule["id"]))
     if cond == "forecast_budget_pct":
         # Not the metric's current value: where the month is projected to END.
         return _forecast_breach(conn, rule, tenant_id, threshold)
@@ -383,7 +389,7 @@ def _prev_month(month: dt.date) -> dt.date:
 # ---- State machine --------------------------------------------------------
 _RULE_FIELDS = (
     'metric, scope_type, scope_ref, condition_type, threshold, budget_amount, "window", '
-    "cooldown, recovery_notify, enabled, last_notified_at"
+    "cooldown, recovery_notify, enabled, last_notified_at, id, name"
 )
 
 
@@ -405,6 +411,8 @@ def _load_rule(conn, alert_id: str) -> Optional[dict]:
         "recovery_notify",
         "enabled",
         "last_notified_at",
+        "id",
+        "name",
     ]
     return dict(zip(keys, row))
 
@@ -594,6 +602,13 @@ def _message(event_type: str, rule: dict, observed: Decimal, threshold) -> str:
     verb = "triggered" if event_type == "triggered" else "resolved"
     comparison = "below" if rule["condition_type"] == "falls_below" else "vs"
     label = alerts.METRIC_LABELS.get(rule["metric"], rule["metric"])
+    if rule["metric"] == "experiment_guardrail":
+        if event_type != "triggered":
+            return f"{label} resolved: no guardrail is breached."
+        return (
+            f"{rule['name']}: the cheaper model breached a guardrail — it is failing or slower "
+            "beyond its limit. The test has stopped; send that traffic back to the current model."
+        )
     if rule["condition_type"] == "forecast_budget_pct":
         # Say it is a projection. "Observed 118%" of a budget nobody has
         # exceeded yet reads as an overspend that already happened — the one

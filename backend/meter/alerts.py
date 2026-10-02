@@ -47,7 +47,14 @@ METRIC_LABELS = {
     "retry_loop": "Repeats of one step in a run",
     "failed_run_cost": "Cost incurred by failed runs",
     "cache_hit_rate": "Prompt cache hit rate (%)",
+    "experiment_guardrail": "Live test guardrail",
 }
+#: Metrics a rule can have but nobody creates from the alert form: each live
+#: test registers its own guardrail rule (live_tests.py) and turns it off.
+SYSTEM_METRICS = frozenset({"experiment_guardrail"})
+SYSTEM_RULE_MESSAGE = (
+    "This alert belongs to a live test, which manages it. Open the test to see or end it."
+)
 SCOPES = ("organization", "provider", "model", "feature", "application")
 CONDITIONS = ("exceeds", "increase_pct", "budget_pct", "forecast_budget_pct", "falls_below")
 
@@ -484,6 +491,10 @@ def create_rule(tenant_id: str, payload: dict, *, created_by: Optional[str] = No
 
 
 def update_rule(tenant_id: str, alert_id: str, payload: dict) -> Optional[dict]:
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        existing = _get(conn, alert_id)
+        if existing is not None and existing["metric"] in SYSTEM_METRICS:
+            raise AlertError(SYSTEM_RULE_MESSAGE)
     v = _validate(payload, tenant_id=tenant_id)
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         if _get(conn, alert_id) is None:

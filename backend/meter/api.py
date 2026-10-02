@@ -742,6 +742,15 @@ class ExperimentRequest(BaseModel):
     candidate_model: Optional[str] = Field(default=None, min_length=1, max_length=200)
     loss_margin: Optional[float] = Field(default=None, ge=-1, le=10)
     min_cases: Optional[int] = Field(default=None, ge=-1, le=100_000)
+    # How to test (EX-3 adds "live"), and a live test's dials. live_tests
+    # validates them; these bounds only keep absurd values out.
+    mode: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    traffic_share: Optional[int] = Field(default=None, ge=-1, le=1_000)
+    min_calls: Optional[int] = Field(default=None, ge=-1, le=100_000_000)
+    min_days: Optional[int] = Field(default=None, ge=-1, le=10_000)
+    max_error_increase: Optional[float] = Field(default=None, ge=-1, le=100)
+    max_latency_increase: Optional[float] = Field(default=None, ge=-1, le=100)
+    quality_margin: Optional[float] = Field(default=None, ge=-1, le=100)
 
 
 class _RunCall(BaseModel):
@@ -2013,6 +2022,18 @@ def create_app() -> FastAPI:
                 candidate_model=body.candidate_model,
                 loss_margin=body.loss_margin,
                 min_cases=body.min_cases,
+                mode=body.mode,
+                live={
+                    k: getattr(body, k)
+                    for k in (
+                        "traffic_share",
+                        "min_calls",
+                        "min_days",
+                        "max_error_increase",
+                        "max_latency_increase",
+                        "quality_margin",
+                    )
+                },
             )
         except experiments.ExperimentError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

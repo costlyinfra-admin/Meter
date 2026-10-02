@@ -118,6 +118,9 @@ _CUSTOMER = ("meter.customer_id",)
 _PROMPT_ID = ("meter.prompt_id",)
 _PROMPT_VERSION = ("meter.prompt_version",)
 _PROMPT_HASH = ("meter.prompt_hash",)
+#: Which live test, and which group of it, the call belongs to (EX-3).
+_EXPERIMENT = ("meter.experiment_id",)
+_EXPERIMENT_GROUP = ("meter.experiment_group",)
 
 #: Every key above, as one set. `_named()` reads nothing outside it.
 _READABLE = frozenset(
@@ -138,6 +141,8 @@ _READABLE = frozenset(
     + _PROMPT_ID
     + _PROMPT_VERSION
     + _PROMPT_HASH
+    + _EXPERIMENT
+    + _EXPERIMENT_GROUP
 )
 
 #: Keys whose PRESENCE means the sender is still capturing content. Only the key
@@ -556,6 +561,9 @@ def _span_events(span: dict, defaults: dict) -> list:
         "prompt_id": _text(_first(named, _PROMPT_ID), traces.MAX_NAME),
         "prompt_version": _text(_first(named, _PROMPT_VERSION), traces.MAX_TINY),
         "prompt_hash": _text(_first(named, _PROMPT_HASH), 128),
+        # Checked by traces.validate and at ingest, like the SDK's own tags.
+        "experiment_id": _text(_first(named, _EXPERIMENT), traces.MAX_ID),
+        "experiment_group": _text(_first(named, _EXPERIMENT_GROUP), traces.MAX_TINY),
         "occurred_at": ended.isoformat(),
     }
 
