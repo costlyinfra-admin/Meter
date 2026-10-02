@@ -10,6 +10,10 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Costly Infra" }]
 dependencies = []  # stdlib only — keep the customer's footprint tiny
 
+[project.scripts]
+# Run a Meter test on your own machine; only numbers are sent (testing.py).
+meter-test = "costlyinfra_meter.testing:main"
+
 [project.urls]
 Homepage = "https://github.com/costlyinfra-admin/Meter"
 Source = "https://github.com/costlyinfra-admin/Meter/tree/main/sdk/python"

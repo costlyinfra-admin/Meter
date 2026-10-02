@@ -240,3 +240,71 @@ def test_the_results_model_accepts_everything_the_database_does():
         ExperimentResultsRequest(**_results([{**case, "verdict": verdict}]))
     for source in ("runner", "promptfoo", "inspect"):
         ExperimentResultsRequest(**_results(source=source))
+
+
+# ---------------------------------------------------------------------------
+# End to end: the real meter-test command, through the real routes
+# ---------------------------------------------------------------------------
+def test_the_real_runner_completes_a_test_and_the_recommendation_becomes_tested(
+    client, feature, tmp_path
+):
+    """The SDK's own command, talking to this app, with only the provider faked:
+    the test the customer sees on their screen comes out the far end."""
+    import io
+    import json as _json
+
+    from costlyinfra_meter import testing
+
+    exp = _start(client, feature)
+    run = TestClient(client.app)
+    secret = "the quick brown fox jumped over the lazy dog"
+
+    def http(url, headers, body):
+        if url.startswith("https://meter.test"):
+            path = url[len("https://meter.test") :]
+            resp = (
+                run.get(path, headers=headers)
+                if body is None
+                else run.post(path, headers=headers, content=body)
+            )
+            return resp.status_code, resp.content
+        req = _json.loads(body)
+        if "ANSWER A" in str(req["messages"]):
+            text = _json.dumps({"winner": "tie"})
+        else:
+            text = f"An answer about {secret}"
+        return 200, _json.dumps(
+            {
+                "content": [{"type": "text", "text": text}],
+                "usage": {"input_tokens": 1000, "output_tokens": 150},
+            }
+        ).encode()
+
+    cases = tmp_path / "cases.jsonl"
+    cases.write_text("\n".join(_json.dumps({"input": f"{secret} {i}"}) for i in range(25)))
+    out = io.StringIO()
+    code = testing.main(
+        ["run", "--cases", str(cases)],
+        http=http,
+        out=out,
+        env={
+            "METER_EXPERIMENT_TOKEN": exp["token"],
+            "METER_URL": "https://meter.test",
+            "ANTHROPIC_API_KEY": "sk-test",
+        },
+    )
+    assert code == 0, out.getvalue()
+    assert (
+        out.getvalue().strip().endswith("claude-haiku-4-5 cost 67% less per call on these cases.")
+    )
+
+    seen = client.get(f"/api/experiments/{exp['id']}").json()
+    assert (seen["status"], seen["outcome"], seen["results_source"]) == (
+        "completed",
+        "passed",
+        "runner",
+    )
+    opps = client.get(f"/api/features/{feature}/opportunities").json()
+    rs = next(o for o in opps["opportunities"] if o["lever"] == "model_rightsizing")
+    assert rs["savings_type"] == "tested" and rs["validation"] == "tested_offline"
+    assert opps["totals"]["tested"] == rs["projected_monthly_savings"] > 0
