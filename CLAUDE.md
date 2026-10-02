@@ -15,7 +15,7 @@ A SaaS that disaggregates a company's blended AI bill into **per-feature cost** 
 ## The source-of-truth docs
 - `docs/meter-design-doc.md` — canonical spec (intent, data model, attribution, screens). **The design doc wins on intent.**
 - `docs/build-plan.md` — the original milestones M0–M8, **all of which are complete**, each annotated with what is actually true today and where the build deviated. Read it for history and for its *Known gaps* list; it is no longer the backlog.
-- `docs/optimization-opportunities-spec.md` and `docs/prompt-optimization-spec.md` — **where the live backlog is.** Start here for what to build next.
+- `docs/optimization-opportunities-spec.md`, `docs/prompt-optimization-spec.md` and `docs/experiments-spec.md` — **where the live backlog is.** Start here for what to build next.
 
 If any of these is wrong or underspecified, flag it and propose an update — don't silently guess.
 
