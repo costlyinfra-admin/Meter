@@ -297,3 +297,46 @@ describe("CopilotPage — billing-only path (no SDK)", () => {
     expect(screen.queryByRole("link", { name: "Install the SDK" })).not.toBeInTheDocument();
   });
 });
+
+describe("tested savings (EX-2)", () => {
+  const TESTED: CopilotOverview = {
+    ...OVERVIEW,
+    totals: { ...OVERVIEW.totals, tested: 1224, modeled_ceiling: 0 },
+    top_recommendations: [
+      {
+        ...OVERVIEW.top_recommendations[0],
+        savings_type: "tested",
+        projected_monthly_savings: 1224,
+      },
+    ],
+    by_feature: [{ ...OVERVIEW.by_feature[0], tested: 1224, modeled_ceiling: 0 }],
+  };
+
+  it("gets its own figure, apart from measured and modeled", async () => {
+    vi.mocked(api.copilotOverview).mockResolvedValue(TESTED);
+    renderPage();
+    const card = (await screen.findByText("Tested savings")).closest(".copilot-kpi")!;
+    expect(card).toHaveTextContent("$1,224/mo");
+    expect(card).toHaveClass("kpi-tested");
+    // Labelled in the ranking, never as a ceiling.
+    const row = screen.getByText("Model right-sizing").closest("tr")!;
+    expect(row).toHaveTextContent("tested $1,224/mo");
+    expect(row).not.toHaveTextContent("up to");
+  });
+
+  it("does not show an empty tested figure before anything has been tested", async () => {
+    vi.mocked(api.copilotOverview).mockResolvedValue(OVERVIEW);
+    renderPage();
+    await screen.findByText("Measured savings");
+    expect(screen.queryByText("Tested savings")).not.toBeInTheDocument();
+  });
+});
+
+it("keeps every table inside a scroller, so a phone scrolls the table not the page", async () => {
+  vi.mocked(api.copilotOverview).mockResolvedValue(OVERVIEW);
+  renderPage();
+  await screen.findByText("Measured savings");
+  const tables = [...document.querySelectorAll("table")];
+  expect(tables.length).toBeGreaterThan(0);
+  for (const table of tables) expect(table.closest(".mini-table-wrap")).not.toBeNull();
+});

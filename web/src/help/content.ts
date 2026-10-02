@@ -860,6 +860,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
                 "Computed from observed traffic, not a percentage — e.g. prefix tokens the provider itself reported. Priced at list rate, not read off your invoice",
               ],
               [
+                "**Tested**",
+                "Held up on your own test cases: a cheaper model answered as well, and cost less per call. Measured on a sample rather than your traffic, so it is its own figure — never added to measured savings — until the change is applied and your bill confirms it",
+              ],
+              [
                 "**Modeled ceiling**",
                 "An upper bound. The count is real; realizing it depends on something Meter cannot check — that a smaller model holds quality, or that a repeated request could safely have been answered from the first",
               ],
@@ -1015,7 +1019,18 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "A test does not verify anything. Only your bill can do that, after you make the change and mark it applied — and a fix you have already applied keeps being checked against the figure it was applied on, whatever a later test says.",
           ),
           p(
-            "Testing other recommendations on your own test cases, and on a share of live traffic, comes next.",
+            "**Model right-sizing** is tested a different way, because whether a cheaper model holds up is a question about answers, and Meter never sees answers. So the test runs on your machine:",
+          ),
+          steps(
+            "Choose the model to replace and a cheaper one from the same provider to test in its place — the recommendation's own target by default. You can loosen the rule (how many more worse answers than better ones are allowed, and how many cases are needed); the result then says it was loosened, wherever it appears.",
+            "Meter shows a token, once. With it, run `meter-test run --cases cases.jsonl` from the Python SDK: your cases go through both models on your own keys, and a judge you choose compares each pair of answers twice, in both orders.",
+            "Only numbers come back — tokens, latency, whether a call failed or broke a check, and the verdict. Add `--dry-run` to see exactly what would be sent. Already use promptfoo or Inspect AI? `meter-test import` sends their results instead.",
+          ),
+          p(
+            "Meter prices the tokens itself and applies its rule: nothing broken, not worse more often than better beyond the allowance, enough cases, and cheaper per call. A pass makes the saving **tested**; a fail keeps the card, out of the totals. What the run cost is shown on the feature as testing — it is already in your provider bill, so it is never added again.",
+          ),
+          p(
+            "Right-sizing works on Anthropic and OpenAI models today. Testing other recommendations, and on a share of live traffic, comes next.",
           ),
         ],
       },

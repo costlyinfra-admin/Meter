@@ -163,13 +163,20 @@ export function Dashboard() {
         const overview = await api.copilotOverview(data.end.slice(0, 7));
         if (!live) return;
         setSavings({
-          // Measured and modelled are both real opportunities; directional ones
-          // are excluded because they carry no defensible number.
-          potentialMonthly: overview.totals.measured + overview.totals.modeled_ceiling,
+          // Measured, tested and modelled are all real opportunities; directional
+          // ones are excluded because they carry no defensible number. Tested
+          // included, or a saving would drop out by passing a test.
+          potentialMonthly:
+            overview.totals.measured +
+            (overview.totals.tested ?? 0) +
+            overview.totals.modeled_ceiling,
           realizedMonthly: overview.verified_monthly_savings,
           realizedAnnual: overview.verified_annual_savings,
           byFeature: Object.fromEntries(
-            overview.by_feature.map((f) => [f.feature_id, f.measured + f.modeled_ceiling]),
+            overview.by_feature.map((f) => [
+              f.feature_id,
+              f.measured + (f.tested ?? 0) + f.modeled_ceiling,
+            ]),
           ),
         });
       } catch {

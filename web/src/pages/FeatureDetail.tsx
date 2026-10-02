@@ -318,6 +318,7 @@ function OptimizationSection({ featureId, range }: { featureId: string; range: R
             opps={data.opportunities.filter((o) => o.savings_type !== "directional")}
             totals={data.totals}
             cacheUtilization={data.cache_utilization}
+            testingSpend={data.testing_spend ?? 0}
             actions={data.actions}
             onChange={load}
           />
@@ -336,6 +337,7 @@ function MeasuredGroup({
   opps,
   totals,
   cacheUtilization,
+  testingSpend,
   actions,
   onChange,
 }: {
@@ -343,10 +345,12 @@ function MeasuredGroup({
   opps: Opportunity[];
   totals: FeatureOpportunities["totals"];
   cacheUtilization: number | null;
+  testingSpend: number;
   actions: OptimizationAction[];
   onChange: () => Promise<void>;
 }) {
   const actionByLever = new Map(actions.map((a) => [a.lever, a]));
+  const tested = totals.tested ?? 0;
   return (
     <div className="opt-group">
       <div className="opt-group-head">
@@ -360,10 +364,19 @@ function MeasuredGroup({
             </span>
           )}
         </div>
-        {totals.measured > 0 ? (
+        {/* Never one blended number: tested and modeled are named beside the
+            headline, not added into it. */}
+        {totals.measured > 0 || tested > 0 ? (
           <div className="savings-headline">
-            <span className="savings-label">Measured savings</span>
-            <span className="savings-month">{money(totals.measured)}/mo</span>
+            <span className="savings-label">
+              {totals.measured > 0 ? "Measured savings" : "Tested savings"}
+            </span>
+            <span className="savings-month">
+              {money(totals.measured > 0 ? totals.measured : tested)}/mo
+            </span>
+            {totals.measured > 0 && tested > 0 && (
+              <span className="savings-year muted">+ {money(tested)}/mo tested</span>
+            )}
             {totals.modeled_ceiling > 0 && (
               <span className="savings-year muted">
                 + up to {money(totals.modeled_ceiling)}/mo modeled
@@ -403,6 +416,13 @@ function MeasuredGroup({
       )}
 
       <AppliedActions actions={actions} />
+      {testingSpend > 0 && (
+        <p className="muted opt-testing-spend">
+          Testing this feature&rsquo;s recommendations cost {money(testingSpend)} this month, at
+          list price. It is already part of your provider bill, so it is shown here as testing
+          rather than added again.
+        </p>
+      )}
     </div>
   );
 }
@@ -463,6 +483,7 @@ function MeasuredRow({
         <div className="opt-item-actions">
           <span className="opt-item-savings">
             {ceiling && !opp.test_failed && <span className="opt-ceiling">up to </span>}
+            {opp.savings_type === "tested" && <span className="opt-tested">tested </span>}
             {money(opp.projected_monthly_savings)}/mo
           </span>
           {opp.testable && !applied && (

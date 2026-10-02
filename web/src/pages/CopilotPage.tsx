@@ -72,6 +72,16 @@ export function CopilotPage() {
               sub="From measured telemetry, at list price"
               tone="measured"
             />
+            {(data.totals.tested ?? 0) > 0 && (
+              <Kpi
+                label="Tested savings"
+                value={`${money(data.totals.tested ?? 0)}/mo`}
+                /* Measured on the customer's own test cases, not their traffic:
+                   its own figure, never folded into measured or modeled. */
+                sub="Held up on your own test cases"
+                tone="tested"
+              />
+            )}
             <Kpi
               label="Modeled ceiling"
               value={`up to ${money(data.totals.modeled_ceiling)}/mo`}
@@ -101,73 +111,78 @@ export function CopilotPage() {
                   : "No measured opportunities yet across your features."}
               </p>
             ) : (
-              <table className="mini-table">
-                <thead>
-                  <tr>
-                    <th>Opportunity</th>
-                    <th>Feature</th>
-                    <th className="num">Savings</th>
-                    <th>Confidence</th>
-                    <th>Effort</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* Measured/modelled opportunities: real, quantified savings. */}
-                  {data.top_recommendations.map((o) => (
-                    <tr key={`${o.feature_id}-${o.lever}`}>
-                      <td title={o.evidence}>{o.title}</td>
-                      <td>
-                        <Link to={`/features/${o.feature_id}`} className="link">
-                          {o.feature_name}
-                        </Link>
-                      </td>
-                      <td className="num">
-                        {o.savings_type === "modeled_ceiling" && (
-                          <span className="opt-ceiling">up to </span>
-                        )}
-                        {money(o.projected_monthly_savings)}/mo
-                      </td>
-                      <td>
-                        <ConfidenceBadge level={o.confidence} />
-                      </td>
-                      <td>{EFFORT_LABELS[o.engineering_effort] ?? o.engineering_effort}</td>
-                      <td>
-                        <Link to={`/features/${o.feature_id}`} className="row-action">
-                          Review
-                        </Link>
-                      </td>
+              <div className="mini-table-wrap">
+                <table className="mini-table">
+                  <thead>
+                    <tr>
+                      <th>Opportunity</th>
+                      <th>Feature</th>
+                      <th className="num">Savings</th>
+                      <th>Confidence</th>
+                      <th>Effort</th>
+                      <th />
                     </tr>
-                  ))}
-                  {/* Billing-only findings: observed spend, never counted as savings. */}
-                  {data.billing_opportunities.map((o) => (
-                    // The calculation stays available on hover — auditable, not crowding.
-                    <tr key={o.id} title={o.evidence.calculation}>
-                      <td>
-                        <span className={`billing-tag billing-tag-${o.type}`}>
-                          {BILLING_LABELS[o.type] ?? "Finding"}
-                        </span>{" "}
-                        {o.title}
-                      </td>
-                      <td className="muted">
-                        {o.evidence.observed_cost != null
-                          ? `${money(o.evidence.observed_cost)} observed`
-                          : "—"}
-                      </td>
-                      <td className="num muted">Not quantified</td>
-                      <td>
-                        <ConfidenceBadge level={o.confidence === "medium" ? "med" : "high"} />
-                      </td>
-                      <td className="muted">—</td>
-                      <td>
-                        <Link to={o.action.href} className="row-action">
-                          {o.action.label}
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {/* Measured/modelled opportunities: real, quantified savings. */}
+                    {data.top_recommendations.map((o) => (
+                      <tr key={`${o.feature_id}-${o.lever}`}>
+                        <td title={o.evidence}>{o.title}</td>
+                        <td>
+                          <Link to={`/features/${o.feature_id}`} className="link">
+                            {o.feature_name}
+                          </Link>
+                        </td>
+                        <td className="num">
+                          {o.savings_type === "modeled_ceiling" && (
+                            <span className="opt-ceiling">up to </span>
+                          )}
+                          {o.savings_type === "tested" && (
+                            <span className="opt-tested">tested </span>
+                          )}
+                          {money(o.projected_monthly_savings)}/mo
+                        </td>
+                        <td>
+                          <ConfidenceBadge level={o.confidence} />
+                        </td>
+                        <td>{EFFORT_LABELS[o.engineering_effort] ?? o.engineering_effort}</td>
+                        <td>
+                          <Link to={`/features/${o.feature_id}`} className="row-action">
+                            Review
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                    {/* Billing-only findings: observed spend, never counted as savings. */}
+                    {data.billing_opportunities.map((o) => (
+                      // The calculation stays available on hover — auditable, not crowding.
+                      <tr key={o.id} title={o.evidence.calculation}>
+                        <td>
+                          <span className={`billing-tag billing-tag-${o.type}`}>
+                            {BILLING_LABELS[o.type] ?? "Finding"}
+                          </span>{" "}
+                          {o.title}
+                        </td>
+                        <td className="muted">
+                          {o.evidence.observed_cost != null
+                            ? `${money(o.evidence.observed_cost)} observed`
+                            : "—"}
+                        </td>
+                        <td className="num muted">Not quantified</td>
+                        <td>
+                          <ConfidenceBadge level={o.confidence === "medium" ? "med" : "high"} />
+                        </td>
+                        <td className="muted">—</td>
+                        <td>
+                          <Link to={o.action.href} className="row-action">
+                            {o.action.label}
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
             {!data.has_sdk_telemetry && data.billing_opportunities.length > 0 && (
               <p className="muted billing-sdk-note">
@@ -201,32 +216,38 @@ export function CopilotPage() {
                 <h2>By feature</h2>
                 <span className="section-sub muted">Where the money is.</span>
               </div>
-              <table className="mini-table">
-                <thead>
-                  <tr>
-                    <th>Feature</th>
-                    <th className="num">Measured</th>
-                    <th className="num">Modeled</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.by_feature
-                    .filter((f) => f.measured > 0 || f.modeled_ceiling > 0)
-                    .map((f) => (
-                      <tr key={f.feature_id}>
-                        <td>
-                          <Link to={`/features/${f.feature_id}`} className="link">
-                            {f.name}
-                          </Link>
-                        </td>
-                        <td className="num">{money(f.measured)}/mo</td>
-                        <td className="num muted">
-                          {f.modeled_ceiling > 0 ? `up to ${money(f.modeled_ceiling)}/mo` : "—"}
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
+              <div className="mini-table-wrap">
+                <table className="mini-table">
+                  <thead>
+                    <tr>
+                      <th>Feature</th>
+                      <th className="num">Measured</th>
+                      <th className="num">Tested</th>
+                      <th className="num">Modeled</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.by_feature
+                      .filter((f) => f.measured > 0 || (f.tested ?? 0) > 0 || f.modeled_ceiling > 0)
+                      .map((f) => (
+                        <tr key={f.feature_id}>
+                          <td>
+                            <Link to={`/features/${f.feature_id}`} className="link">
+                              {f.name}
+                            </Link>
+                          </td>
+                          <td className="num">{money(f.measured)}/mo</td>
+                          <td className="num">
+                            {(f.tested ?? 0) > 0 ? `${money(f.tested ?? 0)}/mo` : "—"}
+                          </td>
+                          <td className="num muted">
+                            {f.modeled_ceiling > 0 ? `up to ${money(f.modeled_ceiling)}/mo` : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
 
             <section className="detail-section">
@@ -234,29 +255,34 @@ export function CopilotPage() {
                 <h2>By lever</h2>
                 <span className="section-sub muted">Where the leverage is.</span>
               </div>
-              <table className="mini-table">
-                <thead>
-                  <tr>
-                    <th>Lever</th>
-                    <th className="num">Features</th>
-                    <th className="num">Savings</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.by_lever.map((l) => (
-                    <tr key={l.lever}>
-                      <td>{l.title}</td>
-                      <td className="num">{l.count}</td>
-                      <td className="num">
-                        {l.savings_type === "modeled_ceiling" && (
-                          <span className="opt-ceiling">up to </span>
-                        )}
-                        {money(l.monthly)}/mo
-                      </td>
+              <div className="mini-table-wrap">
+                <table className="mini-table">
+                  <thead>
+                    <tr>
+                      <th>Lever</th>
+                      <th className="num">Features</th>
+                      <th className="num">Savings</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.by_lever.map((l) => (
+                      <tr key={l.lever}>
+                        <td>{l.title}</td>
+                        <td className="num">{l.count}</td>
+                        <td className="num">
+                          {l.savings_type === "modeled_ceiling" && (
+                            <span className="opt-ceiling">up to </span>
+                          )}
+                          {l.savings_type === "tested" && (
+                            <span className="opt-tested">tested </span>
+                          )}
+                          {money(l.monthly)}/mo
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           </div>
 
@@ -268,54 +294,56 @@ export function CopilotPage() {
                   Projected savings reconciled against the measured drop since.
                 </span>
               </div>
-              <table className="mini-table">
-                <thead>
-                  <tr>
-                    <th>Optimization</th>
-                    <th>Feature</th>
-                    <th className="num">Projected</th>
-                    <th className="num">Realized</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.applied.map((a) => (
-                    <tr key={`${a.feature_id}-${a.lever}`}>
-                      <td>{a.lever.replace(/_/g, " ")}</td>
-                      <td>
-                        <Link to={`/features/${a.feature_id}`} className="link">
-                          {a.feature_name}
-                        </Link>
-                      </td>
-                      <td className="num">{money(a.projected_monthly)}/mo</td>
-                      <td className="num">
-                        {a.status === "pending" ? (
-                          <span className="muted">awaiting next period</span>
-                        ) : a.status === "unverifiable" ? (
-                          /* The telemetry this reconciles against stopped
-                             arriving. Showing $0 avoidable here would read as a
-                             complete success, which is the one thing nobody
-                             has evidence for. */
-                          <span
-                            className="muted"
-                            title="No optimization telemetry for this lever in this period, so there is nothing to reconcile the projection against."
-                          >
-                            can&apos;t verify — no telemetry
-                          </span>
-                        ) : (
-                          <>
-                            <strong className="opt-realized">
-                              {money(a.realized_monthly ?? 0)}/mo
-                            </strong>
-                            {a.status === "verified" && (
-                              <span className="opt-verified">✓ Verified</span>
-                            )}
-                          </>
-                        )}
-                      </td>
+              <div className="mini-table-wrap">
+                <table className="mini-table">
+                  <thead>
+                    <tr>
+                      <th>Optimization</th>
+                      <th>Feature</th>
+                      <th className="num">Projected</th>
+                      <th className="num">Realized</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.applied.map((a) => (
+                      <tr key={`${a.feature_id}-${a.lever}`}>
+                        <td>{a.lever.replace(/_/g, " ")}</td>
+                        <td>
+                          <Link to={`/features/${a.feature_id}`} className="link">
+                            {a.feature_name}
+                          </Link>
+                        </td>
+                        <td className="num">{money(a.projected_monthly)}/mo</td>
+                        <td className="num">
+                          {a.status === "pending" ? (
+                            <span className="muted">awaiting next period</span>
+                          ) : a.status === "unverifiable" ? (
+                            /* The telemetry this reconciles against stopped
+                               arriving. Showing $0 avoidable here would read as a
+                               complete success, which is the one thing nobody
+                               has evidence for. */
+                            <span
+                              className="muted"
+                              title="No optimization telemetry for this lever in this period, so there is nothing to reconcile the projection against."
+                            >
+                              can&apos;t verify — no telemetry
+                            </span>
+                          ) : (
+                            <>
+                              <strong className="opt-realized">
+                                {money(a.realized_monthly ?? 0)}/mo
+                              </strong>
+                              {a.status === "verified" && (
+                                <span className="opt-verified">✓ Verified</span>
+                              )}
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
         </>
@@ -333,7 +361,7 @@ function Kpi({
   label: string;
   value: string;
   sub: string;
-  tone: "measured" | "ceiling" | "verified";
+  tone: "measured" | "tested" | "ceiling" | "verified";
 }) {
   return (
     <div className={`copilot-kpi kpi-${tone}`}>

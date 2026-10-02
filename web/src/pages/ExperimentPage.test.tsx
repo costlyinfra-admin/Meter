@@ -206,3 +206,136 @@ describe("A test's result", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("This test does not exist");
   });
 });
+
+function offline(over: Partial<Experiment> = {}): Experiment {
+  return repeats({
+    lever: "model_rightsizing",
+    mode: "offline",
+    setting: {
+      provider: "anthropic",
+      control_model: "claude-sonnet-4-6",
+      candidate_model: "claude-haiku-4-5",
+      loss_margin: 0.1,
+      min_cases: 20,
+    },
+    setting_label: "claude-haiku-4-5 in place of claude-sonnet-4-6",
+    results_source: "runner",
+    judge_model: "claude-sonnet-4-6",
+    test_cost: 3.1,
+    outcome_reason: "No broken answers. Better on 6, same on 30, worse on 4 of 40.",
+    result: {
+      kind: "offline",
+      cases: 40,
+      compared: 40,
+      control_errors: 0,
+      broken: 0,
+      better: 6,
+      same: 30,
+      worse: 4,
+      unjudged: 0,
+      control: {
+        model: "claude-sonnet-4-6",
+        cost_per_call: 0.0117,
+        latency_ms: { p50: 2400, p95: 2780 },
+      },
+      candidate: {
+        model: "claude-haiku-4-5",
+        cost_per_call: 0.0037,
+        latency_ms: { p50: 1100, p95: 1290 },
+      },
+      saving_fraction: 0.68,
+      control_monthly_spend: 1800,
+      monthly_saving: 1224,
+      rule: { loss_margin: 0.1, min_cases: 20, relaxed: false },
+    },
+    ...over,
+  });
+}
+
+function renderWithState(state: unknown) {
+  return render(
+    <MemoryRouter initialEntries={[{ pathname: "/experiments/e1", state }]}>
+      <Routes>
+        <Route path="/experiments/:id" element={<ExperimentPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("An offline test", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("shows how to run it, with the token, only on the way in", async () => {
+    vi.mocked(api.experiment).mockResolvedValue(
+      offline({ status: "waiting_for_results", outcome: null, result: null, test_cost: null }),
+    );
+    renderWithState({ token: "mtx_secret" });
+    expect(await screen.findByText("Waiting for results")).toBeVisible();
+    expect(screen.getByText("mtx_secret", { selector: "code" })).toBeVisible();
+    const commands = document.querySelector(".test-commands")!.textContent!;
+    expect(commands).toContain(`export METER_URL=${window.location.origin}`);
+    expect(commands).toContain("export METER_EXPERIMENT_TOKEN=mtx_secret");
+    expect(commands).toContain("export ANTHROPIC_API_KEY=<your key>");
+    expect(commands).toContain("meter-test run --cases cases.jsonl");
+    expect(screen.getByRole("button", { name: "Cancel the test" })).toBeVisible();
+  });
+
+  it("never shows the token again once the page is reloaded", async () => {
+    vi.mocked(api.experiment).mockResolvedValue(
+      offline({ status: "waiting_for_results", outcome: null, result: null }),
+    );
+    renderWithState(null);
+    expect(await screen.findByText(/If you no longer have it, start the test again/)).toBeVisible();
+    expect(document.querySelector(".test-commands")!.textContent).toContain(
+      "METER_EXPERIMENT_TOKEN=<the token>",
+    );
+  });
+
+  it("shows what the run found, priced by Meter, and what it cost", async () => {
+    vi.mocked(api.experiment).mockResolvedValue(offline());
+    renderWithState(null);
+    const outcome = await screen.findByRole("status");
+    expect(outcome).toHaveTextContent("Tested");
+    const found = screen.getByRole("heading", { name: "What the test found" }).closest("section")!;
+    expect(found).toHaveTextContent("6 better");
+    expect(found).toHaveTextContent("0 broken");
+    const tested = within(found)
+      .getAllByRole("row")
+      .find((r) => r.getAttribute("aria-current"))!;
+    expect(tested).toHaveTextContent("claude-haiku-4-5 · tested");
+    expect(tested).toHaveTextContent("$0.0037");
+    expect(found).toHaveTextContent("68% less per call");
+    expect(found).toHaveTextContent("$1,224/mo, counted as tested");
+    expect(found).toHaveTextContent("judged by claude-sonnet-4-6");
+    expect(found).toHaveTextContent("already part of your provider bill");
+    expect(found).not.toHaveTextContent("loosened");
+  });
+
+  it("says what decided the verdicts, and compares with the tested model's own part", async () => {
+    vi.mocked(api.experiment).mockResolvedValue(
+      offline({
+        results_source: "promptfoo",
+        judge_model: null,
+        baseline: { monthly: 1180, savings_type: "modeled_ceiling", confidence: "med" },
+      }),
+    );
+    renderWithState(null);
+    const method = (
+      await screen.findByRole("heading", { name: "How this was worked out" })
+    ).closest("section")!;
+    expect(method).toHaveTextContent("Your own promptfoo assertions decided each answer");
+    expect(method).not.toHaveTextContent("A judge you chose");
+    expect(screen.getByText(/Before this test Meter estimated/)).toHaveTextContent(
+      "$1,180/mo for claude-sonnet-4-6, a ceiling.",
+    );
+  });
+
+  it("names a loosened rule", async () => {
+    const exp = offline();
+    if (exp.result?.kind === "offline")
+      exp.result.rule = { loss_margin: 0.25, min_cases: 10, relaxed: true };
+    vi.mocked(api.experiment).mockResolvedValue(exp);
+    renderWithState(null);
+    expect(await screen.findByText(/This rule was loosened from Meter/)).toBeVisible();
+  });
+});

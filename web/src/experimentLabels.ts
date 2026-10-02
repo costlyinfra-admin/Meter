@@ -8,6 +8,7 @@ import type { Experiment, OpportunityTest } from "./api";
 export const LEVER_TITLES: Record<string, string> = {
   duplicate_calls: "Repeated request candidates",
   prompt_caching: "Prompt caching",
+  model_rightsizing: "Model right-sizing",
 };
 
 export const FRESHNESS_CHOICES: { seconds: number; label: string; hint: string }[] = [
@@ -39,14 +40,19 @@ export const CACHE_CHOICES: { ttl: "5m" | "1h"; label: string; hint: string }[] 
 ];
 
 /** A test's state in a few words, and the badge class that goes with it. */
-export function testStatus(t: Pick<OpportunityTest | Experiment, "status" | "outcome">): {
+export function testStatus(
+  t: Pick<OpportunityTest | Experiment, "status" | "outcome"> & { mode?: string },
+): {
   label: string;
   className: string;
 } {
   if (t.status === "waiting_for_data")
     return { label: "Waiting for data", className: "test-waiting" };
+  if (t.status === "waiting_for_results")
+    return { label: "Waiting for results", className: "test-waiting" };
   if (t.status === "cancelled") return { label: "Cancelled", className: "test-cancelled" };
-  if (t.outcome === "passed") return { label: "Simulated", className: "test-passed" };
+  if (t.outcome === "passed")
+    return { label: t.mode === "offline" ? "Tested" : "Simulated", className: "test-passed" };
   if (t.outcome === "failed") return { label: "Tested — did not hold", className: "test-failed" };
   return { label: "Inconclusive", className: "test-waiting" };
 }

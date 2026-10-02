@@ -513,6 +513,43 @@ describe("FeatureDetail", () => {
     expect(screen.queryByText("up to")).not.toBeInTheDocument();
   });
 
+  it("names tested savings apart from measured, and what testing cost", async () => {
+    vi.mocked(api.featureOpportunities).mockResolvedValue({
+      ...OPPORTUNITIES,
+      opportunities: [
+        ...OPPORTUNITIES.opportunities.slice(0, 2),
+        opp({
+          lever: "model_rightsizing",
+          title: "Model right-sizing",
+          savings_type: "tested",
+          projected_monthly_savings: 1224,
+          validation: "tested_offline",
+          experiment: {
+            id: "e3",
+            mode: "offline",
+            status: "completed",
+            outcome: "passed",
+            setting_label: "claude-haiku-4-5 in place of claude-sonnet-4-6",
+            tested_on: "2026-05-20",
+          },
+        }),
+      ],
+      totals: { measured: 633.79, tested: 1224, modeled_ceiling: 0, directional: 70 },
+      testing_spend: 3.1,
+    });
+    renderDetail();
+    expect(await screen.findByText("+ $1,224/mo tested")).toBeVisible();
+    const card = screen.getByText("Model right-sizing").closest("li")!;
+    expect(card).toHaveTextContent("tested $1,224/mo");
+    expect(screen.getByRole("link", { name: /^Tested · May 20, 2026/ })).toHaveAttribute(
+      "href",
+      "/experiments/e3",
+    );
+    expect(screen.getByText(/Testing this feature/)).toHaveTextContent(
+      "cost $3.10 this month, at list price",
+    );
+  });
+
   it("shows validate/verify guidance on each measured card", async () => {
     renderDetail();
     expect(await screen.findAllByText("How to apply & verify")).toHaveLength(2);

@@ -6,7 +6,10 @@ import { TestRecommendationPage } from "./TestRecommendationPage";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
-  return { ...actual, api: { featureOpportunities: vi.fn(), startExperiment: vi.fn() } };
+  return {
+    ...actual,
+    api: { featureOpportunities: vi.fn(), startExperiment: vi.fn(), experimentOptions: vi.fn() },
+  };
 });
 
 function opp(lever: string, over: Partial<Opportunity> = {}): Opportunity {
@@ -44,8 +47,42 @@ function load(opportunities: Opportunity[]) {
 }
 
 function Where() {
-  return <div data-testid="at">{useLocation().pathname}</div>;
+  const location = useLocation();
+  return (
+    <div data-testid="at">
+      {location.pathname} {(location.state as { token?: string } | null)?.token ?? ""}
+    </div>
+  );
 }
+
+const OPTIONS = {
+  period: "2026-05-01",
+  controls: [
+    {
+      model: "claude-sonnet-4-6",
+      provider: "anthropic" as const,
+      monthly_spend: 1800,
+      default_candidate: "claude-haiku-4-5",
+      candidates: [
+        { model: "claude-sonnet-5", save_fraction: 0.33 },
+        { model: "claude-haiku-4-5", save_fraction: 0.67 },
+      ],
+    },
+    {
+      model: "claude-opus-4-8",
+      provider: "anthropic" as const,
+      monthly_spend: 700,
+      default_candidate: "claude-sonnet-4-6",
+      candidates: [{ model: "claude-sonnet-4-6", save_fraction: 0.8 }],
+    },
+  ],
+  rule: {
+    loss_margin: 0.1,
+    min_cases: 20,
+    loss_margin_range: [0, 0.5] as [number, number],
+    min_cases_range: [10, 500] as [number, number],
+  },
+};
 
 function renderPage(lever: string) {
   return render(
@@ -163,5 +200,72 @@ describe("Test this", () => {
     expect(
       await screen.findByText(/reads no prompts or responses and calls no model/),
     ).toBeVisible();
+  });
+});
+
+describe("Test this, for model right-sizing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.experimentOptions).mockResolvedValue(OPTIONS);
+    vi.mocked(api.startExperiment).mockResolvedValue({
+      id: "e9",
+      token: "mtx_secret",
+    } as Experiment);
+    load([opp("model_rightsizing", { projected_monthly_savings: 4093 })]);
+  });
+
+  it("starts from the recommendation's own target and Meter's rule", async () => {
+    renderPage("model_rightsizing");
+    expect(await screen.findByLabelText("Model to replace")).toHaveValue("claude-sonnet-4-6");
+    expect(screen.getByLabelText("Cheaper model to test in its place")).toHaveValue(
+      "claude-haiku-4-5",
+    );
+    expect(screen.getByLabelText("Allowance for worse answers (%)")).toHaveValue(10);
+    expect(screen.getByLabelText("Cases needed, at least")).toHaveValue(20);
+    expect(screen.getByText(/Only numbers come back to Meter/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start the test" }));
+    await waitFor(() =>
+      expect(api.startExperiment).toHaveBeenCalledWith("f1", {
+        lever: "model_rightsizing",
+        control_model: "claude-sonnet-4-6",
+        candidate_model: "claude-haiku-4-5",
+        loss_margin: 0.1,
+        min_cases: 20,
+      }),
+    );
+    // The run's token travels with the navigation, and nowhere else.
+    expect(await screen.findByTestId("at")).toHaveTextContent("/experiments/e9 mtx_secret");
+  });
+
+  it("offers each model its own cheaper replacements", async () => {
+    renderPage("model_rightsizing");
+    fireEvent.change(await screen.findByLabelText("Model to replace"), {
+      target: { value: "claude-opus-4-8" },
+    });
+    expect(screen.getByLabelText("Cheaper model to test in its place")).toHaveValue(
+      "claude-sonnet-4-6",
+    );
+  });
+
+  it("says out loud when the customer loosens the rule", async () => {
+    renderPage("model_rightsizing");
+    const margin = await screen.findByLabelText("Allowance for worse answers (%)");
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    fireEvent.change(margin, { target: { value: "25" } });
+    expect(screen.getByRole("note")).toHaveTextContent("Looser than Meter");
+    fireEvent.click(screen.getByRole("button", { name: "Start the test" }));
+    await waitFor(() =>
+      expect(api.startExperiment).toHaveBeenCalledWith(
+        "f1",
+        expect.objectContaining({ loss_margin: 0.25 }),
+      ),
+    );
+  });
+
+  it("explains when none of the feature's models can be tested", async () => {
+    vi.mocked(api.experimentOptions).mockResolvedValue({ ...OPTIONS, controls: [] });
+    renderPage("model_rightsizing");
+    expect(await screen.findByText(/can be tested yet/)).toBeVisible();
   });
 });

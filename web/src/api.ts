@@ -1055,7 +1055,8 @@ export interface Opportunity {
   lever: string;
   title: string;
   source: "connector" | "sdk" | "heuristic";
-  savings_type: "measured" | "modeled_ceiling" | "directional";
+  /** "tested": held up on the customer's own test cases (EX-2) — its own figure. */
+  savings_type: "measured" | "tested" | "modeled_ceiling" | "directional";
   confidence: string;
   confidence_reason: string;
   projected_monthly_savings: number;
@@ -1072,7 +1073,7 @@ export interface Opportunity {
    *  where a provider sells a choice of cache lifetime). */
   testable?: boolean;
   /** What the customer's latest test of this recommendation says. */
-  validation?: "untested" | "simulated" | "failed" | "inconclusive";
+  validation?: "untested" | "simulated" | "tested_offline" | "failed" | "inconclusive";
   /** A test said this does not hold: the card stays, out of the totals. */
   test_failed?: boolean;
   experiment?: OpportunityTest | null;
@@ -1091,7 +1092,8 @@ export interface Opportunity {
 /** The latest test of a recommendation, as its card shows it. */
 export interface OpportunityTest {
   id: string;
-  status: "waiting_for_data" | "completed";
+  mode?: "simulate" | "offline";
+  status: "waiting_for_data" | "waiting_for_results" | "completed";
   outcome: "passed" | "failed" | "inconclusive" | null;
   setting_label: string;
   tested_on: string;
@@ -1135,7 +1137,51 @@ export type ExperimentResult =
       cache_ttl: "5m" | "1h";
       lifetimes: CacheLifetime[];
       monthly_saving: number;
+    }
+  | {
+      kind: "offline";
+      cases: number;
+      compared: number;
+      control_errors: number;
+      broken: number;
+      better: number;
+      same: number;
+      worse: number;
+      unjudged: number;
+      control: OfflineArm;
+      candidate: OfflineArm;
+      saving_fraction: number;
+      control_monthly_spend: number;
+      monthly_saving: number;
+      rule: { loss_margin: number; min_cases: number; relaxed: boolean };
+      // Simulations report calls; an offline test reports cases.
+      calls?: undefined;
     };
+
+/** One model's side of an offline test: priced by Meter. */
+export interface OfflineArm {
+  model: string;
+  cost_per_call: number | null;
+  latency_ms: { p50: number | null; p95: number | null };
+}
+
+/** What can be tested offline on a feature (EX-2: model right-sizing). */
+export interface OfflineOptions {
+  period: string;
+  controls: {
+    model: string;
+    provider: "anthropic" | "openai";
+    monthly_spend: number;
+    default_candidate: string;
+    candidates: { model: string; save_fraction: number }[];
+  }[];
+  rule: {
+    loss_margin: number;
+    min_cases: number;
+    loss_margin_range: [number, number];
+    min_cases_range: [number, number];
+  };
+}
 
 /** A test of one recommendation (EX-1, docs/experiments-spec.md). */
 export interface Experiment {
@@ -1143,11 +1189,20 @@ export interface Experiment {
   feature_id: string;
   feature_name?: string | null;
   lever: string;
-  mode: "simulate";
-  status: "waiting_for_data" | "completed" | "cancelled";
+  mode: "simulate" | "offline";
+  status: "waiting_for_data" | "waiting_for_results" | "completed" | "cancelled";
   outcome: "passed" | "failed" | "inconclusive" | null;
   outcome_reason: string;
-  setting: { ttl_seconds?: number; scoped_only?: boolean; cache_ttl?: "5m" | "1h" };
+  setting: {
+    ttl_seconds?: number;
+    scoped_only?: boolean;
+    cache_ttl?: "5m" | "1h";
+    provider?: string;
+    control_model?: string;
+    candidate_model?: string;
+    loss_margin?: number;
+    min_cases?: number;
+  };
   setting_label: string;
   period: string;
   baseline: { monthly: number; savings_type: string; confidence: string } | null;
@@ -1157,6 +1212,14 @@ export interface Experiment {
   completed_at: string | null;
   cancelled_at: string | null;
   history?: Experiment[];
+  results_source?: "runner" | "promptfoo" | "inspect" | null;
+  judge_model?: string | null;
+  /** What the run cost, priced by Meter; already in the provider's bill. */
+  test_cost?: number | null;
+  /** When a waiting offline run's token stops working. */
+  run_expires_at?: string | null;
+  /** The run's one credential: present only in the response that created it. */
+  token?: string;
 }
 
 export interface ExperimentInput {
@@ -1164,6 +1227,10 @@ export interface ExperimentInput {
   ttl_seconds?: number;
   scoped_only?: boolean;
   cache_ttl?: "5m" | "1h";
+  control_model?: string;
+  candidate_model?: string;
+  loss_margin?: number;
+  min_cases?: number;
 }
 
 /** An applied optimization, reconciled projected-vs-realized (opt spec §11). */
@@ -1198,9 +1265,12 @@ export interface OptimizationAction {
 export interface FeatureOpportunities {
   period: string;
   opportunities: Opportunity[];
-  totals: { measured: number; modeled_ceiling: number; directional: number };
+  totals: { measured: number; tested?: number; modeled_ceiling: number; directional: number };
   cache_utilization: number | null;
   actions: OptimizationAction[];
+  /** What testing this feature's recommendations cost this month, priced by
+   *  Meter. Already in the provider's bill: shown, never added (EX-2). */
+  testing_spend?: number;
 }
 
 /** Tenant-wide optimization Overview (opt spec §21). Measured, modeled and verified
@@ -1233,7 +1303,7 @@ export interface BillingOpportunity {
 
 export interface CopilotOverview {
   period: string;
-  totals: { measured: number; modeled_ceiling: number; directional: number };
+  totals: { measured: number; tested?: number; modeled_ceiling: number; directional: number };
   verified_monthly_savings: number;
   verified_annual_savings: number;
   top_recommendations: (Opportunity & { feature_id: string; feature_name: string })[];
@@ -1241,6 +1311,7 @@ export interface CopilotOverview {
     feature_id: string;
     name: string;
     measured: number;
+    tested?: number;
     modeled_ceiling: number;
     directional: number;
   }[];
@@ -2241,6 +2312,9 @@ export const api = {
     }),
 
   experiment: (id: string) => request<Experiment>(`/experiments/${id}`),
+
+  experimentOptions: (featureId: string) =>
+    request<OfflineOptions>(`/features/${featureId}/experiments/options`),
 
   cancelExperiment: (id: string) =>
     request<Experiment>(`/experiments/${id}/cancel`, { method: "POST" }),
