@@ -94,6 +94,25 @@ const DUPLICATE_WINDOW_MS = 600_000;
  * caching could incur, and the resulting saving is the most conservative one.
  */
 const CACHE_WINDOW_MS = 300_000;
+/** The longer cache lifetime a provider sells (Anthropic's 1-hour tier). Which
+ *  lifetime saves more depends on the gaps between calls, so it is counted too,
+ *  and a customer can test the choice before making it. */
+const CACHE_WINDOW_LONG_MS = 3_600_000;
+/**
+ * Freshness limits a response cache could be given, for the repeated-request
+ * simulation (EX-1): how old may a reused answer be? Counted per limit; the
+ * suffixes name them on the wire. Same list as the Python SDK.
+ */
+export const SIM_TTLS = [
+  [60_000, "1m"],
+  [600_000, "10m"],
+  [3_600_000, "1h"],
+  [86_400_000, "24h"],
+];
+/** Request shapes the simulation remembers. A 24-hour limit has to remember a
+ *  day; when this overflows, the loss is COUNTED (`evicted_*`), so a long limit
+ *  reads as "at least", never as a quiet undercount. */
+const SIM_CAPACITY = 10_000;
 
 const CAPTURE_PATHS = [
   ["anthropic", "messages.create"],
@@ -1284,6 +1303,10 @@ class Optimizer {
     this._prefixCapacity = options.prefixCapacity ?? PREFIX_CAPACITY;
     this._windowMs = options.windowMs ?? DUPLICATE_WINDOW_MS;
     this._cacheWindowMs = options.cacheWindowMs ?? CACHE_WINDOW_MS;
+    this._simCapacity = options.simCapacity ?? SIM_CAPACITY;
+    // performance.now(), not Date.now(): a monotonic clock cannot move
+    // backwards under an NTP correction. Injectable for tests only.
+    this._clock = options.clock ?? (() => performance.now());
     this._seen = new Map();
     this._prefixes = new Map();
     // Last time each prefix was seen, kept OUTSIDE this._prefixes because it
@@ -1291,6 +1314,13 @@ class Optimizer {
     // flush interval would report one write per minute of traffic and call
     // caching a loss.
     this._prefixLast = new Map();
+    // The repeated-request simulation: per request shape, when its current
+    // group opened at each freshness limit, and which summary it counts
+    // towards. Apart from `_seen`, whose one window is the detector's.
+    this._simOpen = new Map();
+    // Totals per (feature, provider, model, scope kind). No fingerprint ever
+    // leaves in these.
+    this._sims = new Map();
     this._lastFlush = Date.now();
   }
 
@@ -1329,9 +1359,7 @@ class Optimizer {
     const measured = int(usage.cache_write_tokens);
     const cacheRead = int(usage.cache_read_tokens);
 
-    // performance.now(), not Date.now(): a monotonic clock cannot move backwards
-    // under an NTP correction and turn an expiry into a negative age.
-    const now = performance.now();
+    const now = this._clock();
     let duplicate = false;
     if (requestFp !== null) {
       const opened = this._seen.get(requestFp);
@@ -1364,6 +1392,7 @@ class Optimizer {
         cached: 0,
         writes: 0,
         windows: 0,
+        windowsLong: 0,
         tin: 0,
         tout: 0,
         estimated: 0,
@@ -1404,11 +1433,16 @@ class Optimizer {
     if (lastSeen === undefined || now - lastSeen >= this._cacheWindowMs) {
       entry.windows += 1;
     }
+    // The same count at the longer lifetime, from the same gaps.
+    if (lastSeen === undefined || now - lastSeen >= CACHE_WINDOW_LONG_MS) {
+      entry.windowsLong += 1;
+    }
     this._prefixLast.delete(prefixFp);
     this._prefixLast.set(prefixFp, now);
     while (this._prefixLast.size > this._prefixCapacity) {
       this._prefixLast.delete(this._prefixLast.keys().next().value);
     }
+    this._simulate(requestFp, provider, modelName, feature, scope, usage, now);
 
     return duplicate
       ? {
@@ -1422,6 +1456,69 @@ class Optimizer {
           scope_kind: scopeIsExplicit(scope) ? "explicit" : "unscoped",
         }
       : null;
+  }
+
+  /**
+   * Count, at every freshness limit, whether a response cache would have hit.
+   *
+   * A hit at a limit means an identical request (same fingerprint, so same
+   * scope) opened a group no longer ago than the limit — measured from the
+   * group's FIRST call, never extended, exactly as the duplicate window is.
+   * Every call is counted, hit or not, so the server has the denominator.
+   */
+  _simulate(requestFp, provider, model, feature, scope, usage, now) {
+    const kind = scopeIsExplicit(scope) ? "explicit" : "unscoped";
+    const key = [feature ?? "", provider, model, kind].join("\u001f");
+    const entry = this._simEntry(key, { feature, provider, model, kind });
+    const tin = int(usage.tokens_in);
+    const tout = int(usage.tokens_out);
+    entry.calls += 1;
+    entry.tin += tin;
+    entry.tout += tout;
+    if (requestFp === null) return;
+    const held = this._simOpen.get(requestFp);
+    const opens = held ? held.opens : SIM_TTLS.map(() => null);
+    SIM_TTLS.forEach(([ttl], i) => {
+      if (opens[i] !== null && now - opens[i] <= ttl) {
+        entry.hits[i] += 1;
+        entry.hitTin[i] += tin;
+        entry.hitTout[i] += tout;
+      } else {
+        opens[i] = now;
+      }
+    });
+    this._simOpen.delete(requestFp);
+    this._simOpen.set(requestFp, { key, ids: { feature, provider, model, kind }, opens });
+    while (this._simOpen.size > this._simCapacity) {
+      const oldest = this._simOpen.keys().next().value;
+      const old = this._simOpen.get(oldest);
+      this._simOpen.delete(oldest);
+      // Forgetting a shape whose group is still open at a limit loses the hits
+      // it would have had there. Say so, per limit.
+      const counted = this._simEntry(old.key, old.ids);
+      SIM_TTLS.forEach(([ttl], i) => {
+        if (old.opens[i] !== null && now - old.opens[i] < ttl) counted.evicted[i] += 1;
+      });
+    }
+  }
+
+  _simEntry(key, ids) {
+    let entry = this._sims.get(key);
+    if (!entry) {
+      const zeros = () => SIM_TTLS.map(() => 0);
+      entry = {
+        ...ids,
+        calls: 0,
+        tin: 0,
+        tout: 0,
+        hits: zeros(),
+        hitTin: zeros(),
+        hitTout: zeros(),
+        evicted: zeros(),
+      };
+      this._sims.set(key, entry);
+    }
+    return entry;
   }
 
   /**
@@ -1441,6 +1538,8 @@ class Optimizer {
     this._lastFlush = now;
     const items = this._prefixes;
     this._prefixes = new Map();
+    const sims = this._sims;
+    this._sims = new Map();
 
     const events = [];
     for (const entry of items.values()) {
@@ -1477,7 +1576,35 @@ class Optimizer {
             // would need.
             write_calls: entry.writes,
             cache_windows: entry.windows,
+            // The same, had the cache lived an hour.
+            cache_windows_1h: entry.windowsLong,
           },
+        }),
+      );
+    }
+    for (const entry of sims.values()) {
+      const signal = {
+        kind: "simulation",
+        scope_kind: entry.kind,
+        calls: entry.calls,
+        tokens_in: entry.tin,
+        tokens_out: entry.tout,
+      };
+      SIM_TTLS.forEach(([, suffix], i) => {
+        signal[`hits_${suffix}`] = entry.hits[i];
+        signal[`hit_tokens_in_${suffix}`] = entry.hitTin[i];
+        signal[`hit_tokens_out_${suffix}`] = entry.hitTout[i];
+        signal[`evicted_${suffix}`] = entry.evicted[i];
+      });
+      events.push(
+        this._m._event("span.completed", newId(), {
+          span_id: newId(),
+          span_kind: "llm",
+          operation_name: "optimize.simulation",
+          provider: entry.provider,
+          model: entry.model || null,
+          feature_id: entry.feature,
+          signal,
         }),
       );
     }
@@ -1560,5 +1687,8 @@ function readSample(provider, request, resp) {
   if (!template || !input.length) return null;
   return { template, input, output, parameters };
 }
+
+/** The collector itself, for tests that move time. Not part of the API. */
+export { Optimizer as _Optimizer };
 
 export default Meter;

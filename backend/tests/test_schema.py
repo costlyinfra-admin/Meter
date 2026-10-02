@@ -10,6 +10,8 @@ from __future__ import annotations
 
 ALL_TABLES = [
     "tenant",
+    "usage_simulation",
+    "experiment",
     "feature",
     "feature_signal",
     "build_cost",

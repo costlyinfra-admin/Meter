@@ -112,6 +112,21 @@ DUPLICATE_WINDOW = 600.0
 #: and their default, so counting windows at five minutes counts the MOST writes
 #: caching could incur, and the resulting saving is the most conservative one.
 CACHE_WINDOW = 300.0
+#: The longer cache lifetime a provider sells (Anthropic's 1-hour tier). Writes
+#: there cost more, but a sparse prefix is rewritten far less often, so which
+#: lifetime saves more depends on the gaps between calls — counted here too, so
+#: a customer can test the choice before making it.
+CACHE_WINDOW_LONG = 3600.0
+#: Freshness limits a response cache could be given, for the repeated-request
+#: simulation (EX-1). A customer testing a cache picks one — how old may a
+#: reused answer be? — and these count, per limit, the calls a cache keyed on
+#: the request would have served. Suffixes name them on the wire.
+SIM_TTLS = ((60.0, "1m"), (600.0, "10m"), (3600.0, "1h"), (86400.0, "24h"))
+#: Request shapes the simulation remembers. Larger than the duplicate set,
+#: because a 24-hour limit has to remember a day. When it overflows, the shape
+#: seen least recently is forgotten and its loss is COUNTED (`evicted_*`), so a
+#: long limit is reported as "at least", never as a quiet undercount.
+SIM_CAPACITY = 10_000
 #: How long the server's answer to "is capture open for this feature" is trusted.
 #: A withdrawal takes effect within this window at the latest, and on the very
 #: next sample, because the server re-checks consent every time.
@@ -1577,6 +1592,7 @@ class _Optimizer:
         prefix_capacity: int = PREFIX_CAPACITY,
         window: float = DUPLICATE_WINDOW,
         cache_window: float = CACHE_WINDOW,
+        sim_capacity: int = SIM_CAPACITY,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._m = meter
@@ -1586,6 +1602,7 @@ class _Optimizer:
         self._prefix_capacity = int(prefix_capacity)
         self._window = float(window)
         self._cache_window = float(cache_window)
+        self._sim_capacity = int(sim_capacity)
         # Injected so a test can move time without patching the stdlib clock,
         # which `mock.patch` would do process-wide — the delivery threads read
         # `time.monotonic` too, and handing them a frozen clock makes flushes
@@ -1598,6 +1615,14 @@ class _Optimizer:
         # flush interval would report one write per minute of traffic and call
         # caching a loss.
         self._prefix_last: OrderedDict = OrderedDict()
+        # The repeated-request simulation: for each request shape, when its
+        # current group opened at each freshness limit (None: no group yet),
+        # and which summary it counts towards. Kept apart from `_seen`, whose
+        # one window is the detector's and must not move.
+        self._sim_open: OrderedDict = OrderedDict()
+        # Counters per (feature, provider, model, scope kind), flushed with the
+        # prefix summaries. Totals only: no fingerprint ever leaves in these.
+        self._sims: dict = {}
         self._last_flush = time.monotonic()
         self._lock = threading.Lock()
 
@@ -1659,6 +1684,7 @@ class _Optimizer:
                 (prefix_fp, feature),
                 {"provider": provider, "model": model, "feature_id": feature,
                  "count": 0, "cached": 0, "writes": 0, "windows": 0,
+                 "windows_long": 0,
                  "tin": 0, "tout": 0, "estimated": 0,
                  "measured_sum": 0, "measured_n": 0},
             )
@@ -1694,10 +1720,14 @@ class _Optimizer:
             # assuming it survived would be assuming a saving. Assume the write.
             if last is None or (now - last) >= self._cache_window:
                 entry["windows"] += 1
+            # The same count at the longer lifetime, from the same gaps.
+            if last is None or (now - last) >= CACHE_WINDOW_LONG:
+                entry["windows_long"] += 1
             self._prefix_last[prefix_fp] = now
             self._prefix_last.move_to_end(prefix_fp)
             while len(self._prefix_last) > self._prefix_capacity:
                 self._prefix_last.popitem(last=False)
+            self._simulate(request_fp, provider, model, feature, scope, usage, now)
         if duplicate:
             return {
                 "kind": "duplicate",
@@ -1710,6 +1740,58 @@ class _Optimizer:
                 "scope_kind": "explicit" if scope.explicit else "unscoped",
             }
         return None
+
+    def _simulate(self, request_fp: Optional[str], provider: str, model: str,
+                  feature: Optional[str], scope: _Scope, usage: dict, now: float) -> None:
+        """Count, at every freshness limit, whether a response cache would have hit.
+
+        Called with the lock held. A hit at a limit means an identical request
+        (same fingerprint, so same scope) opened a group no longer ago than the
+        limit. Measured from the group's FIRST call, never extended by later
+        ones, exactly as the duplicate window is — so steady traffic cannot keep
+        one cached answer alive past its limit.
+
+        Every call is counted, hit or not, so the server has the denominator. A
+        request the SDK cannot fingerprint can never hit; it is still a call.
+        """
+        tin = int(usage.get("tokens_in") or 0)
+        tout = int(usage.get("tokens_out") or 0)
+        kind = "explicit" if scope.explicit else "unscoped"
+        key = (feature, provider, model, kind)
+        entry = self._sim_entry(key)
+        entry["calls"] += 1
+        entry["tin"] += tin
+        entry["tout"] += tout
+        if request_fp is None:
+            return
+        held = self._sim_open.get(request_fp)
+        opens = held[1] if held is not None else [None] * len(SIM_TTLS)
+        for i, (ttl, _suffix) in enumerate(SIM_TTLS):
+            opened = opens[i]
+            if opened is not None and (now - opened) <= ttl:
+                entry["hits"][i] += 1
+                entry["hit_tin"][i] += tin
+                entry["hit_tout"][i] += tout
+            else:
+                opens[i] = now
+        self._sim_open[request_fp] = (key, opens)
+        self._sim_open.move_to_end(request_fp)
+        while len(self._sim_open) > self._sim_capacity:
+            _fp, (old_key, old_opens) = self._sim_open.popitem(last=False)
+            # Forgetting a shape whose group is still open at a limit loses the
+            # hits it would have had there. Say so, per limit.
+            old = self._sim_entry(old_key)
+            for i, (ttl, _suffix) in enumerate(SIM_TTLS):
+                if old_opens[i] is not None and (now - old_opens[i]) < ttl:
+                    old["evicted"][i] += 1
+
+    def _sim_entry(self, key: tuple) -> dict:
+        n = len(SIM_TTLS)
+        return self._sims.setdefault(
+            key,
+            {"calls": 0, "tin": 0, "tout": 0, "hits": [0] * n, "hit_tin": [0] * n,
+             "hit_tout": [0] * n, "evicted": [0] * n},
+        )
 
     def due_summaries(self, force: bool = False) -> list:
         """Prefix counters as spans, when the timer elapses or the map fills up.
@@ -1732,6 +1814,7 @@ class _Optimizer:
                 return []
             self._last_flush = now
             items, self._prefixes = self._prefixes, {}
+            sims, self._sims = self._sims, {}
         events = []
         for (fingerprint, _feature), entry in items.items():
             # The estimate and the measurements travel in SEPARATE fields. They
@@ -1765,7 +1848,29 @@ class _Optimizer:
                         # writes enabling it would need.
                         "write_calls": entry["writes"],
                         "cache_windows": entry["windows"],
+                        # The same, had the cache lived an hour.
+                        "cache_windows_1h": entry["windows_long"],
                     },
+                )
+            )
+        for (feature, provider, model, kind), entry in sims.items():
+            signal = {
+                "kind": "simulation",
+                "scope_kind": kind,
+                "calls": entry["calls"],
+                "tokens_in": entry["tin"],
+                "tokens_out": entry["tout"],
+            }
+            for i, (_ttl, suffix) in enumerate(SIM_TTLS):
+                signal[f"hits_{suffix}"] = entry["hits"][i]
+                signal[f"hit_tokens_in_{suffix}"] = entry["hit_tin"][i]
+                signal[f"hit_tokens_out_{suffix}"] = entry["hit_tout"][i]
+                signal[f"evicted_{suffix}"] = entry["evicted"][i]
+            events.append(
+                self._m._event(
+                    "span.completed", _new_id(), span_id=_new_id(), span_kind="llm",
+                    operation_name="optimize.simulation", provider=provider,
+                    model=model or None, feature_id=feature, signal=signal,
                 )
             )
         return events

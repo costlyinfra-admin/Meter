@@ -95,6 +95,12 @@ def drain(m: Meter) -> None:
     assert m.flush(timeout=3.0)
 
 
+def prefixes(events: list) -> list:
+    """The prefix summaries in a flush. A flush also carries the simulation
+    counters (test_simulation.py), which these tests are not about."""
+    return [e for e in events if e["signal"]["kind"] == "prefix"]
+
+
 # --- off by default --------------------------------------------------------
 def test_a_wrapped_call_sends_no_signal_unless_optimize_is_asked_for():
     t = Captured("pepper")
@@ -292,7 +298,7 @@ def test_how_many_times_a_cache_would_have_to_be_written_is_counted():
         now[0] += step
         collector.on_call("anthropic", "m", request, {})
 
-    (event,) = collector.due_summaries(force=True)
+    (event,) = prefixes(collector.due_summaries(force=True))
     signal = event["signal"]
     assert signal["count"] == 6
     # First call, plus one after each gap that outlived the cache.
@@ -319,7 +325,7 @@ def test_the_window_count_survives_the_flush_that_empties_the_counters():
     for _ in range(5):
         now[0] += 60
         collector.on_call("anthropic", "m", request, {})
-        (event,) = collector.due_summaries(force=True)
+        (event,) = prefixes(collector.due_summaries(force=True))
         windows += event["signal"]["cache_windows"]
 
     assert windows == 1  # the first call, and nothing since has outlived a window
@@ -355,7 +361,7 @@ def test_an_openai_system_prompt_is_part_of_the_prefix():
     collector.on_call("openai", "gpt-4o", a, {})
     collector.on_call("openai", "gpt-4o", b, {})
 
-    summaries = collector.due_summaries(force=True)
+    summaries = prefixes(collector.due_summaries(force=True))
     assert len(summaries) == 2, "same toolset, different instructions: not one prefix"
     # ...and the instruction is inside the size, not only the fingerprint.
     assert all(e["signal"]["prefix_tokens"] > 0 for e in summaries)
@@ -374,7 +380,7 @@ def test_two_calls_sharing_an_openai_system_prompt_are_one_prefix():
             {},
         )
 
-    (event,) = collector.due_summaries(force=True)
+    (event,) = prefixes(collector.due_summaries(force=True))
     assert event["signal"]["count"] == 3
 
 
@@ -391,7 +397,7 @@ def test_only_the_leading_system_turns_count_as_a_prefix():
 
     # Nothing static at the front, so these fall back to the leading slice of
     # the conversation — which differs — rather than being called one prefix.
-    assert len(collector.due_summaries(force=True)) == 2
+    assert len(prefixes(collector.due_summaries(force=True))) == 2
 
 
 def test_a_gemini_system_instruction_is_found_under_its_own_name():
@@ -409,7 +415,7 @@ def test_a_gemini_system_instruction_is_found_under_its_own_name():
             {},
         )
 
-    (event,) = collector.due_summaries(force=True)
+    (event,) = prefixes(collector.due_summaries(force=True))
     assert event["signal"]["count"] == 2
     assert event["signal"]["prefix_tokens"] > 100
 

@@ -272,8 +272,10 @@ def _signal(raw) -> Optional[dict]:
     if not isinstance(raw, dict):
         raise TraceError("signal must be an object.")
     kind = _text(raw.get("kind"), MAX_TINY, "signal.kind")
-    if kind not in ("duplicate", "prefix"):
-        raise TraceError("signal.kind must be 'duplicate' or 'prefix'.")
+    if kind not in ("duplicate", "prefix", "simulation"):
+        raise TraceError("signal.kind must be 'duplicate', 'prefix' or 'simulation'.")
+    if kind == "simulation":
+        return _simulation_signal(raw)
     fingerprint = _text(raw.get("fingerprint"), 128, "signal.fingerprint")
     if not fingerprint:
         return None  # unusable without one; not worth failing the batch over
@@ -300,6 +302,9 @@ def _signal(raw) -> Optional[dict]:
         # count them", which is not the same as counting none.
         "write_calls",
         "cache_windows",
+        # The same count at a 1-hour cache lifetime (0065), so the two
+        # lifetimes can be compared. Absent stays absent, as above.
+        "cache_windows_1h",
     ):
         value = _count(raw.get(field), f"signal.{field}")
         if value is not None:
@@ -317,6 +322,25 @@ def _signal(raw) -> Optional[dict]:
     # is recorded as absent; it is never read as permission.
     scope = _text(raw.get("scope_kind"), MAX_TINY, "signal.scope_kind")
     out["scope_kind"] = scope if scope in ("explicit", "unscoped") else None
+    return out
+
+
+def _simulation_signal(raw: dict) -> Optional[dict]:
+    """The repeated-request simulation counters (EX-1): totals, no fingerprint.
+
+    The same allowlist discipline as a prefix summary — every field named,
+    every value a bounded count — and the fields are hook.SIMULATION_FIELDS,
+    the one list the ingest and the database share, so a counter cannot be
+    added at one end and silently dropped in between.
+    """
+    from . import hook  # imported here, as in ingest(): avoids an import cycle
+
+    scope = _text(raw.get("scope_kind"), MAX_TINY, "signal.scope_kind")
+    if scope not in ("explicit", "unscoped"):
+        return None  # unusable without it; not worth failing the batch over
+    out = {"kind": "simulation", "scope_kind": scope}
+    for field in hook.SIMULATION_FIELDS:
+        out[field] = _count(raw.get(field), f"signal.{field}") or 0
     return out
 
 
@@ -603,6 +627,7 @@ def ingest(
         cost_acc: dict = {}
         customer_acc: dict = {}
         signal_acc: dict = {}
+        sim_acc: dict = {}
         pool_acc: dict = {}
 
         for ev in parsed:
@@ -663,6 +688,19 @@ def ingest(
                 continue
 
             signal = ev.get("signal")
+            if signal and provider in PRICED_PROVIDERS and signal["kind"] == "simulation":
+                # Totals for "Test this", claimed once like any other signal.
+                # Its calls were each metered when they happened; never cost it.
+                if _claim_signal(conn, span_id):
+                    hook.accumulate_simulation(
+                        sim_acc,
+                        signal,
+                        feature_id,
+                        provider,
+                        ev.get("model") or "",
+                        _period_of(ev["occurred_at"]),
+                    )
+                continue
             if signal and provider in PRICED_PROVIDERS:
                 # Claimed separately from the money below: this span's signal is
                 # counted once however often the span is delivered, and a replay
@@ -734,6 +772,8 @@ def ingest(
             hook.upsert_signal(
                 conn, tenant_id, feature_id, provider, model, period, kind, fingerprint, sentry
             )
+        for skey, sentry in sim_acc.items():
+            hook.upsert_simulation(conn, tenant_id, skey, sentry)
 
         if batch_id:
             hook.record_batch(conn, tenant_id, batch_id, accepted, costed)

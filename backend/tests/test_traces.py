@@ -6,7 +6,7 @@ import datetime as dt
 import uuid
 
 import pytest
-from meter import applications, traces
+from meter import applications, hook, traces
 from meter.db import app_dsn, connect, tenant_tx
 
 NOW = dt.datetime.now(dt.timezone.utc)
@@ -475,8 +475,9 @@ def test_signal_fields_survive_the_wire():
     import costlyinfra_meter
 
     source = inspect.getsource(costlyinfra_meter._Optimizer.due_summaries)
-    # The keys of the `signal={...}` payload the SDK emits.
-    sent = set(re.findall(r'"(\w+)":', source.split("signal=")[1]))
+    # The keys of the prefix summary's `signal={...}` payload, and only those:
+    # the simulation summary built further down has its own tripwire below.
+    sent = set(re.findall(r'"(\w+)":', source.split("signal={")[1].split("},")[0]))
     sent -= {"kind", "fingerprint"}  # handled explicitly above the loop
 
     survived = traces._signal(
@@ -484,6 +485,51 @@ def test_signal_fields_survive_the_wire():
     )
     missing = sorted(name for name in sent if name not in survived)
     assert not missing, f"the SDK sends these and the allowlist drops them: {missing}"
+
+
+def test_simulation_fields_survive_the_wire():
+    """The same tripwire for the "Test this" counters, built from the real SDK.
+
+    Those field names are assembled in a loop, so they cannot be read out of the
+    source the way the prefix fields are. Running the SDK's own collector and
+    passing what it actually emits through the allowlist checks the same thing,
+    and more: the values must arrive unchanged too.
+    """
+    import costlyinfra_meter
+
+    clock = {"t": 0.0}
+    meter = costlyinfra_meter.Meter(
+        application="a", ingest_url="https://x.test/api/hook/events", token="t",
+        salt="pepper", transport=lambda *a: (200, b"{}"),
+    )
+    collector = costlyinfra_meter._Optimizer(meter, clock=lambda: clock["t"])
+    for step in (0.0, 30.0, 700.0):
+        clock["t"] += step
+        collector.on_call("anthropic", "m", {"model": "m", "messages": [{"c": 1}]},
+                          {"tokens_in": 10, "tokens_out": 2})
+    (sent,) = [
+        e["signal"] for e in collector.due_summaries(force=True)
+        if e["signal"]["kind"] == "simulation"
+    ]
+    survived = traces._signal(sent)
+    assert survived == sent
+    assert set(sent) - {"kind", "scope_kind"} == set(hook.SIMULATION_FIELDS)
+
+
+def test_a_simulation_summary_is_counters_and_nothing_else():
+    out = traces._signal(
+        {"kind": "simulation", "scope_kind": "explicit", "calls": 5, "hits_1m": 2,
+         "prompt": "secret", "fingerprint": "fp", "extra": 9}
+    )
+    assert "prompt" not in out and "fingerprint" not in out and "extra" not in out
+    assert (out["calls"], out["hits_1m"], out["hits_24h"]) == (5, 2, 0)
+
+
+def test_a_simulation_summary_without_a_scope_kind_is_dropped():
+    """Scoped and unscoped are reported apart because they mean different
+    things; a summary that will not say which cannot be filed under either."""
+    assert traces._signal({"kind": "simulation", "calls": 5}) is None
+    assert traces._signal({"kind": "simulation", "scope_kind": "everyone", "calls": 5}) is None
 
 
 def test_a_signal_field_nobody_named_still_cannot_get_through():

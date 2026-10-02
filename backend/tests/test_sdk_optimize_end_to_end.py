@@ -297,3 +297,30 @@ def test_without_a_customer_the_finding_says_reuse_is_unverified(client):
     # Below a scoped finding, never above it.
     assert repeats["confidence"] == "low"
     assert repeats["savings_type"] == "modeled_ceiling"
+
+
+def test_the_simulation_counters_arrive_as_totals_for_the_feature(client):
+    """EX-1: the counters behind "Test this", from the real SDK, through the
+    real route, into usage_simulation."""
+    tenant, token, feature_id = setup(client)
+    meter = sdk_meter(client, token, feature_id)
+    wrapped = meter.wrap(Anthropic(), feature_id=feature_id, customer_id="acme")
+    wait_for_salt(meter)
+
+    request = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": SECRET}]}
+    for _ in range(3):
+        wrapped.messages.create(**request)
+    assert meter.flush(timeout=5.0)
+
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant):
+        rows = conn.execute(
+            "SELECT feature_id, scope_kind, calls, hits_1m, hits_24h, hit_tokens_in_1m "
+            "FROM usage_simulation"
+        ).fetchall()
+    assert len(rows) == 1, rows
+    (feature, scope, calls, hits_1m, hits_24h, hit_tin) = rows[0]
+    assert (str(feature), scope) == (feature_id, "explicit")
+    # Three identical calls in quick succession: the two repeats would have
+    # been served at every limit, and each is priced at its own tokens.
+    assert (calls, hits_1m, hits_24h, hit_tin) == (3, 2, 2, 8000)
+    assert SECRET not in json.dumps(meter.sent)

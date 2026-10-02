@@ -384,3 +384,95 @@ def test_a_prefix_summary_still_records_its_signal_and_no_cost(client):
     # ...and it is claimed too, so a replay does not double the prefix counts.
     _deliver(client, token, [summary], batch_id="p2")
     assert _totals(tenant) == (40, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# "Test this" (EX-1): the simulation counters and the 1-hour cache windows
+# ---------------------------------------------------------------------------
+def _simulation(**counts):
+    base = {"kind": "simulation", "scope_kind": "explicit", "calls": 100,
+            "tokens_in": 100_000, "tokens_out": 10_000}
+    base.update(counts)
+    return base
+
+
+def _simulations(tenant_id):
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        return conn.execute(
+            "SELECT scope_kind, calls, hits_10m, hit_tokens_in_10m, evicted_24h "
+            "FROM usage_simulation ORDER BY scope_kind"
+        ).fetchall()
+
+
+def test_a_simulation_summary_is_stored_as_totals_and_never_costed(client):
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    summary = _span(
+        "t-sim", "s-sim",
+        _simulation(hits_10m=30, hit_tokens_in_10m=30_000, evicted_24h=2),
+        # Tokens on the span itself, as a confused or hostile client might
+        # send: a summary is still never money.
+        operation_name="optimize.simulation",
+    )
+    _deliver(client, token, [summary], batch_id="s1")
+
+    assert _simulations(tenant) == [("explicit", 100, 30, 30_000, 2)]
+    assert _totals(tenant) == (0, 0.0), "a simulation summary is not a call and not money"
+
+
+def test_simulation_totals_add_up_across_deliveries_but_a_replay_counts_once(client):
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    first = _span("t-a", "s-a", _simulation(hits_10m=10), operation_name="optimize.simulation")
+    second = _span("t-b", "s-b", _simulation(hits_10m=5), operation_name="optimize.simulation")
+
+    _deliver(client, token, [first], batch_id="a")
+    _deliver(client, token, [second], batch_id="b")
+    _deliver(client, token, [first], batch_id="a-again")  # a retry under a fresh id
+
+    ((_scope, calls, hits, _tin, _ev),) = _simulations(tenant)
+    assert (calls, hits) == (200, 15)
+
+
+def test_scoped_and_unscoped_simulation_totals_are_kept_apart(client):
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    _deliver(client, token, [
+        _span("t-e", "s-e", _simulation(hits_10m=4), operation_name="optimize.simulation"),
+        _span("t-u", "s-u", _simulation(scope_kind="unscoped", hits_10m=9),
+              operation_name="optimize.simulation"),
+    ])
+    assert [(r[0], r[2]) for r in _simulations(tenant)] == [("explicit", 4), ("unscoped", 9)]
+
+
+def test_the_one_hour_cache_window_count_reaches_the_database(client):
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    summary = _span("t-p1h", "s-p1h", {
+        "kind": "prefix", "fingerprint": "fp-1h", "count": 40, "prefix_tokens": 4000,
+        "cache_windows": 12, "cache_windows_1h": 3,
+    }, operation_name="optimize.prefix", tokens_in=0, tokens_out=0)
+    _deliver(client, token, [summary])
+    _deliver(client, token, [_span("t-p1h2", "s-p1h2", {
+        "kind": "prefix", "fingerprint": "fp-1h", "count": 10, "prefix_tokens": 4000,
+        "cache_windows": 2, "cache_windows_1h": 1,
+    }, operation_name="optimize.prefix", tokens_in=0, tokens_out=0)])
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant):
+        row = conn.execute(
+            "SELECT cache_windows, cache_windows_1h FROM usage_signal WHERE fingerprint = 'fp-1h'"
+        ).fetchone()
+    assert row == (14, 4)
+
+
+def test_an_older_sdk_leaves_the_one_hour_count_unknown_not_zero(client):
+    tenant = client.get("/api/auth/me").json()["tenant_id"]
+    token = client.post("/api/hook/token").json()["token"]
+    _deliver(client, token, [_span("t-old", "s-old", {
+        "kind": "prefix", "fingerprint": "fp-old", "count": 40, "prefix_tokens": 4000,
+        "cache_windows": 12,
+    }, operation_name="optimize.prefix", tokens_in=0, tokens_out=0)])
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant):
+        row = conn.execute(
+            "SELECT cache_windows, cache_windows_1h FROM usage_signal WHERE fingerprint = 'fp-old'"
+        ).fetchone()
+    assert row == (12, None)

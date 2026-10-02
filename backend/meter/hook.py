@@ -174,9 +174,10 @@ def ingest_events(tenant_id: str, events: list[dict], batch_id: Optional[str] = 
                     tokens_in,
                     tokens_out,
                 )
-            if sig_kind == "prefix":
-                # A prefix event is a flushed summary; its calls were already
-                # metered individually — record the signal, never re-cost it.
+            if sig_kind in ("prefix", "simulation"):
+                # A flushed summary; its calls were already metered individually.
+                # Never re-cost it, and never count it as a call. Simulation
+                # totals arrive on the trace path (traces.ingest) only.
                 accepted += 1
                 continue
 
@@ -309,6 +310,7 @@ def accumulate_signal(
             # None, not 0: an SDK too old to count windows has not counted zero
             # of them. The detector must be able to tell those apart.
             "cache_windows": None,
+            "cache_windows_1h": None,
             "fingerprint_version": version,
             "scope_kind": None,
         },
@@ -340,9 +342,10 @@ def accumulate_signal(
         entry["prefix_sum"] += int(sig.get("prefix_tokens_sum") or 0)
         entry["prefix_n"] += int(sig.get("prefix_tokens_n") or 0)
         entry["write_calls"] += int(sig.get("write_calls") or 0)
-        windows = sig.get("cache_windows")
-        if windows is not None:
-            entry["cache_windows"] = (entry["cache_windows"] or 0) + int(windows)
+        for field in ("cache_windows", "cache_windows_1h"):
+            windows = sig.get(field)
+            if windows is not None:
+                entry[field] = (entry[field] or 0) + int(windows)
 
 
 def upsert_signal(
@@ -374,6 +377,8 @@ def upsert_signal(
                 -- read as if the rest counted none.
                 cache_windows = CASE WHEN %s::bigint IS NULL THEN cache_windows
                                      ELSE COALESCE(cache_windows, 0) + %s::bigint END,
+                cache_windows_1h = CASE WHEN %s::bigint IS NULL THEN cache_windows_1h
+                                        ELSE COALESCE(cache_windows_1h, 0) + %s::bigint END,
                 -- Cast, because a duplicate signal carries no prefix size and
                 -- Postgres cannot infer a type for an untyped NULL parameter
                 -- compared against NULL. Without it, the SECOND batch carrying
@@ -404,6 +409,8 @@ def upsert_signal(
                 entry.get("write_calls", 0),
                 entry.get("cache_windows"),
                 entry.get("cache_windows"),
+                entry.get("cache_windows_1h"),
+                entry.get("cache_windows_1h"),
                 entry["prefix_tokens"],
                 entry["prefix_tokens"],
                 entry.get("prefix_measured", False),
@@ -421,9 +428,10 @@ def upsert_signal(
                 (tenant_id, feature_id, provider, model, period, signal_kind, fingerprint,
                  call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
                  prefix_measured, fingerprint_version, scope_kind,
-                 write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n)
+                 write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n,
+                 cache_windows_1h)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s)
+                    %s, %s, %s)
             """,
             (
                 tenant_id,
@@ -445,8 +453,51 @@ def upsert_signal(
                 entry.get("cache_windows"),
                 entry.get("prefix_sum", 0),
                 entry.get("prefix_n", 0),
+                entry.get("cache_windows_1h"),
             ),
         )
+
+
+#: Freshness limits the repeated-request simulation counts at, by wire suffix.
+SIMULATION_LIMITS = (("1m", 60), ("10m", 600), ("1h", 3600), ("24h", 86400))
+#: Every counter a simulation summary carries — the allowlist in
+#: traces._simulation_signal and the column list of usage_simulation (0065).
+SIMULATION_FIELDS = ("calls", "tokens_in", "tokens_out") + tuple(
+    f"{prefix}{suffix}"
+    for suffix, _seconds in SIMULATION_LIMITS
+    for prefix in ("hits_", "hit_tokens_in_", "hit_tokens_out_", "evicted_")
+)
+
+
+def accumulate_simulation(sim_acc: dict, sig: dict, feature_id, provider, model, period) -> None:
+    """Fold one simulation summary into the batch's totals."""
+    key = (feature_id, provider, model or None, period, sig["scope_kind"])
+    entry = sim_acc.setdefault(key, dict.fromkeys(SIMULATION_FIELDS, 0))
+    for field in SIMULATION_FIELDS:
+        entry[field] += int(sig.get(field) or 0)
+
+
+def upsert_simulation(conn, tenant_id, key: tuple, entry: dict) -> None:
+    """Add a batch's simulation totals to the month's row, creating it if new.
+
+    The column names come from SIMULATION_FIELDS, a constant, never from the
+    payload.
+    """
+    feature_id, provider, model, period, scope_kind = key
+    cols = ", ".join(SIMULATION_FIELDS)
+    marks = ", ".join(["%s"] * len(SIMULATION_FIELDS))
+    adds = ", ".join(f"{c} = usage_simulation.{c} + EXCLUDED.{c}" for c in SIMULATION_FIELDS)
+    conn.execute(
+        f"""
+        INSERT INTO usage_simulation
+            (tenant_id, feature_id, provider, model, period, scope_kind, {cols})
+        VALUES (%s, %s, %s, %s, %s, %s, {marks})
+        ON CONFLICT ON CONSTRAINT usage_simulation_key
+        DO UPDATE SET {adds}, updated_at = now()
+        """,  # noqa: S608 - identifiers are the SIMULATION_FIELDS constant
+        (tenant_id, feature_id, provider, model, period, scope_kind)
+        + tuple(int(entry[c]) for c in SIMULATION_FIELDS),
+    )
 
 
 def upsert_hook_row(conn, tenant_id, feature_id, provider, model, period, entry) -> None:
