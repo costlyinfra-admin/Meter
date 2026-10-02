@@ -119,6 +119,10 @@ export interface PromptConsentStatus {
   disclosure_changed: boolean;
   /** True only when capture is actually open. */
   capturing: boolean;
+  /** Capture carries on under earlier terms; newer uses wait for agreement to the current ones. */
+  terms_extended: boolean;
+  /** Whether Meter may replay captured calls through a cheaper model (EX-4). */
+  model_tests: boolean;
   retention_days: number;
   features: {
     feature_id: string;
@@ -1230,6 +1234,39 @@ export interface OfflineOptions {
     defaults: LiveDials;
     ranges: Record<keyof LiveDials, [number, number]>;
   };
+  /** Whether Meter can run the test itself, on captured calls (EX-4). */
+  hosted: HostedOptions;
+}
+
+/** Why Meter cannot run a model test itself, when it cannot. */
+export type HostedBlock =
+  | "not_capturing"
+  | "terms_not_agreed"
+  | "feature_not_enabled"
+  | "no_samples"
+  | "no_key";
+
+/** A Meter-hosted model test's preconditions and price (EX-4). */
+export interface HostedOptions {
+  capturing: boolean;
+  /** Whether consent's terms cover model tests run by Meter. */
+  model_tests: boolean;
+  feature_enabled: boolean;
+  max_cases: number;
+  /** Spent this month on tests Meter runs, against `monthly_cap`. */
+  spent_this_month: number;
+  monthly_cap: number;
+  by_control: Record<
+    string,
+    {
+      reason: HostedBlock | null;
+      /** Captured calls Meter would replay. */
+      cases: number;
+      has_key: boolean;
+      /** Estimated cost, by candidate model. */
+      estimates: Record<string, number>;
+    }
+  >;
 }
 
 /** A test of one recommendation (EX-1, docs/experiments-spec.md). */
@@ -1239,6 +1276,8 @@ export interface Experiment {
   feature_name?: string | null;
   lever: string;
   mode: "simulate" | "offline" | "live";
+  /** Where an offline test runs: the customer's machine, or inside Meter (EX-4). */
+  runs_at: "customer" | "meter";
   status: "waiting_for_data" | "waiting_for_results" | "running" | "completed" | "cancelled";
   outcome: "passed" | "failed" | "inconclusive" | null;
   outcome_reason: string;
@@ -1261,7 +1300,14 @@ export interface Experiment {
   completed_at: string | null;
   cancelled_at: string | null;
   history?: Experiment[];
-  results_source?: "runner" | "promptfoo" | "inspect" | null;
+  results_source?: "runner" | "promptfoo" | "inspect" | "meter" | null;
+  /** A test Meter is running: how many captured calls it has replayed. */
+  progress?: {
+    planned: number;
+    done: number;
+    status: "queued" | "running" | "done" | "failed";
+    interruptions: number;
+  };
   judge_model?: string | null;
   /** What the run cost, priced by Meter; already in the provider's bill. */
   test_cost?: number | null;
@@ -1284,6 +1330,7 @@ export interface ExperimentInput {
   loss_margin?: number;
   min_cases?: number;
   mode?: "simulate" | "offline" | "live";
+  runs_at?: "customer" | "meter";
   traffic_share?: number;
   min_calls?: number;
   min_days?: number;

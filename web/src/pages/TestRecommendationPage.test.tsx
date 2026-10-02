@@ -8,7 +8,12 @@ vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
   return {
     ...actual,
-    api: { featureOpportunities: vi.fn(), startExperiment: vi.fn(), experimentOptions: vi.fn() },
+    api: {
+      featureOpportunities: vi.fn(),
+      startExperiment: vi.fn(),
+      experimentOptions: vi.fn(),
+      setEvalKey: vi.fn(),
+    },
   };
 });
 
@@ -98,6 +103,28 @@ const OPTIONS = {
       max_error_increase: [0, 0.2] as [number, number],
       max_latency_increase: [0, 2] as [number, number],
       quality_margin: [0, 0.5] as [number, number],
+    },
+  },
+  hosted: {
+    capturing: true,
+    model_tests: true,
+    feature_enabled: true,
+    max_cases: 100,
+    spent_this_month: 3.2,
+    monthly_cap: 25,
+    by_control: {
+      "claude-sonnet-4-6": {
+        reason: null,
+        cases: 40,
+        has_key: true,
+        estimates: { "claude-haiku-4-5": 1.84, "claude-sonnet-5": 2.4 },
+      },
+      "claude-opus-4-8": {
+        reason: "no_key" as const,
+        cases: 40,
+        has_key: false,
+        estimates: { "claude-sonnet-4-6": 3.1 },
+      },
     },
   },
 };
@@ -240,12 +267,14 @@ describe("Test this, for model right-sizing", () => {
     );
     expect(screen.getByLabelText("Allowance for worse answers (%)")).toHaveValue(10);
     expect(screen.getByLabelText("Cases needed, at least")).toHaveValue(20);
-    expect(screen.getByText(/only numbers come back to Meter/i)).toBeVisible();
+    expect(screen.getByText(/only numbers are kept/i)).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Start the test" }));
     await waitFor(() =>
       expect(api.startExperiment).toHaveBeenCalledWith("f1", {
         lever: "model_rightsizing",
+        mode: "offline",
+        runs_at: "customer",
         control_model: "claude-sonnet-4-6",
         candidate_model: "claude-haiku-4-5",
         loss_margin: 0.1,
@@ -314,6 +343,65 @@ describe("Test this, for model right-sizing", () => {
     expect(screen.queryByRole("note")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Days needed, at least"), { target: { value: "2" } });
     expect(screen.getByRole("note")).toHaveTextContent("Looser than Meter");
+  });
+
+  it("can have Meter run it on captured calls, and says what that costs", async () => {
+    vi.mocked(api.startExperiment).mockResolvedValue({ id: "e11" } as Experiment);
+    renderPage("model_rightsizing");
+    fireEvent.click(await screen.findByRole("radio", { name: /run by Meter/ }));
+    expect(screen.getByText(/captured calls to claude-sonnet-4-6/)).toHaveTextContent(
+      "Meter will replay 40 captured calls to claude-sonnet-4-6: about $1.84",
+    );
+    // The same rule as a test on your side.
+    expect(screen.getByLabelText("Cases needed, at least")).toHaveValue(20);
+    fireEvent.click(screen.getByRole("button", { name: "Start the test" }));
+    await waitFor(() =>
+      expect(api.startExperiment).toHaveBeenCalledWith(
+        "f1",
+        expect.objectContaining({ mode: "offline", runs_at: "meter", min_cases: 20 }),
+      ),
+    );
+    // No token: nothing runs on the customer's side.
+    expect(await screen.findByTestId("at")).toHaveTextContent(/^\/experiments\/e11\s*$/);
+  });
+
+  it("will not start a Meter-run test the captured calls cannot decide", async () => {
+    renderPage("model_rightsizing");
+    fireEvent.click(await screen.findByRole("radio", { name: /run by Meter/ }));
+    fireEvent.change(screen.getByLabelText("Cases needed, at least"), {
+      target: { value: "60" },
+    });
+    expect(screen.getByRole("note")).toHaveTextContent("Meter holds 40 captured calls");
+    expect(screen.getByRole("button", { name: "Start the test" })).toBeDisabled();
+  });
+
+  it("asks for an evaluation key where one is missing, and never shows it again", async () => {
+    const withKey = {
+      ...OPTIONS,
+      hosted: {
+        ...OPTIONS.hosted,
+        by_control: {
+          ...OPTIONS.hosted.by_control,
+          "claude-opus-4-8": { ...OPTIONS.hosted.by_control["claude-opus-4-8"], reason: null },
+        },
+      },
+    };
+    vi.mocked(api.setEvalKey).mockResolvedValue({ keys: [] } as never);
+    renderPage("model_rightsizing");
+    fireEvent.change(await screen.findByLabelText("Model to replace"), {
+      target: { value: "claude-opus-4-8" },
+    });
+    fireEvent.click(screen.getByRole("radio", { name: /run by Meter/ }));
+    expect(screen.getByRole("button", { name: "Start the test" })).toBeDisabled();
+    vi.mocked(api.experimentOptions).mockResolvedValue(withKey);
+    const field = screen.getByLabelText("Anthropic evaluation key");
+    fireEvent.change(field, { target: { value: "sk-ant-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add key" }));
+    await waitFor(() => expect(api.setEvalKey).toHaveBeenCalledWith("anthropic", "sk-ant-secret"));
+    expect(field).toHaveValue("");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Start the test" })).toBeEnabled(),
+    );
   });
 
   it("explains when none of the feature's models can be tested", async () => {

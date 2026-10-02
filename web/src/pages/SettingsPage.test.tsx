@@ -91,6 +91,8 @@ function setupMocks() {
     version_outdated: false,
     disclosure_changed: false,
     capturing: false,
+    terms_extended: false,
+    model_tests: false,
     retention_days: 30,
     features: [],
   });

@@ -8047,3 +8047,24 @@ td.num:has(> .opt-ceiling) {
   padding: 0;
   margin: 0 0 0.75rem;
 }
+
+/* Test this, run by Meter (EX-4) --------------------------------------------- */
+.test-hosted {
+  margin: 0 0 1rem;
+}
+.test-hosted .settings-field-inline {
+  flex-wrap: wrap;
+}
+.test-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0 0 0.75rem;
+}
+.test-progress progress {
+  flex: 1 1 12rem;
+  max-width: 28rem;
+  height: 0.6rem;
+  accent-color: var(--chart-4);
+}

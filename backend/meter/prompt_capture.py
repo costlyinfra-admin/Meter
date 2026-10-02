@@ -44,7 +44,16 @@ from .db import admin_dsn, app_dsn, connect, tenant_tx
 #: The consent text's version. Change it whenever the words on the consent screen
 #: change in substance: every organization's capture then pauses until someone
 #: agrees to the new text.
-CONSENT_VERSION = "2026-09-11"
+CONSENT_VERSION = "2026-10-02"
+#: The oldest terms capture carries on under. The 2026-10-02 terms added one
+#: use — Meter replaying captured calls through a cheaper model when someone
+#: asks it to test one (EX-4) — and collect nothing new, so an organization
+#: that agreed to the earlier terms keeps capturing. Only the new use waits for
+#: someone to agree to the new words. A change that collects more, or shows it
+#: to someone new, moves this forward too, and capture then pauses.
+CAPTURE_SINCE = "2026-09-11"
+#: The first terms that cover Meter-run model tests (hosted_tests.py).
+MODEL_TESTS_SINCE = "2026-10-02"
 
 RETENTION_DAYS = 30
 #: A sample larger than this is refused, not truncated: a truncated prompt would
@@ -219,15 +228,22 @@ def consent_status(tenant_id: str) -> dict:
             "granted_at": row[2].isoformat(),
             "disclosed": {"source": row[3], "provider": row[4], "model": row[5]},
         }
-    outdated = bool(granted) and granted["consent_version"] != CONSENT_VERSION
+    # Versions are ISO dates, so they compare as text.
+    version = granted["consent_version"] if granted else ""
+    outdated = bool(granted) and version < CAPTURE_SINCE
     changed = bool(granted) and not _same_disclosure(granted["disclosed"], current)
+    capturing = bool(granted) and not outdated and not changed
     return {
         "consent": granted,
         "current_version": CONSENT_VERSION,
         "current_disclosure": current,
         "version_outdated": outdated,
         "disclosure_changed": changed,
-        "capturing": bool(granted) and not outdated and not changed,
+        "capturing": capturing,
+        # Agreed to earlier terms that still allow capture, but not to the
+        # current words: capture carries on, the newer uses wait.
+        "terms_extended": capturing and version != CONSENT_VERSION,
+        "model_tests": capturing and version >= MODEL_TESTS_SINCE,
         "retention_days": RETENTION_DAYS,
         "features": [
             {
@@ -499,7 +515,7 @@ def _gate(conn, tenant_id: str, feature_id: str) -> None:
         raise CaptureRefused(
             "no_consent", 403, "Prompt optimization is not turned on for this organization."
         )
-    if row[0] != CONSENT_VERSION:
+    if row[0] < CAPTURE_SINCE:
         raise CaptureRefused(
             "consent_outdated", 403, "Capture is paused until the updated consent is accepted."
         )

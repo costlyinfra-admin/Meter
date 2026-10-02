@@ -109,6 +109,7 @@ const SOURCES: Record<string, string> = {
   runner: "meter-test",
   promptfoo: "promptfoo, imported with meter-test",
   inspect: "Inspect AI, imported with meter-test",
+  meter: "Meter, replaying your captured calls",
 };
 
 function percent(rate: number): string {
@@ -271,7 +272,32 @@ function OfflineResults({
         Results from {SOURCES[exp.results_source ?? "runner"] ?? exp.results_source}
         {exp.judge_model && `, judged by ${exp.judge_model}`}.
         {exp.test_cost != null &&
-          ` Running it cost about ${money(exp.test_cost)} at list price — already part of your provider bill.`}
+          ` Running it cost about ${money(exp.test_cost)} at list price${exp.runs_at === "meter" ? ", not counting the judge's calls" : ""} — already part of your provider bill.`}
+      </p>
+    </section>
+  );
+}
+
+/** A test Meter is running itself (EX-4): how far it has got. */
+function HostedProgress({ exp }: { exp: Experiment }) {
+  const p = exp.progress;
+  return (
+    <section className="detail-section">
+      <div className="section-head">
+        <h2>Meter is running this test</h2>
+      </div>
+      {p && p.planned > 0 && (
+        <div className="test-progress">
+          <progress value={p.done} max={p.planned} aria-label="Cases replayed" />
+          <span>
+            {num(p.done)} of {num(p.planned)} captured calls replayed
+          </span>
+        </div>
+      )}
+      <p className="muted">
+        Each captured call goes to {exp.setting.control_model} and {exp.setting.candidate_model} on
+        your evaluation key, and the answers are compared. You can leave this page: the test carries
+        on by itself, and picks up where it stopped if it is interrupted.
       </p>
     </section>
   );
@@ -467,6 +493,24 @@ function Method({ exp }: { exp: Experiment }) {
               your bill confirms the change.
             </li>
           </>
+        ) : exp.mode === "offline" && exp.runs_at === "meter" ? (
+          <>
+            <li>
+              Meter replayed real calls it captured for this feature, each with the system prompt it
+              ran with, through both models on your evaluation key. The model your
+              prompt-optimization consent names compared each pair of answers twice, in both orders,
+              and only agreement counted.
+            </li>
+            <li>
+              Only numbers were kept — tokens, latency, whether a call failed or broke a check, and
+              the verdict. The answers were not stored. Meter priced the tokens from its price book.
+            </li>
+            <li>
+              Captured calls are a sample, not your traffic, so a passed test counts as{" "}
+              <em>tested</em>, kept apart from measured savings, until the change is applied and
+              your bill confirms it.
+            </li>
+          </>
         ) : exp.mode === "offline" ? (
           <>
             <li>
@@ -554,6 +598,14 @@ export function ExperimentPage() {
     void load();
   }, [load]);
 
+  // A test Meter is running finishes on its own: keep the page current.
+  const hostedRunning = exp?.status === "running" && exp.runs_at === "meter";
+  useEffect(() => {
+    if (!hostedRunning) return;
+    const timer = window.setInterval(() => void load(), 4000);
+    return () => window.clearInterval(timer);
+  }, [hostedRunning, load]);
+
   async function cancel() {
     setBusy(true);
     try {
@@ -601,14 +653,17 @@ export function ExperimentPage() {
         <p>
           {exp.status === "waiting_for_results"
             ? "Run the test below. The result appears here as soon as it is sent."
-            : exp.status === "running" && !exp.outcome_reason
-              ? "Waiting for the first tagged calls."
-              : exp.outcome_reason}
+            : exp.status === "running" && exp.runs_at === "meter"
+              ? "Replaying captured calls. The result appears here when the last one is done."
+              : exp.status === "running" && !exp.outcome_reason
+                ? "Waiting for the first tagged calls."
+                : exp.outcome_reason}
         </p>
       </div>
 
       {exp.status === "waiting_for_results" && <RunInstructions exp={exp} token={token} />}
-      {exp.status === "running" && <LiveInstructions exp={exp} />}
+      {exp.status === "running" && exp.runs_at === "meter" && <HostedProgress exp={exp} />}
+      {exp.status === "running" && exp.mode === "live" && <LiveInstructions exp={exp} />}
 
       {exp.baseline && (
         <p className="test-baseline">

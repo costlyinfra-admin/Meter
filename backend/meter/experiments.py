@@ -40,7 +40,7 @@ import uuid
 from decimal import Decimal
 from typing import Optional
 
-from . import dashboard, live_tests, offline_tests, pricing
+from . import dashboard, hosted_tests, jobs, live_tests, offline_tests, pricing
 from .db import app_dsn, connect, tenant_tx
 
 #: What can be tested, and how. Grows with EX-2 (offline) and EX-3 (live).
@@ -433,6 +433,7 @@ def create(
     min_cases: Optional[int] = None,
     mode: Optional[str] = None,
     live: Optional[dict] = None,
+    runs_at: Optional[str] = None,
 ) -> Optional[dict]:
     """Start a test of one recommendation. Returns None if the feature is not found.
 
@@ -442,7 +443,9 @@ def create(
     cancelled offline run's token stops working with it.
 
     An offline test (model right-sizing) comes back with `token`: the one
-    credential its run holds, shown this once and never again.
+    credential its run holds, shown this once and never again — unless it runs
+    inside Meter (`runs_at="meter"`, EX-4), which needs no token: Meter
+    replays the feature's captured calls itself, in the background.
     """
     is_live = mode == "live"
     if is_live and lever not in OFFLINE:
@@ -456,6 +459,13 @@ def create(
     if not is_live and any(v is not None for v in (live or {}).values()):
         raise ExperimentError("Traffic share, minimums and guardrails apply to live tests only.")
     offline = lever in OFFLINE and not is_live
+    if runs_at not in (None, "customer", "meter"):
+        raise ExperimentError("Choose where the test runs: on your side, or inside Meter.")
+    hosted = runs_at == "meter"
+    if hosted and not (offline and mode == "offline"):
+        raise ExperimentError("Only a model test on your own cases can run inside Meter.")
+    # Read before the transaction: it opens its own.
+    consent = hosted_tests._consent(tenant_id) if hosted else None
     if is_live:
         if any(
             v is not None for v in (ttl_seconds, scoped_only, cache_ttl, loss_margin, min_cases)
@@ -504,6 +514,13 @@ def create(
                 None if part is None else {**baseline, "projected_monthly_savings": part["monthly"]}
             )
         _cancel_waiting(conn, "feature_id = %s AND lever = %s", (feature_id, lever))
+        if hosted:
+            # After the cancel, so a test being replaced does not count against
+            # the cap; a refusal rolls the cancel back with everything else.
+            try:
+                planned = hosted_tests.plan(conn, tenant_id, feature_id, setting, consent)
+            except hosted_tests.HostedTestError as exc:
+                raise ExperimentError(str(exc)) from exc
         row = conn.execute(
             """
             INSERT INTO experiment
@@ -511,9 +528,9 @@ def create(
                  cache_ttl, provider, control_model, candidate_model, loss_margin, min_cases,
                  period, baseline_monthly, baseline_savings_type, baseline_confidence,
                  created_by, traffic_share, min_calls, min_days, max_error_increase,
-                 max_latency_increase, quality_margin)
+                 max_latency_increase, quality_margin, runs_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s)
+                    %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -521,7 +538,11 @@ def create(
                 feature_id,
                 lever,
                 "live" if is_live else "offline" if offline else "simulate",
-                "running" if is_live else "waiting_for_results" if offline else "waiting_for_data",
+                "running"
+                if is_live or hosted
+                else "waiting_for_results"
+                if offline
+                else "waiting_for_data",
                 setting.get("ttl_seconds"),
                 setting.get("scoped_only"),
                 setting.get("cache_ttl"),
@@ -541,6 +562,7 @@ def create(
                 setting.get("max_error_increase"),
                 setting.get("max_latency_increase"),
                 setting.get("quality_margin"),
+                "meter" if hosted else "customer",
             ),
         ).fetchone()
         experiment_id = str(row[0])
@@ -549,13 +571,20 @@ def create(
                 conn, tenant_id, experiment_id, feature_id, setting, actor
             )
             return _to_dict(_fetch(conn, experiment_id))
-        if offline:
+        if hosted:
+            job_id = hosted_tests.begin(conn, tenant_id, experiment_id, setting, planned, actor)
+            created = _to_dict(_fetch(conn, experiment_id))
+        elif offline:
             token = offline_tests.issue_token(conn, tenant_id, experiment_id)
             return {**_to_dict(_fetch(conn, experiment_id)), "token": token}
-        _apply_result(
-            conn, experiment_id, _simulate(conn, lever, feature_id, period, setting), period
-        )
-        return _to_dict(_fetch(conn, experiment_id))
+        else:
+            _apply_result(
+                conn, experiment_id, _simulate(conn, lever, feature_id, period, setting), period
+            )
+            return _to_dict(_fetch(conn, experiment_id))
+    # After the commit, so the run can see its own experiment.
+    jobs.start(tenant_id, job_id)
+    return created
 
 
 def _cancel_waiting(conn, where: str, params: tuple) -> None:
@@ -564,6 +593,12 @@ def _cancel_waiting(conn, where: str, params: tuple) -> None:
     `where` is one of this module's own fixed clauses, never caller input.
     """
     waiting = "status IN ('waiting_for_data', 'waiting_for_results', 'running')"
+    # A test running inside Meter stops at its next case: its run is over.
+    jobs.end(
+        conn,
+        f"experiment_id IN (SELECT id FROM experiment WHERE {where} AND {waiting})",
+        params,
+    )
     conn.execute(
         f"DELETE FROM experiment_token WHERE experiment_id IN "  # noqa: S608 - constants
         f"(SELECT id FROM experiment WHERE {where} AND {waiting})",
@@ -600,7 +635,17 @@ def get(tenant_id: str, experiment_id: str) -> Optional[dict]:
                 period,
             )
             current = _to_dict(_fetch(conn, experiment_id))
-        if current["status"] == "running":
+        if current["status"] == "running" and current["runs_at"] == "meter":
+            # A run nobody holds was interrupted: looking at it carries it on.
+            jobs.resume_if_abandoned(tenant_id, "hosted_test", experiment_id)
+            current["progress"] = {
+                **(jobs.progress(conn, "hosted_test", experiment_id) or {"planned": 0}),
+                "done": conn.execute(
+                    "SELECT count(*) FROM experiment_case WHERE experiment_id = %s",
+                    (experiment_id,),
+                ).fetchone()[0],
+            }
+        elif current["status"] == "running":
             # Brought up to date when looked at, at most every few minutes; the
             # scheduled job does the same for tests nobody is watching.
             row = conn.execute(
@@ -651,11 +696,13 @@ def testing_spend(conn, feature_id: str, period: dt.date) -> float:
     Already part of the provider's bill — the calls ran on the customer's
     keys — so this is never added to inference. It is shown beside it,
     labelled as testing (decision 3), so the cost of testing is visible.
+    A test Meter is running counts what it has spent so far, and one that
+    stopped part-way or was cancelled still counts: the money was spent.
     """
     row = conn.execute(
         """
         SELECT COALESCE(SUM(test_cost), 0) FROM experiment
-         WHERE feature_id = %s AND period = %s AND status = 'completed'
+         WHERE feature_id = %s AND period = %s AND test_cost IS NOT NULL
         """,
         (feature_id, period),
     ).fetchone()

@@ -1019,7 +1019,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "A test does not verify anything. Only your bill can do that, after you make the change and mark it applied — and a fix you have already applied keeps being checked against the figure it was applied on, whatever a later test says.",
           ),
           p(
-            "**Model right-sizing** is tested a different way, because whether a cheaper model holds up is a question about answers, and Meter never sees answers. So the test runs on your machine:",
+            "**Model right-sizing** is tested a different way, because whether a cheaper model holds up is a question about answers. By default the test runs on your machine, so Meter never sees them:",
           ),
           steps(
             "Choose the model to replace and a cheaper one from the same provider to test in its place — the recommendation's own target by default. You can loosen the rule (how many more worse answers than better ones are allowed, and how many cases are needed); the result then says it was loosened, wherever it appears.",
@@ -1028,6 +1028,14 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
           p(
             "Meter prices the tokens itself and applies its rule: nothing broken, not worse more often than better beyond the allowance, enough cases, and cheaper per call. A pass makes the saving **tested**; a fail keeps the card, out of the totals. What the run cost is shown on the feature as testing — it is already in your provider bill, so it is never added again.",
+          ),
+          p(
+            "If your organization has turned on [prompt optimization](/help/trust/prompt-optimization) for the feature, **Meter can run the test for you** instead, with nothing to install. Choose *On calls Meter has captured, run by Meter*: Meter replays up to 100 calls it captured for that feature, each with the system prompt it ran with, through both models on your evaluation key, and the model your consent names judges each pair of answers both ways round. The same rule decides, and the answers are not kept — only the same numbers a run on your side would send.",
+          ),
+          list(
+            "**It spends your money, so it shows the cost first.** Tests Meter runs — model tests and prompt-rewrite tests together — share a cap of $25 a month per organization. The judge's own calls are not included in the cost shown.",
+            "**It carries on by itself.** You can leave the page. If Meter restarts mid-test, the test picks up where it stopped, without repeating a call.",
+            "**It needs** prompt optimization on under terms that cover model tests, capture on for the feature, enough captured calls to the model being replaced, and an evaluation key for its provider — which you can add on the form. A key that is refused stops the test as inconclusive rather than blaming the cheaper model.",
           ),
           p(
             'Right-sizing can also be tested **on a share of live traffic**. Meter does not route requests — your own feature flag does. Wrap your client twice with the SDK (2.6 or later), once per group, and tag each with the test: `meter.wrap(client, experiment=..., group="control")` and `group="candidate"`. Meter then compares the two groups on what it already measures for every call: cost per successful call, error rate and the slowest 5% of latency. Send `meter.score(experiment, group, value)` for each answer — a success flag, a thumbs up, an eval score, on any scale both groups share — and quality becomes part of the verdict too.',
@@ -1405,6 +1413,7 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "**What is collected**: the prompt instructions your developers wrote, and a small sample of real inputs and outputs for the chosen features. Never tool calls or their results, images or files.",
             "**Encrypted** with a key unique to your organization, and **deleted after 30 days**.",
             "**Who sees prompts** is named on the consent screen: your organization's own model if you set one under Bring your own key, otherwise Meter's. If that changes, capture pauses until someone agrees again.",
+            "**What captured calls are used for**: proposing and testing cheaper prompts and, when you ask, [testing a cheaper model](/help/optimize/testing-a-recommendation) on them. Both replay real examples on your provider account, and only with your approval. Model tests were added to the terms in October 2026; an organization that agreed earlier keeps capturing, and model tests wait until someone agrees to the updated terms.",
             "**Every view is logged.** The activity list in Settings shows who did what, never the prompts themselves.",
             "**Meter staff** viewing your account for support cannot turn capture on, withdraw it, or read captured prompts.",
             "**A developer has to switch it on too**: `capture_prompts` in the SDK (2.1 or later), with each prompt named by `prompt_id` and `prompt_version`. Consent alone sends nothing, and so does the switch alone.",

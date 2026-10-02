@@ -102,15 +102,21 @@ def _choices(conn, feature_id: str, period: dt.date) -> list:
 
 def options(tenant_id: str, feature_id: str) -> Optional[dict]:
     """The models a customer can test on this feature, and the rule's dials."""
-    from . import live_tests  # imported here: live_tests imports this module
+    # Imported here: both import this module.
+    from . import hosted_tests, live_tests
 
+    consent = hosted_tests._consent(tenant_id)  # its own connection, so first
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         if conn.execute("SELECT 1 FROM feature WHERE id = %s", (feature_id,)).fetchone() is None:
             return None
         period = dashboard._resolve_period(conn, None)
+        controls = _choices(conn, feature_id, period)
         return {
             "period": period.isoformat(),
-            "controls": _choices(conn, feature_id, period),
+            "controls": controls,
+            # Whether Meter can run the test itself, on captured calls (EX-4),
+            # and what that would cost for each pair of models.
+            "hosted": hosted_tests.options(conn, tenant_id, feature_id, controls, consent),
             "rule": {
                 "loss_margin": DEFAULT_LOSS_MARGIN,
                 "min_cases": DEFAULT_MIN_CASES,
@@ -378,26 +384,25 @@ def record(
     test, with `spend` (the feature's spend on the tested model this month)
     computed by the caller for its own tenant.
     """
-    from . import experiments
+    store_cases(conn, tenant_id, experiment_id, payload["cases"])
+    return conclude(
+        conn,
+        experiment_id,
+        payload["cases"],
+        source=payload["source"],
+        judge_model=payload.get("judge_model"),
+        judge_usage=payload.get("judge_usage"),
+        period=period,
+        spend=spend,
+    )
 
-    cases = payload["cases"]
-    row = conn.execute(
-        """
-        SELECT provider, control_model, candidate_model, loss_margin, min_cases
-          FROM experiment WHERE id = %s
-        """,
-        (experiment_id,),
-    ).fetchone()
-    provider, control, candidate, margin, min_cases = row
-    setting = {
-        "provider": provider,
-        "control_model": control,
-        "candidate_model": candidate,
-        "loss_margin": float(margin),
-        "min_cases": int(min_cases),
-    }
+
+def store_cases(conn, tenant_id: str, experiment_id: str, cases: list) -> int:
+    """Keep each case once (a hosted run may offer one twice after a restart).
+    Returns how many were new."""
+    added = 0
     for c in cases:
-        conn.execute(
+        added += conn.execute(
             """
             INSERT INTO experiment_case
                 (tenant_id, experiment_id, case_hash,
@@ -405,6 +410,7 @@ def record(
                  candidate_tokens_in, candidate_tokens_out, candidate_latency_ms,
                  candidate_error, check_failures, verdict)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (experiment_id, case_hash) DO NOTHING
             """,
             (
                 tenant_id,
@@ -421,8 +427,75 @@ def record(
                 c["check_failures"],
                 c["verdict"],
             ),
-        )
+        ).rowcount
+    return added
 
+
+def stored_cases(conn, experiment_id: str) -> list:
+    """The cases kept for a test, in the shape a run reports them."""
+    return [
+        {
+            "case": r[0],
+            "control": {"tokens_in": r[1], "tokens_out": r[2], "latency_ms": r[3], "error": r[4]},
+            "candidate": {
+                "tokens_in": r[5],
+                "tokens_out": r[6],
+                "latency_ms": r[7],
+                "error": r[8],
+            },
+            "check_failures": r[9],
+            "verdict": r[10],
+        }
+        for r in conn.execute(
+            """
+            SELECT case_hash, control_tokens_in, control_tokens_out, control_latency_ms,
+                   control_error, candidate_tokens_in, candidate_tokens_out,
+                   candidate_latency_ms, candidate_error, check_failures, verdict
+              FROM experiment_case WHERE experiment_id = %s ORDER BY case_hash
+            """,
+            (experiment_id,),
+        ).fetchall()
+    ]
+
+
+def call_cost(provider: str, model: str, call: dict) -> Decimal:
+    return pricing.price(model, call["tokens_in"], call["tokens_out"], provider)
+
+
+def conclude(
+    conn,
+    experiment_id: str,
+    cases: list,
+    *,
+    source: str,
+    judge_model: Optional[str],
+    judge_usage: Optional[dict],
+    period: dt.date,
+    spend: float,
+    stopped: Optional[str] = None,
+) -> dict:
+    """Decide from a test's cases and complete it, in `conn`.
+
+    `stopped` says why a run ended before it finished: the result still shows
+    what the finished cases measured, but a run cut short decides nothing.
+    """
+    from . import experiments
+
+    row = conn.execute(
+        """
+        SELECT provider, control_model, candidate_model, loss_margin, min_cases
+          FROM experiment WHERE id = %s
+        """,
+        (experiment_id,),
+    ).fetchone()
+    provider, control, candidate, margin, min_cases = row
+    setting = {
+        "provider": provider,
+        "control_model": control,
+        "candidate_model": candidate,
+        "loss_margin": float(margin),
+        "min_cases": int(min_cases),
+    }
     # A case the current model could not answer says nothing about the
     # candidate, so it is left out rather than counted against either.
     compared = [c for c in cases if not c["control"]["error"]]
@@ -444,7 +517,12 @@ def record(
         candidate_cpc,
         setting,
     )
-    if relaxed(setting):
+    if stopped:
+        outcome, reason = (
+            "inconclusive",
+            (f"The run stopped before it finished, after {len(cases)} case(s): {stopped}"),
+        )
+    elif relaxed(setting):
         reason += f" Decided under a loosened rule: {rule_words(setting)}."
     fraction = (
         float((control_cpc - candidate_cpc) / control_cpc)
@@ -455,18 +533,18 @@ def record(
     # What the run itself cost, priced here from the tokens it reported.
     test_cost = sum(
         (
-            pricing.price(control, c["control"]["tokens_in"], c["control"]["tokens_out"], provider)
-            + pricing.price(
-                candidate, c["candidate"]["tokens_in"], c["candidate"]["tokens_out"], provider
-            )
+            call_cost(provider, control, c["control"])
+            + call_cost(provider, candidate, c["candidate"])
             for c in cases
         ),
         Decimal("0"),
     )
-    judge = payload.get("judge_usage")
-    if judge and payload.get("judge_model"):
+    if judge_usage and judge_model:
         test_cost += pricing.price(
-            payload["judge_model"], judge["tokens_in"], judge["tokens_out"], judge["provider"]
+            judge_model,
+            judge_usage["tokens_in"],
+            judge_usage["tokens_out"],
+            judge_usage["provider"],
         )
 
     result = {
@@ -508,8 +586,8 @@ def record(
             outcome,
             reason[:500],
             json.dumps(result),
-            payload["source"],
-            payload.get("judge_model"),
+            source,
+            judge_model,
             test_cost,
             period,
             experiment_id,
@@ -580,8 +658,13 @@ def layer(conn, o: dict, done: dict, feature_id: str, period: dt.date) -> bool:
                 "call, within the error and latency guardrails."
             )
         else:
+            cases = (
+                "of your captured calls, replayed by Meter"
+                if exp.get("runs_at") == "meter"
+                else "of your own cases"
+            )
             sentences.append(
-                f"Tested on {r['compared']} of your own cases: {swap} — better on "
+                f"Tested on {r['compared']} {cases}: {swap} — better on "
                 f"{r['better']}, same on {r['same']}, worse on {r['worse']}, nothing broken, "
                 f"{pct}% less per call."
             )

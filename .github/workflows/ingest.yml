@@ -99,6 +99,22 @@ jobs:
           METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
         run: python -m meter.live_tests
+      - name: Carry on interrupted tests
+        working-directory: backend
+        # Prompt-rewrite evaluations and Meter-hosted model tests that a restart
+        # interrupted, picked up where they stopped (at most 10 minutes of
+        # work). Normally they resume as soon as anyone looks at them; this is
+        # for the ones nobody does. The judge settings are optional: without
+        # them, runs judged by Meter's own model are left for the web service.
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          METER_APP_DB_PASSWORD: ${{ secrets.METER_APP_DB_PASSWORD }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+          METER_DISCOVERY_BASE_URL: ${{ vars.METER_DISCOVERY_BASE_URL }}
+          METER_DISCOVERY_MODEL: ${{ vars.METER_DISCOVERY_MODEL }}
+          METER_DISCOVERY_API_KEY: ${{ secrets.METER_DISCOVERY_API_KEY }}
+        run: python -m meter.jobs
 
       - name: Evaluate alert rules
         working-directory: backend

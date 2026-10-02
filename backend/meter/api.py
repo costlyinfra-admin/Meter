@@ -751,6 +751,9 @@ class ExperimentRequest(BaseModel):
     max_error_increase: Optional[float] = Field(default=None, ge=-1, le=100)
     max_latency_increase: Optional[float] = Field(default=None, ge=-1, le=100)
     quality_margin: Optional[float] = Field(default=None, ge=-1, le=100)
+    # Where an offline test runs (EX-4): on the customer's side, or inside
+    # Meter on the feature's captured calls. experiments.create decides.
+    runs_at: Optional[str] = Field(default=None, min_length=1, max_length=32)
 
 
 class _RunCall(BaseModel):
@@ -2034,6 +2037,7 @@ def create_app() -> FastAPI:
                         "quality_margin",
                     )
                 },
+                runs_at=body.runs_at,
             )
         except experiments.ExperimentError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

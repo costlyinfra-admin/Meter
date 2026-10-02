@@ -102,7 +102,15 @@ notifications, also add these **optional** secrets:
 - `APP_BASE_URL` — your app's base URL (e.g. `https://meter.costlyinfra.com`)
 
 Without them, in-app / Slack / webhook alerts still work; email is reported as
-"unconfigured" (never a fake success). It runs daily; you can also trigger it
+"unconfigured" (never a fake success).
+
+The same job also carries on any test Meter was running (a prompt-rewrite or
+model test) that a restart interrupted and nobody has looked at since. For it
+to carry on tests judged by **Meter's own model**, add the same three settings
+the web service has: `METER_DISCOVERY_BASE_URL` and `METER_DISCOVERY_MODEL` as
+repository **variables**, and `METER_DISCOVERY_API_KEY` as a **secret**. They
+are optional: without them those tests simply wait, and carry on the moment
+someone opens them in the app. It runs daily; you can also trigger it
 anytime from the **Actions** tab (**Scheduled ingest & alerts → Run workflow**).
 
 ## Step 5 — First use

@@ -179,3 +179,17 @@ describe("questions about live tests", () => {
     expect(ids(question)).toContain("optimize/testing-a-recommendation");
   });
 });
+
+describe("questions about Meter running a model test", () => {
+  // "captured", "consent" and "evaluation key" pull towards the prompt topics;
+  // a reader asking whether Meter can test a cheaper model for them has to
+  // reach the topic that explains what it costs and what it needs.
+  it.each([
+    "can Meter run the model test for me",
+    "test a cheaper model on calls Meter captured",
+    "what does a test run by Meter cost",
+    "what happens if Meter restarts during a test",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("optimize/testing-a-recommendation");
+  });
+});

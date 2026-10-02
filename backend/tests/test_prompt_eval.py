@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
+from meter import jobs
 from meter import prompt_capture as pc
 from meter import prompt_eval as pe
 from meter import prompt_optimize as po
@@ -24,12 +25,16 @@ def meters_model(monkeypatch):
     monkeypatch.setenv("METER_DISCOVERY_API_KEY", "sk-judge-key")
 
 
-def endpoints(*, winner="shorter", after=AFTER_ANSWER, provider_status=200, rewrite=REWRITE):
+def endpoints(
+    *, winner="shorter", after=AFTER_ANSWER, provider_status=200, rewrite=REWRITE, replays=None
+):
     """Meter's provider and judge, faked. One client answers all three URLs."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if "api.anthropic.com" in url:
+            if replays is not None:
+                replays.append(url)
             if provider_status != 200:
                 return httpx.Response(provider_status, text='{"error":"bad key sk-replay-key"}')
             body = json.loads(request.content)
@@ -276,3 +281,62 @@ def test_one_tenant_never_sees_anothers_evaluation(app_env, tenant_id, monkeypat
     assert pe.eval_keys(other) == [
         {"provider": p, "has_key": False, "added_by": None, "added_at": None} for p in pe.PROVIDERS
     ]
+
+
+# ---------------------------------------------------------------------------
+# A run that survives an interruption (EX-4, jobs.py)
+# ---------------------------------------------------------------------------
+def _job_id(app_env, evaluation_id):
+    return str(
+        app_env.execute(
+            "SELECT id FROM eval_job WHERE evaluation_id = %s", (evaluation_id,)
+        ).fetchone()[0]
+    )
+
+
+def test_an_interrupted_evaluation_carries_on_when_someone_looks(app_env, tenant_id, monkeypatch):
+    _, template_id = ready(app_env, tenant_id, monkeypatch)
+    real_run = jobs.run
+    # The service went away before the run's first case.
+    monkeypatch.setattr(jobs, "start", lambda *a, **k: None)
+    started = pe.start_evaluation(tenant_id, template_id, "cto@acme.com", background=False)
+    assert (started["status"], started["cases_done"]) == ("running", 0)
+
+    monkeypatch.setattr(
+        jobs, "start", lambda tenant, job, **k: real_run(tenant, job, client=endpoints())
+    )
+    pe.status(tenant_id, started["evaluation_id"])  # looking at it carries it on
+    done = pe.status(tenant_id, started["evaluation_id"])
+    assert (done["status"], done["decision"], done["cases_done"]) == (
+        "completed",
+        "recommended",
+        4,
+    )
+
+
+def test_a_resumed_evaluation_replays_no_case_twice(app_env, tenant_id, monkeypatch):
+    import time
+
+    _, template_id = ready(app_env, tenant_id, monkeypatch)
+    monkeypatch.setattr(jobs, "start", lambda *a, **k: None)
+    started = pe.start_evaluation(tenant_id, template_id, "cto@acme.com", background=False)
+    job_id = _job_id(app_env, started["evaluation_id"])
+
+    replays = []
+    client = endpoints(replays=replays)
+    assert jobs.run(tenant_id, job_id, client=client, deadline=time.monotonic()) == "paused"
+    assert pe.status(tenant_id, started["evaluation_id"], resume=False)["cases_done"] == 1
+    jobs.run_scheduled(client=client)
+    # Two calls per case (the prompt and the rewrite), four cases, once each.
+    assert len(replays) == 8
+
+    done = pe.status(tenant_id, started["evaluation_id"])
+    assert (done["status"], done["cases_done"]) == ("completed", 4)
+    samples = app_env.execute(
+        "SELECT count(DISTINCT sample_id), count(*) FROM prompt_evaluation_case "
+        "WHERE evaluation_id = %s",
+        (started["evaluation_id"],),
+    ).fetchone()
+    assert samples == (4, 4)
+    # Averages are over every case, whichever process replayed it.
+    assert (done["tokens_in_before"], done["tokens_in_after"]) == (1000, 300)

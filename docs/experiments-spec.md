@@ -493,6 +493,58 @@ Each ends with a review, the house rhythm.
 - **EX-4 — Meter-hosted offline tests for consenting customers.** Generalise
   `prompt_eval` variants to model and host; OpenAI-compatible hosts; the job
   table (§8.4).
+
+  ✅ **Built for model right-sizing on the same provider (2026-10-02).** What
+  is true today, and where it differs from the plan above:
+
+  - **The job table** (`eval_job`, migration 0068; `jobs.py`). A run that
+    makes model calls inside Meter is written down first, with the captured
+    samples it will replay. Each finished case is stored as it completes, so
+    a resumed run skips what is done (and storing a case twice is refused by
+    the database, not just avoided). A lease, renewed after each case, says
+    who holds it; a lapsed lease is taken over **when anyone opens the run**,
+    or by a new daily step (`python -m meter.jobs`, 10-minute budget). A run
+    abandoned three times is stopped. **Prompt-rewrite evaluations (PO-4)
+    moved onto it** — same behaviour, now resumable, decided from the stored
+    cases rather than from memory. No new service: the web process and the
+    cron are the workers, as §8.4 proposed.
+  - **Hosted model tests** (`hosted_tests.py`). `runs_at = 'meter'` on an
+    offline right-sizing test. Meter replays up to 100 captured calls to the
+    current model (each with its own system prompt) on the current and the
+    cheaper model, with the organization's evaluation key; the same checks;
+    the judge is the model the prompt-capture consent names (the PO-4 judge),
+    both orders. The same numbers-only `experiment_case` rows and the same
+    rule (`offline_tests.conclude`); `results_source = 'meter'`. Answers are
+    not kept. A refused key (401/403) stops the run as inconclusive rather
+    than failing the cheaper model; other provider errors count against the
+    call, as on the customer's side. A run stopped part-way decides nothing.
+  - **Money.** Estimated from the captured calls' tokens (both models, the
+    cheaper one assumed to write as much); held to the PO-4 monthly cap of
+    $25, now **shared** by both kinds of hosted run. A running run counts its
+    estimate; a finished or cancelled one, what it spent. Cost is counted
+    per case as it is spent, so a cancelled test still shows on the feature
+    as testing. **The judge's calls are not in the figure** (PO-4 never
+    counted them either); the page says so.
+  - **Consent.** The prompt-capture terms named replaying examples to test
+    *prompts*. They now also name model tests (`CONSENT_VERSION`
+    2026-10-02). Because that adds a use and collects nothing new, capture
+    carries on under the earlier terms (`CAPTURE_SINCE`); **only hosted model
+    tests wait** until someone agrees to the new words (`MODEL_TESTS_SINCE`).
+    Start and finish are in the prompt audit log.
+  - **The daily step** runs with Meter's judge only if the workflow has the
+    `METER_DISCOVERY_*` settings (docs/deploy.md). Without them it skips runs
+    whose consent names Meter's model, rather than mistaking a missing
+    setting for withdrawn consent; those carry on when opened.
+  - **Not built: testing a model on another provider or host.** A captured
+    call records which client made it, not which host served it, and model
+    names differ between hosts and Meter's price book, so Meter cannot yet
+    replay a call faithfully elsewhere or name the right model there. Needs
+    a host-aware capture and a model-name mapping first.
+  - **Not built:** keeping hosted answers for review (they would need the
+    same purge paths as captured samples); counting the judge's spend;
+    Gemini. Where hosted replay spend lands on the bill is still the §7.5
+    question — it runs on the evaluation key, outside the SDK, so it is
+    likely Unattributed.
 - **EX-5 — Prediction vs outcome.** Freeze the prediction at apply time; report
   the calibration in the Prove loop and the Overview.
 

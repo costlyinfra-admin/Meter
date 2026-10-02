@@ -32,6 +32,8 @@ export function PromptOptimizationCard() {
   const [agreed, setAgreed] = useState(false);
   const [password, setPassword] = useState("");
   const [confirmingWithdraw, setConfirmingWithdraw] = useState(false);
+  // Reviewing terms that were extended while capture carries on.
+  const [reviewing, setReviewing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,6 +83,7 @@ export function PromptOptimizationCard() {
 
   const disclosure = status.current_disclosure;
   const needsConsent = !status.consent || status.version_outdated || status.disclosure_changed;
+  const showTerms = needsConsent || reviewing;
 
   async function grant() {
     if (!disclosure) return;
@@ -94,7 +97,10 @@ export function PromptOptimizationCard() {
         accepted_disclosure: disclosure,
       }),
     );
-    if (ok) setAgreed(false);
+    if (ok) {
+      setAgreed(false);
+      setReviewing(false);
+    }
   }
 
   async function withdraw() {
@@ -111,9 +117,9 @@ export function PromptOptimizationCard() {
         application is set up to send prompts to Meter.
       </p>
 
-      {needsConsent ? (
+      {showTerms ? (
         <>
-          {status.consent && (
+          {status.consent && needsConsent && (
             <p className="hint" role="status">
               <strong>Capture is paused.</strong>{" "}
               {status.version_outdated
@@ -151,8 +157,9 @@ export function PromptOptimizationCard() {
               )}
             </li>
             <li>
-              <strong>Testing costs tokens:</strong> checking a proposed prompt replays real
-              examples on your provider account. Nothing runs without your approval.
+              <strong>Testing costs tokens:</strong> checking a proposed prompt, or a cheaper model
+              when you ask Meter to test one, replays real examples on your provider account. Only
+              the numbers from a model test are kept. Nothing runs without your approval.
             </li>
             <li>
               <strong>Visibility:</strong> anyone in your organization can view captured prompts,
@@ -197,8 +204,17 @@ export function PromptOptimizationCard() {
               onClick={() => void grant()}
               disabled={!disclosure || !agreed || !password || busy !== null}
             >
-              {busy === "grant" ? "Turning on…" : "Turn on prompt optimization"}
+              {busy === "grant"
+                ? "Saving…"
+                : reviewing
+                  ? "Agree to the updated terms"
+                  : "Turn on prompt optimization"}
             </button>
+            {reviewing && (
+              <button className="secondary" onClick={() => setReviewing(false)}>
+                Not now
+              </button>
+            )}
           </div>
         </>
       ) : (
@@ -208,6 +224,16 @@ export function PromptOptimizationCard() {
             {status.consent!.granted_by}. Prompts are seen by {status.consent!.disclosed.provider} (
             <code>{status.consent!.disclosed.model}</code>) and kept {status.retention_days} days.
           </p>
+          {status.terms_extended && (
+            <p className="hint" role="status">
+              <strong>The terms were extended.</strong> They now also let Meter test a cheaper model
+              on captured calls, when you ask it to. Capture carries on under the terms already
+              agreed; that test waits until someone agrees to the new ones.{" "}
+              <button className="link" onClick={() => setReviewing(true)}>
+                Review the updated terms
+              </button>
+            </p>
+          )}
 
           <h3>Features</h3>
           {status.features.length === 0 ? (

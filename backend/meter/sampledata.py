@@ -369,8 +369,11 @@ def _add_simulation(
     )
 
 
-def _add_offline_test_demo(conn, tenant_id, feature_id, control, candidate, verdicts, out_tokens):
-    """A finished offline test (EX-2), as if the customer had run meter-test.
+def _add_offline_test_demo(
+    conn, tenant_id, feature_id, control, candidate, verdicts, out_tokens, runs_at="customer"
+):
+    """A finished offline test (EX-2), as if the customer had run meter-test —
+    or, with `runs_at="meter"`, as if Meter had run it on captured calls (EX-4).
 
     The cases are synthetic numbers — there is no content anywhere in an
     offline test to seed. They go through offline_tests.record, the same code
@@ -393,12 +396,21 @@ def _add_offline_test_demo(conn, tenant_id, feature_id, control, candidate, verd
         """
         INSERT INTO experiment (tenant_id, feature_id, lever, mode, status, provider,
                                 control_model, candidate_model, loss_margin, min_cases, period,
-                                created_by, created_at)
-        VALUES (%s, %s, 'model_rightsizing', 'offline', 'waiting_for_results', 'anthropic',
-                %s, %s, 0.10, 20, %s, 'demo@costlyinfra.com', %s)
+                                created_by, created_at, runs_at)
+        VALUES (%s, %s, 'model_rightsizing', 'offline', %s, 'anthropic',
+                %s, %s, 0.10, 20, %s, 'demo@costlyinfra.com', %s, %s)
         RETURNING id
         """,
-        (tenant_id, feature_id, control, candidate, DEFAULT_PERIOD, when),
+        (
+            tenant_id,
+            feature_id,
+            "running" if runs_at == "meter" else "waiting_for_results",
+            control,
+            candidate,
+            DEFAULT_PERIOD,
+            when,
+            runs_at,
+        ),
     ).fetchone()[0]
     cases = []
     for i, verdict in enumerate(verdicts):
@@ -422,15 +434,19 @@ def _add_offline_test_demo(conn, tenant_id, feature_id, control, candidate, verd
                 "verdict": verdict,
             }
         )
+    hosted = runs_at == "meter"
     offline_tests.record(
         conn,
         tenant_id,
         str(exp_id),
         {
-            "source": "runner",
+            "source": "meter" if hosted else "runner",
             "runner_version": "2.5.0",
-            "judge_model": control,
-            "judge_usage": {"provider": "anthropic", "tokens_in": 120_000, "tokens_out": 1_600},
+            # A Meter-run test is judged by the model the consent names.
+            "judge_model": "openai/gpt-oss-120b" if hosted else control,
+            "judge_usage": None
+            if hosted
+            else {"provider": "anthropic", "tokens_in": 120_000, "tokens_out": 1_600},
             "cases": cases,
         },
         DEFAULT_PERIOD,
@@ -1394,9 +1410,10 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         evicted_24h=120,
     )
     _add_experiment_demo(conn, tenant_id, base["triage"])
-    # Both of triage's models tested offline on the customer's own cases, and
-    # both held — so its right-sizing figure is tested, not a ceiling, and the
-    # Overview has a tested total to show.
+    # Both of triage's models tested offline, and both held — so its
+    # right-sizing figure is tested, not a ceiling, and the Overview has a
+    # tested total to show. One ran on the customer's own cases; the other
+    # Meter ran itself, on calls it captured with consent (EX-4).
     _add_offline_test_demo(
         conn,
         tenant_id,
@@ -1414,6 +1431,7 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         "claude-sonnet-4-6",
         ["better"] * 4 + ["same"] * 20 + ["worse"] * 2,
         (520, 470),
+        runs_at="meter",
     )
 
     # An applied optimization (opt spec §11/§20): dedup was applied in March with a

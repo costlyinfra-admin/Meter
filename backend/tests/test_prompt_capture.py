@@ -170,11 +170,27 @@ def test_capture_pauses_when_the_model_that_would_see_prompts_changes(
 
 def test_capture_pauses_when_the_consent_text_changes(app_env, tenant_id, monkeypatch):
     feature = open_capture(app_env, tenant_id)
+    # A change that collects more, or shows it to someone new, moves both.
     monkeypatch.setattr(pc, "CONSENT_VERSION", "2099-01-01")
+    monkeypatch.setattr(pc, "CAPTURE_SINCE", "2099-01-01")
     with pytest.raises(pc.CaptureRefused) as refused:
         pc.store_sample(tenant_id, sample(feature))
     assert refused.value.reason == "consent_outdated"
     assert pc.consent_status(tenant_id)["version_outdated"] is True
+
+
+def test_terms_that_only_add_a_use_do_not_pause_capture(app_env, tenant_id, monkeypatch):
+    feature = open_capture(app_env, tenant_id)
+    agreed = pc.consent_status(tenant_id)["consent"]["consent_version"]
+    monkeypatch.setattr(pc, "CONSENT_VERSION", "2099-01-01")
+    monkeypatch.setattr(pc, "CAPTURE_SINCE", agreed)
+    pc.store_sample(tenant_id, sample(feature))  # still accepted
+    status = pc.consent_status(tenant_id)
+    assert (status["capturing"], status["version_outdated"], status["terms_extended"]) == (
+        True,
+        False,
+        True,
+    )
 
 
 # ---------------------------------------------------------------------------

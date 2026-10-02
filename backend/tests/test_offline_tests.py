@@ -408,5 +408,13 @@ def test_the_demo_shows_a_fully_tested_right_sizing_saving(tenant_id, app_env):
     assert (rs["savings_type"], rs["validation"]) == ("tested", "tested_offline")
     assert result["totals"]["tested"] == rs["projected_monthly_savings"] > 0
     assert result["testing_spend"] > 0
+    # One test ran on the customer's side, the other inside Meter (EX-4).
+    assert "of your own cases" in rs["evidence"]
+    assert "of your captured calls, replayed by Meter" in rs["evidence"]
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        sources = conn.execute(
+            "SELECT runs_at, results_source FROM experiment WHERE mode = 'offline' ORDER BY 1"
+        ).fetchall()
+    assert sources == [("customer", "runner"), ("meter", "meter")]
     overview = optimize_measured.copilot_overview(tenant_id, DEFAULT_PERIOD)
     assert overview["totals"]["tested"] >= rs["projected_monthly_savings"]

@@ -9,13 +9,33 @@
  */
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, type ExperimentInput, type OfflineOptions, type Opportunity } from "../api";
+import {
+  api,
+  ApiError,
+  type ExperimentInput,
+  type HostedBlock,
+  type OfflineOptions,
+  type Opportunity,
+} from "../api";
 import { CACHE_CHOICES, FRESHNESS_CHOICES, LEVER_TITLES } from "../experimentLabels";
 import { money } from "../format";
 
+/** Why Meter cannot run the test itself, and what would change that. */
+const HOSTED_BLOCKS: Record<HostedBlock, string> = {
+  not_capturing: "Needs prompt optimization turned on, so Meter holds real calls to replay.",
+  terms_not_agreed:
+    "Prompt optimization's terms now cover model tests run by Meter. Someone needs to agree to the updated terms first.",
+  feature_not_enabled: "Needs prompt capture turned on for this feature.",
+  no_samples: "Meter has not captured any calls to this model on this feature yet.",
+  no_key: "Needs an evaluation key: the test makes real model calls on your account.",
+};
+
+const PROVIDER_NAMES: Record<string, string> = { anthropic: "Anthropic", openai: "OpenAI" };
+
 /**
  * Model right-sizing: which model to replace, which to test in its place, and
- * where — on the customer's own cases (EX-2) or a share of live traffic (EX-3).
+ * where — on the customer's own cases (EX-2), on calls Meter has captured,
+ * run by Meter (EX-4), or a share of live traffic (EX-3).
  */
 function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportunity }) {
   const navigate = useNavigate();
@@ -23,7 +43,9 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
   const [failed, setFailed] = useState(false);
   const [control, setControl] = useState("");
   const [candidate, setCandidate] = useState("");
-  const [how, setHow] = useState<"offline" | "live">("offline");
+  const [how, setHow] = useState<"offline" | "meter" | "live">("offline");
+  const [evalKey, setEvalKey] = useState("");
+  const [savingKey, setSavingKey] = useState(false);
   const [marginPct, setMarginPct] = useState(10);
   const [minCases, setMinCases] = useState(20);
   // Live dials, held in the units the form shows: percent and points.
@@ -35,6 +57,13 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
   const [qualityPct, setQualityPct] = useState(5);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function load() {
+    return api.experimentOptions(featureId).then((o) => {
+      setOptions(o);
+      return o;
+    });
+  }
 
   useEffect(() => {
     api
@@ -76,9 +105,22 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
     );
 
   const current = options.controls.find((c) => c.model === control) ?? options.controls[0];
+  const hosted = options.hosted.by_control[current.model];
+  const hostedCost = hosted?.estimates[candidate] ?? 0;
+  const capLeft = options.hosted.monthly_cap - options.hosted.spent_this_month;
+  // Why Meter cannot run this test as set, in words — or null if it can.
+  const hostedBlock = !hosted
+    ? HOSTED_BLOCKS.no_samples
+    : hosted.reason
+      ? HOSTED_BLOCKS[hosted.reason]
+      : hosted.cases < minCases
+        ? `Meter holds ${hosted.cases} captured calls to ${current.model} on this feature; the rule below needs ${minCases}.`
+        : hostedCost > capLeft
+          ? `It would cost about ${money(hostedCost)}, and ${money(Math.max(capLeft, 0))} is left of this month's ${money(options.hosted.monthly_cap)} for tests Meter runs.`
+          : null;
   const d = options.live.defaults;
   const loosened =
-    how === "offline"
+    how !== "live"
       ? marginPct / 100 > options.rule.loss_margin || minCases < options.rule.min_cases
       : minCalls < d.min_calls ||
         minDays < d.min_days ||
@@ -92,9 +134,11 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
     setError(null);
     try {
       const body: ExperimentInput =
-        how === "offline"
+        how !== "live"
           ? {
               lever: "model_rightsizing",
+              mode: "offline",
+              runs_at: how === "meter" ? "meter" : "customer",
               control_model: control,
               candidate_model: candidate,
               loss_margin: marginPct / 100,
@@ -151,8 +195,8 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
     <form className="settings-card" onSubmit={submit}>
       <p>
         Meter estimated up to <strong>{money(opp.projected_monthly_savings)}/mo</strong> if a
-        cheaper model holds up for this feature. Whether it does is a question about answers, so the
-        test runs where they are, and only numbers come back to Meter.
+        cheaper model holds up for this feature. Whether it does is a question about answers, so it
+        is tested on real requests, and only numbers are kept.
       </p>
 
       <div className="settings-field">
@@ -203,6 +247,22 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
           </span>
         </label>
         <label className="test-choice">
+          <input
+            type="radio"
+            name="how"
+            checked={how === "meter"}
+            onChange={() => setHow("meter")}
+          />
+          <span>
+            <strong>On calls Meter has captured, run by Meter</strong>
+            <span className="muted">
+              Nothing to install. Meter replays real calls it captured for prompt optimization
+              through both models with your evaluation key, and the model your consent named judges
+              the answers. Only the numbers are kept.
+            </span>
+          </span>
+        </label>
+        <label className="test-choice">
           <input type="radio" name="how" checked={how === "live"} onChange={() => setHow("live")} />
           <span>
             <strong>On a share of live traffic</strong>
@@ -214,7 +274,67 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
         </label>
       </fieldset>
 
-      {how === "offline" ? (
+      {how === "meter" && (
+        <div className="test-hosted" aria-live="polite">
+          {hostedBlock ? (
+            <p className="opt-item-test-note" role="note">
+              {hostedBlock}{" "}
+              {(hosted?.reason === "not_capturing" || hosted?.reason === "terms_not_agreed") && (
+                <Link to="/settings#privacy">Prompt optimization settings</Link>
+              )}
+              {hosted?.reason === "feature_not_enabled" && (
+                <Link to="/optimize/prompts">Prompts</Link>
+              )}
+            </p>
+          ) : (
+            <p className="settings-hint">
+              Meter will replay <strong>{Math.min(hosted.cases, options.hosted.max_cases)}</strong>{" "}
+              captured calls to {current.model}: about <strong>{money(hostedCost)}</strong> on your{" "}
+              {PROVIDER_NAMES[current.provider] ?? current.provider} account, plus the judge&rsquo;s
+              calls. {money(options.hosted.spent_this_month)} of this month&rsquo;s{" "}
+              {money(options.hosted.monthly_cap)} for tests Meter runs is used.
+            </p>
+          )}
+          {hosted?.reason === "no_key" && (
+            <div className="settings-field settings-field-inline">
+              <label htmlFor="t-evalkey">
+                {PROVIDER_NAMES[current.provider] ?? current.provider} evaluation key
+              </label>
+              <input
+                id="t-evalkey"
+                type="password"
+                autoComplete="off"
+                value={evalKey}
+                onChange={(e) => setEvalKey(e.target.value)}
+              />
+              <button
+                type="button"
+                disabled={!evalKey || savingKey}
+                onClick={() => {
+                  const entered = evalKey;
+                  setEvalKey("");
+                  setSavingKey(true);
+                  setError(null);
+                  api
+                    .setEvalKey(current.provider, entered)
+                    .then(load)
+                    .catch((err) =>
+                      setError(err instanceof ApiError ? err.message : "Could not add the key."),
+                    )
+                    .finally(() => setSavingKey(false));
+                }}
+              >
+                {savingKey ? "Adding…" : "Add key"}
+              </button>
+              <span className="settings-hint muted">
+                Write-only: Meter uses it for tests you start, and never shows it again.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {how !== "live" ? (
         <fieldset className="test-choices">
           <legend>The rule</legend>
           <p className="settings-hint muted">
@@ -290,11 +410,13 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
       <p className="settings-hint muted">
         {how === "offline"
           ? "Running it calls both models once per case, plus the judge twice, on your provider account. Meter shows what it cost afterwards; it is part of your provider bill either way."
-          : "Meter does not route traffic: your feature flag does. The cheaper model's calls are real production calls, billed as usual."}
+          : how === "meter"
+            ? "The test runs in the background and carries on by itself if it is interrupted; you can leave the page."
+            : "Meter does not route traffic: your feature flag does. The cheaper model's calls are real production calls, billed as usual."}
       </p>
 
       <div className="settings-actions">
-        <button type="submit" disabled={busy || !candidate}>
+        <button type="submit" disabled={busy || !candidate || (how === "meter" && !!hostedBlock)}>
           {busy ? "Starting…" : "Start the test"}
         </button>
         {error && (

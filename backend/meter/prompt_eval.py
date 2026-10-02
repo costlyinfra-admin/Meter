@@ -32,14 +32,13 @@ import datetime as dt
 import json
 import logging
 import re
-import threading
 import time
 from decimal import Decimal
 from typing import Optional
 
 import httpx
 
-from . import crypto, discovery_llm, pricing, prompt_capture
+from . import crypto, discovery_llm, jobs, pricing, prompt_capture
 from .db import app_dsn, connect, tenant_tx
 
 logger = logging.getLogger("meter.prompt_eval")
@@ -77,6 +76,14 @@ Reply with JSON only: {"winner": "A" | "B" | "tie", "reason": "<one short senten
 
 class EvalError(ValueError):
     """An evaluation that cannot be started (maps to HTTP 400)."""
+
+
+class ReplayRefused(EvalError):
+    """The provider answered a replay with an error. `status` is its HTTP code."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +154,6 @@ def _read_key(conn, provider: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # What a run would cost
 # ---------------------------------------------------------------------------
-def _month_start(now: dt.datetime) -> dt.datetime:
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-
 def estimate(tenant_id: str, template_id: str, now: Optional[dt.datetime] = None) -> dict:
     """What testing this rewrite would cost, and whether it may go ahead.
 
@@ -175,10 +178,9 @@ def estimate(tenant_id: str, template_id: str, now: Optional[dt.datetime] = None
             """,
             (template_id, MAX_CASES),
         ).fetchall()
-        spent = conn.execute(
-            "SELECT coalesce(sum(spend), 0) FROM prompt_evaluation WHERE started_at >= %s",
-            (_month_start(now),),
-        ).fetchone()[0]
+        # Shared with Meter-hosted model tests: one cap for every run that
+        # spends the organization's money inside Meter.
+        spent = jobs.spent_this_month(conn, now)
         has_key = bool(samples) and _read_key(conn, samples[0][0]) is not None
 
     if not samples:
@@ -309,9 +311,10 @@ def _replay(
 
 def _ok(resp: httpx.Response, secret: str) -> dict:
     if resp.status_code >= 400:
-        raise EvalError(
+        raise ReplayRefused(
+            resp.status_code,
             f"The provider refused a replay ({resp.status_code}): "
-            + discovery_llm.redact(resp.text[:200], secret)
+            + discovery_llm.redact(resp.text[:200], secret),
         )
     return resp.json()
 
@@ -447,7 +450,8 @@ def start_evaluation(
 
     Everything that can refuse happens here, before a token is spent: consent,
     a rewrite to test, a key that can make the calls, a model Meter can price,
-    and room under the monthly cap.
+    and room under the monthly cap. The run is then written down (jobs.py)
+    with the samples it will replay, so it carries on after an interruption.
     """
     template_id = prompt_capture._uuid_text(template_id, "template_id")
     if not prompt_capture.consent_status(tenant_id)["capturing"]:
@@ -456,48 +460,50 @@ def start_evaluation(
     if not plan["can_run"]:
         raise EvalError(_REASONS.get(plan["reason"], "This rewrite cannot be tested yet."))
 
-    judge_config = discovery_llm.active_config(tenant_id) or discovery_llm.env_llm_config()
+    judge_config = _judge_config(tenant_id)
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
-        key = prompt_capture._data_key(conn, create=False)
-        api_key = _read_key(conn, plan["provider"])
-        if key is None or api_key is None:
+        if prompt_capture._data_key(conn, create=False) is None or (
+            _read_key(conn, plan["provider"]) is None
+        ):
             raise EvalError("That prompt is no longer readable.")
-        template_row = conn.execute(
-            "SELECT ciphertext FROM prompt_template WHERE id = %s", (template_id,)
-        ).fetchone()
-        candidate_row = conn.execute(
-            "SELECT ciphertext FROM prompt_candidate WHERE id = %s", (plan["candidate_id"],)
-        ).fetchone()
-        if template_row is None or candidate_row is None:
-            raise EvalError("That rewrite is no longer stored.")
-        sample_rows = conn.execute(
-            """
-            SELECT id, ciphertext FROM prompt_sample WHERE template_id = %s
-            ORDER BY received_at DESC LIMIT %s
-            """,
-            (template_id, plan["cases"]),
-        ).fetchall()
-        evaluation_id = conn.execute(
-            """
-            INSERT INTO prompt_evaluation
-                (tenant_id, candidate_id, template_id, cases_planned, provider, model,
-                 judge_model, started_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-            """,
-            (
-                tenant_id,
-                plan["candidate_id"],
-                template_id,
-                len(sample_rows),
-                plan["provider"],
-                plan["model"],
-                (judge_config.model if judge_config else ""),
-                actor,
-            ),
-        ).fetchone()[0]
+        sample_ids = [
+            str(r[0])
+            for r in conn.execute(
+                """
+                SELECT id FROM prompt_sample WHERE template_id = %s
+                ORDER BY received_at DESC LIMIT %s
+                """,
+                (template_id, plan["cases"]),
+            ).fetchall()
+        ]
+        if not sample_ids:
+            raise EvalError(_REASONS["no_samples"])
+        evaluation_id = str(
+            conn.execute(
+                """
+                INSERT INTO prompt_evaluation
+                    (tenant_id, candidate_id, template_id, cases_planned, provider, model,
+                     judge_model, started_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (
+                    tenant_id,
+                    plan["candidate_id"],
+                    template_id,
+                    len(sample_ids),
+                    plan["provider"],
+                    plan["model"],
+                    (judge_config.model if judge_config else ""),
+                    actor,
+                ),
+            ).fetchone()[0]
+        )
         conn.execute(
             "UPDATE prompt_candidate SET status = 'evaluating' WHERE id = %s",
             (plan["candidate_id"],),
+        )
+        job_id = jobs.enqueue(
+            conn, tenant_id, "prompt_evaluation", evaluation_id, sample_ids, plan["cost_estimate"]
         )
         prompt_capture._audit(
             conn,
@@ -505,73 +511,108 @@ def start_evaluation(
             "evaluation_started",
             actor,
             detail={
-                "evaluation_id": str(evaluation_id),
-                "cases": len(sample_rows),
+                "evaluation_id": evaluation_id,
+                "cases": len(sample_ids),
                 "provider": plan["provider"],
                 "model": plan["model"],
                 "estimate": plan["cost_estimate"],
             },
         )
-        work = {
-            "provider": plan["provider"],
-            "model": plan["model"],
+
+    jobs.start(tenant_id, job_id, background=background, client=client, judge_client=judge_client)
+    return status(tenant_id, evaluation_id, resume=False)
+
+
+def _judge_config(tenant_id: str):
+    """The model that judges: the one the organization's consent named."""
+    return discovery_llm.active_config(tenant_id) or discovery_llm.env_llm_config()
+
+
+def _load(tenant_id: str, job: dict) -> Optional[dict]:
+    """What a run needs to carry on: the prompts, the key, and the samples it
+    has not replayed yet, in the order planned. None if the run is over."""
+    if not prompt_capture.consent_status(tenant_id)["capturing"]:
+        raise EvalError("Prompt optimization was turned off or paused during the run.")
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        run = conn.execute(
+            """
+            SELECT candidate_id, template_id, provider, model FROM prompt_evaluation
+            WHERE id = %s AND status = 'running'
+            """,
+            (job["evaluation_id"],),
+        ).fetchone()
+        if run is None:
+            return None
+        key = prompt_capture._data_key(conn, create=False)
+        api_key = _read_key(conn, run[2])
+        if key is None or api_key is None:
+            raise EvalError("The prompt or the evaluation key was removed during the run.")
+        template_row = conn.execute(
+            "SELECT ciphertext FROM prompt_template WHERE id = %s", (run[1],)
+        ).fetchone()
+        candidate_row = conn.execute(
+            "SELECT ciphertext FROM prompt_candidate WHERE id = %s", (run[0],)
+        ).fetchone()
+        if template_row is None or candidate_row is None:
+            raise EvalError("That rewrite is no longer stored.")
+        done = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT sample_id FROM prompt_evaluation_case "
+                "WHERE evaluation_id = %s AND sample_id IS NOT NULL",
+                (job["evaluation_id"],),
+            ).fetchall()
+        }
+        remaining = [s for s in job["sample_ids"] if s not in done]
+        held = {
+            str(r[0]): r[1]
+            for r in conn.execute(
+                "SELECT id, ciphertext FROM prompt_sample WHERE id = ANY(%s::uuid[])",
+                (remaining,),
+            ).fetchall()
+        }
+        return {
+            "provider": run[2],
+            "model": run[3],
             "api_key": api_key,
-            "candidate_id": str(plan["candidate_id"]),
             "template": prompt_capture._open(key, template_row[0]),
             "candidate": prompt_capture._open(key, candidate_row[0]),
+            # A sample purged since the run was planned is skipped, not invented.
             "cases": [
-                {"sample_id": str(r[0]), **prompt_capture._open(key, r[1])} for r in sample_rows
+                {"sample_id": s, **prompt_capture._open(key, held[s])}
+                for s in remaining
+                if s in held
             ],
         }
 
-    def runner() -> None:
-        _run_evaluation(tenant_id, str(evaluation_id), work, judge_config, client, judge_client)
 
-    if background:
-        thread = threading.Thread(target=runner, daemon=True)
-        thread.start()
-    else:
-        runner()
-    return status(tenant_id, str(evaluation_id))
-
-
-def _run_evaluation(
-    tenant_id: str,
-    evaluation_id: str,
-    work: dict,
-    judge_config,
-    client: Optional[httpx.Client],
-    judge_client: Optional[httpx.Client],
-) -> None:
-    """Replay every case, store what came back, then decide. Never raises."""
+def _run_job(tenant_id: str, job: dict, client, judge_client, keep_going) -> str:
+    """Replay every case not yet stored, then decide. Never raises (jobs.py)."""
+    evaluation_id = job["evaluation_id"]
     owns = client is None
     client = client or httpx.Client()
     judge_client = judge_client or client
-    totals = {"better": 0, "same": 0, "worse": 0, "checks": 0, "done": 0}
-    sums = {k: 0 for k in ("tin_b", "tin_a", "tout_b", "tout_a", "lat_b", "lat_a")}
-    money = {"before": Decimal("0"), "after": Decimal("0")}
-    failure = ""
+    secret = ""
     try:
+        work = _load(tenant_id, job)
+        if work is None:
+            return "failed"  # finished or removed while nobody held it
+        secret = work["api_key"]
+        judge_config = _judge_config(tenant_id)
         for case in work["cases"]:
             messages = case.get("input") or []
             parameters = case.get("parameters") or {}
-            before = _replay(
-                client,
-                work["provider"],
-                work["model"],
-                work["api_key"],
-                work["template"],
-                messages,
-                parameters,
-            )
-            after = _replay(
-                client,
-                work["provider"],
-                work["model"],
-                work["api_key"],
-                work["candidate"],
-                messages,
-                parameters,
+            before, after = (
+                _replay(
+                    client,
+                    work["provider"],
+                    work["model"],
+                    work["api_key"],
+                    prompt,
+                    messages,
+                    parameters,
+                )
+                for prompt in (work["template"], work["candidate"])
             )
             broken = failed_checks(before["text"], after["text"])
             verdict, reason = "unjudged", ""
@@ -587,28 +628,22 @@ def _run_evaluation(
                     verdict, reason = judged["verdict"], judged["reason"]
                 except Exception:  # a judge that cannot answer costs a verdict, not the run
                     verdict, reason = "unjudged", ""
-            totals["done"] += 1
-            totals["checks"] += 1 if broken else 0
-            if verdict in totals:
-                totals[verdict] += 1
-            sums["tin_b"] += before["tokens_in"]
-            sums["tin_a"] += after["tokens_in"]
-            sums["tout_b"] += before["tokens_out"]
-            sums["tout_a"] += after["tokens_out"]
-            sums["lat_b"] += before["latency_ms"]
-            sums["lat_a"] += after["latency_ms"]
-            money["before"] += before["cost"]
-            money["after"] += after["cost"]
-            _store_case(
-                tenant_id, evaluation_id, case, before, after, verdict, reason, broken, totals
-            )
+            _store_case(tenant_id, evaluation_id, case, before, after, verdict, reason, broken)
+            if not keep_going():
+                return "paused"
     except Exception as exc:
-        failure = discovery_llm.redact(str(exc)[:300], work["api_key"])
         logger.warning("evaluation %s failed", evaluation_id)
+        _finish(tenant_id, evaluation_id, discovery_llm.redact(str(exc)[:300], secret))
+        return "failed"
     finally:
         if owns:
             client.close()
-        _finish(tenant_id, evaluation_id, work, totals, sums, money, failure)
+    _finish(tenant_id, evaluation_id, "")
+    return "done"
+
+
+def _stop_job(tenant_id: str, job: dict, why: str) -> None:
+    _finish(tenant_id, job["evaluation_id"], why)
 
 
 def _store_case(
@@ -620,12 +655,12 @@ def _store_case(
     verdict: str,
     reason: str,
     broken: list,
-    totals: dict,
 ) -> None:
+    """Keep one finished case, once, and bring the run's counts up to date."""
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         key = prompt_capture._data_key(conn, create=False)
         if key is None:
-            return  # consent withdrawn mid-run: nothing more may be written
+            raise EvalError("Prompt optimization was turned off during the run.")
         conn.execute(
             """
             INSERT INTO prompt_evaluation_case
@@ -634,6 +669,7 @@ def _store_case(
                  latency_before_ms, latency_after_ms, cost_before, cost_after,
                  verdict, verdict_cipher, failed_checks)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (evaluation_id, sample_id) DO NOTHING
             """,
             (
                 tenant_id,
@@ -656,37 +692,52 @@ def _store_case(
         )
         conn.execute(
             """
-            UPDATE prompt_evaluation
-            SET cases_done = %s, better = %s, same = %s, worse = %s, check_failures = %s
-            WHERE id = %s
+            UPDATE prompt_evaluation e
+               SET cases_done = c.done, better = c.better, same = c.same, worse = c.worse,
+                   check_failures = c.checks
+              FROM (SELECT count(*) AS done,
+                           count(*) FILTER (WHERE verdict = 'better') AS better,
+                           count(*) FILTER (WHERE verdict = 'same') AS same,
+                           count(*) FILTER (WHERE verdict = 'worse') AS worse,
+                           count(*) FILTER (WHERE failed_checks <> '[]'::jsonb) AS checks
+                      FROM prompt_evaluation_case WHERE evaluation_id = %s) c
+             WHERE e.id = %s
             """,
-            (
-                totals["done"],
-                totals["better"],
-                totals["same"],
-                totals["worse"],
-                totals["checks"],
-                evaluation_id,
-            ),
+            (evaluation_id, evaluation_id),
         )
 
 
-def _finish(
-    tenant_id: str,
-    evaluation_id: str,
-    work: dict,
-    totals: dict,
-    sums: dict,
-    money: dict,
-    failure: str,
-) -> None:
-    done = max(totals["done"], 1)
-    decision, reason = (None, "")
-    if not failure and totals["done"]:
-        decision, reason = decide(
-            totals["better"], totals["same"], totals["worse"], totals["checks"], totals["done"]
-        )
+def _finish(tenant_id: str, evaluation_id: str, failure: str) -> None:
+    """Decide from every stored case — whichever process stored them."""
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        run = conn.execute(
+            "SELECT candidate_id FROM prompt_evaluation WHERE id = %s AND status = 'running'",
+            (evaluation_id,),
+        ).fetchone()
+        if run is None:
+            return  # already finished
+        t = conn.execute(
+            """
+            SELECT count(*),
+                   count(*) FILTER (WHERE verdict = 'better'),
+                   count(*) FILTER (WHERE verdict = 'same'),
+                   count(*) FILTER (WHERE verdict = 'worse'),
+                   count(*) FILTER (WHERE failed_checks <> '[]'::jsonb),
+                   coalesce(sum(tokens_in_before), 0), coalesce(sum(tokens_in_after), 0),
+                   coalesce(sum(tokens_out_before), 0), coalesce(sum(tokens_out_after), 0),
+                   coalesce(sum(latency_before_ms), 0), coalesce(sum(latency_after_ms), 0),
+                   coalesce(sum(cost_before), 0), coalesce(sum(cost_after), 0)
+              FROM prompt_evaluation_case WHERE evaluation_id = %s
+            """,
+            (evaluation_id,),
+        ).fetchone()
+        done_count, better, same, worse, checks = (int(v) for v in t[:5])
+        tin_b, tin_a, tout_b, tout_a, lat_b, lat_a = (int(v) for v in t[5:11])
+        money_before, money_after = Decimal(t[11]), Decimal(t[12])
+        done = max(done_count, 1)
+        decision, reason = (None, "")
+        if not failure and done_count:
+            decision, reason = decide(better, same, worse, checks, done_count)
         conn.execute(
             """
             UPDATE prompt_evaluation
@@ -702,22 +753,22 @@ def _finish(
                 "failed" if failure else "completed",
                 decision,
                 reason,
-                money["before"] / done,
-                money["after"] / done,
-                sums["tin_b"] // done,
-                sums["tin_a"] // done,
-                sums["tout_b"] // done,
-                sums["tout_a"] // done,
-                sums["lat_b"] // done,
-                sums["lat_a"] // done,
-                money["before"] + money["after"],
+                money_before / done,
+                money_after / done,
+                tin_b // done,
+                tin_a // done,
+                tout_b // done,
+                tout_a // done,
+                lat_b // done,
+                lat_a // done,
+                money_before + money_after,
                 failure,
                 evaluation_id,
             ),
         )
         conn.execute(
             "UPDATE prompt_candidate SET status = %s WHERE id = %s",
-            (decision or "not_evaluated", work["candidate_id"]),
+            (decision or "not_evaluated", run[0]),
         )
         prompt_capture._audit(
             conn,
@@ -726,7 +777,7 @@ def _finish(
             None,
             detail={
                 "evaluation_id": evaluation_id,
-                "cases": totals["done"],
+                "cases": done_count,
                 "decision": decision,
                 "failed": bool(failure),
             },
@@ -741,8 +792,14 @@ def status(
     evaluation_id: Optional[str] = None,
     template_id: Optional[str] = None,
     now: Optional[dt.datetime] = None,
+    *,
+    resume: bool = True,
 ) -> Optional[dict]:
-    """One run: its progress, what it measured, and what it decided. No content."""
+    """One run: its progress, what it measured, and what it decided. No content.
+
+    A run still marked running that nobody holds was interrupted; looking at
+    it starts it again from the first case it had not finished (jobs.py).
+    """
     now = now or dt.datetime.now(dt.timezone.utc)
     where, params = (
         ("e.id = %s", [prompt_capture._uuid_text(evaluation_id, "evaluation_id")])
@@ -766,6 +823,8 @@ def status(
         ).fetchone()
         if row is None:
             return None
+        if resume and row[3] == "running":
+            jobs.resume_if_abandoned(tenant_id, "prompt_evaluation", str(row[0]))
         cases = conn.execute(
             """
             SELECT id, verdict, failed_checks, tokens_in_before, tokens_in_after,

@@ -26,6 +26,8 @@ const NOT_GRANTED: PromptConsentStatus = {
   version_outdated: false,
   disclosure_changed: false,
   capturing: false,
+  terms_extended: false,
+  model_tests: false,
   retention_days: 30,
   features: [
     {
@@ -48,6 +50,7 @@ const GRANTED: PromptConsentStatus = {
     disclosed: MODEL,
   },
   capturing: true,
+  model_tests: true,
 };
 
 beforeEach(() => {
@@ -164,6 +167,37 @@ describe("PromptOptimizationCard — after consent", () => {
     fireEvent.click(screen.getByRole("button", { name: "Yes, withdraw and delete" }));
     await waitFor(() => expect(api.withdrawPromptConsent).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/Who sees your prompts/)).toBeInTheDocument();
+  });
+
+  it("keeps capturing when the terms only add a use, and offers the new terms", async () => {
+    vi.mocked(api.promptConsent).mockResolvedValue({
+      ...GRANTED,
+      current_version: "2026-10-02",
+      terms_extended: true,
+      model_tests: false,
+    });
+    vi.mocked(api.grantPromptConsent).mockResolvedValue({
+      ...GRANTED,
+      current_version: "2026-10-02",
+    });
+    render(<PromptOptimizationCard />);
+    expect(await screen.findByText("The terms were extended.")).toBeInTheDocument();
+    expect(screen.queryByText("Capture is paused.")).not.toBeInTheDocument();
+    // Still capturing: the features stay where they were.
+    expect(screen.getByLabelText("Capture prompts for Ticket triage")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Review the updated terms" }));
+    expect(screen.getByText(/or a cheaper model when you ask Meter to test one/)).toBeVisible();
+    fireEvent.click(agreeBox());
+    fireEvent.change(passwordBox(), { target: { value: "hunter22" } });
+    fireEvent.click(screen.getByRole("button", { name: "Agree to the updated terms" }));
+    await waitFor(() =>
+      expect(api.grantPromptConsent).toHaveBeenCalledWith(
+        expect.objectContaining({ accepted_version: "2026-10-02" }),
+      ),
+    );
+    expect(await screen.findByText(/On since/)).toBeInTheDocument();
+    expect(screen.queryByText("The terms were extended.")).not.toBeInTheDocument();
   });
 
   it("pauses and asks again when the model that would see prompts changes", async () => {

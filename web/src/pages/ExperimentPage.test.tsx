@@ -16,6 +16,7 @@ function repeats(over: Partial<Experiment> = {}): Experiment {
     feature_name: "Report generator",
     lever: "duplicate_calls",
     mode: "simulate",
+    runs_at: "customer",
     status: "completed",
     outcome: "passed",
     outcome_reason:
@@ -437,5 +438,43 @@ describe("A live test", () => {
     expect(
       await screen.findByText(/12 calls tagged candidate ran a different model/),
     ).toBeVisible();
+  });
+});
+
+describe("A test Meter runs itself", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("shows how far it has got, and needs nothing from you", async () => {
+    vi.mocked(api.experiment).mockResolvedValue(
+      offline({
+        runs_at: "meter",
+        status: "running",
+        outcome: null,
+        outcome_reason: "",
+        result: null,
+        results_source: null,
+        progress: { planned: 40, done: 12, status: "running", interruptions: 0 },
+      }),
+    );
+    renderWithState(null);
+    expect(await screen.findByText("Running")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Replaying captured calls");
+    expect(screen.getByText("12 of 40 captured calls replayed")).toBeVisible();
+    expect(screen.getByLabelText("Cases replayed")).toHaveAttribute("value", "12");
+    // Nothing to run, no token, no live-traffic instructions.
+    expect(document.querySelector(".test-commands")).toBeNull();
+    expect(screen.getByRole("button", { name: "End the test" })).toBeVisible();
+  });
+
+  it("says where the numbers came from, and that the answers were not kept", async () => {
+    vi.mocked(api.experiment).mockResolvedValue(
+      offline({ runs_at: "meter", results_source: "meter", judge_model: "openai/gpt-oss-120b" }),
+    );
+    renderWithState(null);
+    expect(
+      await screen.findByText(/Results from Meter, replaying your captured calls/),
+    ).toHaveTextContent("not counting the judge's calls");
+    expect(screen.getByText(/The answers were not stored/)).toBeVisible();
+    expect(screen.queryByText(/The test ran on your machine/)).not.toBeInTheDocument();
   });
 });
