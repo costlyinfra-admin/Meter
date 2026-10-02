@@ -359,6 +359,62 @@ def _add_simulation(conn, tenant_id, feature_id, calls, ladder, *, evicted_24h=0
     )
 
 
+def _add_offline_test_demo(conn, tenant_id, feature_id, control, candidate, verdicts, out_tokens):
+    """A finished offline test (EX-2), as if the customer had run meter-test.
+
+    The cases are synthetic numbers — there is no content anywhere in an
+    offline test to seed. They go through offline_tests.record, the same code
+    a real run's results do. The spend it is applied to is read for THIS
+    tenant only, because the seeder may hold a connection that bypasses
+    tenant isolation and the usual lookup reads every tenant's connectors.
+    """
+    from . import offline_tests
+
+    when = _dt.datetime(2026, 5, 20, 11, 0, tzinfo=_dt.timezone.utc)
+    spend = conn.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0) FROM inference_cost
+         WHERE tenant_id = %s AND feature_id = %s AND period = %s AND model = %s
+           AND source <> 'hook'
+        """,
+        (tenant_id, feature_id, DEFAULT_PERIOD, control),
+    ).fetchone()[0]
+    exp_id = conn.execute(
+        """
+        INSERT INTO experiment (tenant_id, feature_id, lever, mode, status, provider,
+                                control_model, candidate_model, loss_margin, min_cases, period,
+                                created_by, created_at)
+        VALUES (%s, %s, 'model_rightsizing', 'offline', 'waiting_for_results', 'anthropic',
+                %s, %s, 0.10, 20, %s, 'demo@costlyinfra.com', %s)
+        RETURNING id
+        """,
+        (tenant_id, feature_id, control, candidate, DEFAULT_PERIOD, when),
+    ).fetchone()[0]
+    cases = []
+    for i, verdict in enumerate(verdicts):
+        tin = 1600 + (i * 37) % 400  # a believable spread, the same for both models
+        cases.append({
+            "case": _hashlib.sha256(f"demo-{control}-{i}".encode()).hexdigest(),
+            "control": {"tokens_in": tin, "tokens_out": out_tokens[0] + (i * 13) % 90,
+                        "latency_ms": 2100 + (i * 53) % 700, "error": False},
+            "candidate": {"tokens_in": tin, "tokens_out": out_tokens[1] + (i * 11) % 80,
+                          "latency_ms": 900 + (i * 41) % 400, "error": False},
+            "check_failures": 0,
+            "verdict": verdict,
+        })
+    offline_tests.record(
+        conn, tenant_id, str(exp_id),
+        {"source": "runner", "runner_version": "2.5.0", "judge_model": control,
+         "judge_usage": {"provider": "anthropic", "tokens_in": 120_000, "tokens_out": 1_600},
+         "cases": cases},
+        DEFAULT_PERIOD, float(spend),
+    )
+    conn.execute(
+        "UPDATE experiment SET completed_at = %s WHERE id = %s",
+        (when + _dt.timedelta(minutes=14), exp_id),
+    )
+
+
 def _add_experiment_demo(conn, tenant_id, feature_id) -> None:
     """One finished test, so the demo shows a recommendation that has been
     tested: triage's prompt caching, under the 1-hour cache.
@@ -1296,6 +1352,17 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         evicted_24h=120,
     )
     _add_experiment_demo(conn, tenant_id, base["triage"])
+    # Both of triage's models tested offline on the customer's own cases, and
+    # both held — so its right-sizing figure is tested, not a ceiling, and the
+    # Overview has a tested total to show.
+    _add_offline_test_demo(
+        conn, tenant_id, base["triage"], "claude-sonnet-4-6", "claude-haiku-4-5",
+        ["better"] * 6 + ["same"] * 30 + ["worse"] * 4, (420, 380),
+    )
+    _add_offline_test_demo(
+        conn, tenant_id, base["triage"], "claude-opus-4-8", "claude-sonnet-4-6",
+        ["better"] * 4 + ["same"] * 20 + ["worse"] * 2, (520, 470),
+    )
 
     # An applied optimization (opt spec §11/§20): dedup was applied in March with a
     # $500/mo projection. This month's duplicate waste is ~$369, so the realized

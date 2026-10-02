@@ -327,6 +327,15 @@ def test_an_inconclusive_test_changes_nothing(tenant_id, triage):
     assert opp["savings_type"] == "modeled_ceiling"
 
 
+def test_a_test_is_compared_with_its_own_model_s_part_not_the_whole_figure(tenant_id, triage):
+    hook.ingest_events(tenant_id, [_spend(triage, "gpt-4o", 40_000_000, "openai")])
+    before, _ = _opp(tenant_id, triage)
+    sonnet_part = next(t["monthly"] for t in before["trail"] if t["from_model"] == SONNET)
+    exp = _start(tenant_id, triage)
+    assert exp["baseline"]["monthly"] == sonnet_part
+    assert sonnet_part < before["projected_monthly_savings"]
+
+
 def test_testing_one_of_two_models_leaves_the_other_a_ceiling(tenant_id, triage):
     hook.ingest_events(tenant_id, [_spend(triage, "gpt-4o", 40_000_000, "openai")])
     before, _ = _opp(tenant_id, triage)
@@ -352,8 +361,52 @@ def test_a_failed_test_of_one_of_two_models_removes_only_its_part(tenant_id, tri
     assert "did not hold, so its part is left out" in opp["evidence"]
 
 
+def test_testing_each_model_in_turn_keeps_both_results(tenant_id, triage):
+    """Testing a second model must not throw away what the first test found."""
+    hook.ingest_events(tenant_id, [_spend(triage, "gpt-4o", 40_000_000, "openai")])
+    sonnet = _submit(tenant_id, _start(tenant_id, triage), _cases(better=5, same=20))
+    gpt = _submit(
+        tenant_id,
+        _start(tenant_id, triage, control_model="gpt-4o", candidate_model="gpt-4o-mini"),
+        _cases(better=3, same=22),
+    )
+    assert sonnet["outcome"] == gpt["outcome"] == "passed"
+
+    opp, result = _opp(tenant_id, triage)
+    assert opp["savings_type"] == "tested"  # every part tested, and held
+    expected = round(sonnet["result"]["monthly_saving"] + gpt["result"]["monthly_saving"], 2)
+    assert opp["projected_monthly_savings"] == pytest.approx(expected, abs=0.01)
+    assert result["totals"]["tested"] == opp["projected_monthly_savings"]
+    assert "gpt-4o-mini in place of gpt-4o" in opp["evidence"]
+    assert "claude-haiku-4-5 in place of claude-sonnet-4-6" in opp["evidence"]
+
+
+def test_what_testing_cost_is_shown_on_the_feature(tenant_id, triage):
+    done = _submit(tenant_id, _start(tenant_id, triage), _cases(same=25))
+    result = optimize_measured.opportunities(tenant_id, triage, PERIOD)
+    assert result["testing_spend"] == round(done["test_cost"], 2) > 0
+
+
 def test_only_providers_the_runner_can_call_are_offered_a_test(tenant_id):
     feature = features.add_feature(tenant_id, "Summaries")["id"]
     hook.ingest_events(tenant_id, [_spend(feature, "gemini-2.5-pro", 100_000_000, "google")])
     opp, _ = _opp(tenant_id, feature)
     assert opp is not None and opp["testable"] is False
+
+
+def test_the_demo_shows_a_fully_tested_right_sizing_saving(tenant_id, app_env):
+    from meter.sampledata import DEFAULT_PERIOD, insert_sample_data
+
+    insert_sample_data(app_env, tenant_id, extended=True)
+    app_env.commit()
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        triage = conn.execute(
+            "SELECT id::text FROM feature WHERE name = 'AI threat triage'"
+        ).fetchone()[0]
+    result = optimize_measured.opportunities(tenant_id, triage, DEFAULT_PERIOD)
+    rs = next(o for o in result["opportunities"] if o["lever"] == "model_rightsizing")
+    assert (rs["savings_type"], rs["validation"]) == ("tested", "tested_offline")
+    assert result["totals"]["tested"] == rs["projected_monthly_savings"] > 0
+    assert result["testing_spend"] > 0
+    overview = optimize_measured.copilot_overview(tenant_id, DEFAULT_PERIOD)
+    assert overview["totals"]["tested"] >= rs["projected_monthly_savings"]

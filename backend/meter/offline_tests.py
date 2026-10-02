@@ -327,7 +327,6 @@ def submit(tenant_id: str, experiment_id: str, payload: dict) -> Optional[dict]:
     which refuses any field it does not name. The token is spent in the same
     transaction that records the results, so a second post finds it used.
     """
-    from . import experiments  # imported here: experiments imports this module
 
     cases = payload["cases"]
     if len({c["case"] for c in cases}) != len(cases):
@@ -350,194 +349,240 @@ def submit(tenant_id: str, experiment_id: str, payload: dict) -> Optional[dict]:
         ).fetchone()
         if spent is None or row is None:
             return None
-        provider, control, candidate, margin, min_cases, feature_id = row
-        setting = {
-            "provider": provider,
-            "control_model": control,
-            "candidate_model": candidate,
-            "loss_margin": float(margin),
-            "min_cases": int(min_cases),
-        }
-        for c in cases:
-            conn.execute(
-                """
-                INSERT INTO experiment_case
-                    (tenant_id, experiment_id, case_hash,
-                     control_tokens_in, control_tokens_out, control_latency_ms, control_error,
-                     candidate_tokens_in, candidate_tokens_out, candidate_latency_ms,
-                     candidate_error, check_failures, verdict)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    tenant_id,
-                    experiment_id,
-                    c["case"],
-                    c["control"]["tokens_in"],
-                    c["control"]["tokens_out"],
-                    c["control"]["latency_ms"],
-                    c["control"]["error"],
-                    c["candidate"]["tokens_in"],
-                    c["candidate"]["tokens_out"],
-                    c["candidate"]["latency_ms"],
-                    c["candidate"]["error"],
-                    c["check_failures"],
-                    c["verdict"],
-                ),
-            )
-
-        # A case the current model could not answer says nothing about the
-        # candidate, so it is left out rather than counted against either.
-        compared = [c for c in cases if not c["control"]["error"]]
-        broken = sum(1 for c in compared if c["candidate"]["error"] or c["check_failures"] > 0)
-        both_ok = [c for c in compared if not c["candidate"]["error"]]
-        counts = {
-            v: sum(1 for c in compared if c["verdict"] == v)
-            for v in ("better", "same", "worse", "unjudged")
-        }
-        control_cpc = _cost_per_call(control, provider, [c["control"] for c in both_ok])
-        candidate_cpc = _cost_per_call(candidate, provider, [c["candidate"] for c in both_ok])
-        outcome, reason = decide(
-            len(compared),
-            counts["better"],
-            counts["same"],
-            counts["worse"],
-            broken,
-            control_cpc,
-            candidate_cpc,
-            setting,
-        )
-        if relaxed(setting):
-            reason += f" Decided under a loosened rule: {rule_words(setting)}."
-        fraction = (
-            float((control_cpc - candidate_cpc) / control_cpc)
-            if control_cpc and candidate_cpc is not None and control_cpc > 0
-            else 0.0
-        )
+        feature_id, control = row[5], row[1]
         period = dashboard._resolve_period(conn, None)
-        spend = control_spend(conn, feature_id, period, control)
-
-        # What the run itself cost, priced here from the tokens it reported.
-        test_cost = sum(
-            (
-                pricing.price(
-                    control, c["control"]["tokens_in"], c["control"]["tokens_out"], provider
-                )
-                + pricing.price(
-                    candidate, c["candidate"]["tokens_in"], c["candidate"]["tokens_out"], provider
-                )
-                for c in cases
-            ),
-            Decimal("0"),
+        return record(
+            conn,
+            tenant_id,
+            experiment_id,
+            payload,
+            period,
+            control_spend(conn, feature_id, period, control),
         )
-        judge = payload.get("judge_usage")
-        if judge and payload.get("judge_model"):
-            test_cost += pricing.price(
-                payload["judge_model"], judge["tokens_in"], judge["tokens_out"], judge["provider"]
-            )
 
-        result = {
-            "kind": "offline",
-            "cases": len(cases),
-            "compared": len(compared),
-            "control_errors": len(cases) - len(compared),
-            "broken": broken,
-            **counts,
-            "control": {
-                "model": control,
-                "cost_per_call": float(control_cpc) if control_cpc is not None else None,
-                "latency_ms": _latency([c["control"] for c in both_ok]),
-            },
-            "candidate": {
-                "model": candidate,
-                "cost_per_call": float(candidate_cpc) if candidate_cpc is not None else None,
-                "latency_ms": _latency([c["candidate"] for c in both_ok]),
-            },
-            # Unrounded: the card recomputes the saving from it each month, and
-            # a rounded copy would disagree with this result by a cent.
-            "saving_fraction": fraction,
-            "control_monthly_spend": round(spend, 2),
-            "monthly_saving": round(spend * fraction, 2) if outcome == "passed" else 0.0,
-            "rule": {
-                **{k: setting[k] for k in ("loss_margin", "min_cases")},
-                "relaxed": relaxed(setting),
-            },
-        }
+
+def record(
+    conn, tenant_id: str, experiment_id: str, payload: dict, period: dt.date, spend: float
+) -> dict:
+    """Store a run's cases, decide, and complete the experiment, in `conn`.
+
+    The part of `submit` after the token: also how the demo seeds a finished
+    test, with `spend` (the feature's spend on the tested model this month)
+    computed by the caller for its own tenant.
+    """
+    from . import experiments
+
+    cases = payload["cases"]
+    row = conn.execute(
+        """
+        SELECT provider, control_model, candidate_model, loss_margin, min_cases
+          FROM experiment WHERE id = %s
+        """,
+        (experiment_id,),
+    ).fetchone()
+    provider, control, candidate, margin, min_cases = row
+    setting = {
+        "provider": provider,
+        "control_model": control,
+        "candidate_model": candidate,
+        "loss_margin": float(margin),
+        "min_cases": int(min_cases),
+    }
+    for c in cases:
         conn.execute(
             """
-            UPDATE experiment
-               SET status = 'completed', outcome = %s, outcome_reason = %s, result = %s::jsonb,
-                   results_source = %s, judge_model = %s, test_cost = %s, period = %s,
-                   completed_at = now()
-             WHERE id = %s
+            INSERT INTO experiment_case
+                (tenant_id, experiment_id, case_hash,
+                 control_tokens_in, control_tokens_out, control_latency_ms, control_error,
+                 candidate_tokens_in, candidate_tokens_out, candidate_latency_ms,
+                 candidate_error, check_failures, verdict)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
-                outcome,
-                reason[:500],
-                json.dumps(result),
-                payload["source"],
-                payload.get("judge_model"),
-                test_cost,
-                period,
+                tenant_id,
                 experiment_id,
+                c["case"],
+                c["control"]["tokens_in"],
+                c["control"]["tokens_out"],
+                c["control"]["latency_ms"],
+                c["control"]["error"],
+                c["candidate"]["tokens_in"],
+                c["candidate"]["tokens_out"],
+                c["candidate"]["latency_ms"],
+                c["candidate"]["error"],
+                c["check_failures"],
+                c["verdict"],
             ),
         )
-        return experiments._to_dict(experiments._fetch(conn, experiment_id))
+
+    # A case the current model could not answer says nothing about the
+    # candidate, so it is left out rather than counted against either.
+    compared = [c for c in cases if not c["control"]["error"]]
+    broken = sum(1 for c in compared if c["candidate"]["error"] or c["check_failures"] > 0)
+    both_ok = [c for c in compared if not c["candidate"]["error"]]
+    counts = {
+        v: sum(1 for c in compared if c["verdict"] == v)
+        for v in ("better", "same", "worse", "unjudged")
+    }
+    control_cpc = _cost_per_call(control, provider, [c["control"] for c in both_ok])
+    candidate_cpc = _cost_per_call(candidate, provider, [c["candidate"] for c in both_ok])
+    outcome, reason = decide(
+        len(compared),
+        counts["better"],
+        counts["same"],
+        counts["worse"],
+        broken,
+        control_cpc,
+        candidate_cpc,
+        setting,
+    )
+    if relaxed(setting):
+        reason += f" Decided under a loosened rule: {rule_words(setting)}."
+    fraction = (
+        float((control_cpc - candidate_cpc) / control_cpc)
+        if control_cpc and candidate_cpc is not None and control_cpc > 0
+        else 0.0
+    )
+
+    # What the run itself cost, priced here from the tokens it reported.
+    test_cost = sum(
+        (
+            pricing.price(control, c["control"]["tokens_in"], c["control"]["tokens_out"], provider)
+            + pricing.price(
+                candidate, c["candidate"]["tokens_in"], c["candidate"]["tokens_out"], provider
+            )
+            for c in cases
+        ),
+        Decimal("0"),
+    )
+    judge = payload.get("judge_usage")
+    if judge and payload.get("judge_model"):
+        test_cost += pricing.price(
+            payload["judge_model"], judge["tokens_in"], judge["tokens_out"], judge["provider"]
+        )
+
+    result = {
+        "kind": "offline",
+        "cases": len(cases),
+        "compared": len(compared),
+        "control_errors": len(cases) - len(compared),
+        "broken": broken,
+        **counts,
+        "control": {
+            "model": control,
+            "cost_per_call": float(control_cpc) if control_cpc is not None else None,
+            "latency_ms": _latency([c["control"] for c in both_ok]),
+        },
+        "candidate": {
+            "model": candidate,
+            "cost_per_call": float(candidate_cpc) if candidate_cpc is not None else None,
+            "latency_ms": _latency([c["candidate"] for c in both_ok]),
+        },
+        # Unrounded: the card recomputes the saving from it each month, and
+        # a rounded copy would disagree with this result by a cent.
+        "saving_fraction": fraction,
+        "control_monthly_spend": round(spend, 2),
+        "monthly_saving": round(spend * fraction, 2) if outcome == "passed" else 0.0,
+        "rule": {
+            **{k: setting[k] for k in ("loss_margin", "min_cases")},
+            "relaxed": relaxed(setting),
+        },
+    }
+    conn.execute(
+        """
+        UPDATE experiment
+           SET status = 'completed', outcome = %s, outcome_reason = %s, result = %s::jsonb,
+               results_source = %s, judge_model = %s, test_cost = %s, period = %s,
+               completed_at = now()
+         WHERE id = %s
+        """,
+        (
+            outcome,
+            reason[:500],
+            json.dumps(result),
+            payload["source"],
+            payload.get("judge_model"),
+            test_cost,
+            period,
+            experiment_id,
+        ),
+    )
+    return experiments._to_dict(experiments._fetch(conn, experiment_id))
 
 
 # ---------------------------------------------------------------------------
 # Feeding a result back into the recommendation
 # ---------------------------------------------------------------------------
-def layer(conn, o: dict, exp: dict, feature_id: str, period: dt.date) -> bool:
-    """Apply a finished offline test to a right-sizing recommendation.
+def layer(conn, o: dict, done: dict, feature_id: str, period: dt.date) -> bool:
+    """Apply finished offline tests to a right-sizing recommendation.
 
-    A recommendation can cover several models; a test covers one. Only that
-    model's part of the figure changes. The figure becomes **tested** only when
-    every part of it has been — a ceiling with one tested part is still a
-    ceiling. Returns whether the figure changed.
+    `done` maps each tested model to its latest finished test. A
+    recommendation can cover several models and each test covers one, so the
+    figure is built part by part: a passed model contributes what the feature
+    spent on it this month times the saving its test measured; a failed one
+    contributes nothing; an untested or inconclusive one keeps its ceiling. The
+    figure is **tested** only when every part passed or failed a test and at
+    least one passed. Returns whether the figure changed.
     """
-    control = exp["setting"]["control_model"]
-    parts = [t for t in o["trail"] if t.get("from_model") == control]
-    others = round(
-        sum(t.get("monthly", 0.0) for t in o["trail"] if t.get("from_model") != control), 2
-    )
-    outcome = exp["outcome"]
-    if outcome == "inconclusive":
+    parts = [t for t in o["trail"] if t.get("from_model")]
+    tested = [t for t in parts if (done.get(t["from_model"]) or {}).get("outcome")]
+    if not tested:
+        return False
+    total = 0.0
+    passed, failed, open_parts = [], [], 0
+    for t in parts:
+        exp = done.get(t["from_model"])
+        outcome = exp["outcome"] if exp else None
+        if outcome == "passed":
+            fraction = float(exp["result"]["saving_fraction"])
+            total += control_spend(conn, feature_id, period, t["from_model"]) * fraction
+            passed.append(exp)
+        elif outcome == "failed":
+            failed.append(exp)
+        else:  # untested, or a test that could not decide
+            total += float(t.get("monthly", 0.0))
+            open_parts += 1
+    if passed:
+        o["validation"] = "tested_offline"
+    elif failed:
+        o["validation"] = "failed"
+    else:
         o["validation"] = "inconclusive"
         return False
-    if not parts:
-        # The tested model has no part in this month's figure. The test still
-        # happened; it just has nothing to change here.
-        o["validation"] = "tested_offline" if outcome == "passed" else "failed"
+    if not passed and not open_parts:
+        # Every part was tested and none held: the card stays, out of every total.
+        o["test_failed"] = True
         return False
-    if outcome == "failed":
-        o["validation"] = "failed"
-        # Under a dollar is noise, the floor every finding uses.
-        if others < 1.0:
-            o["test_failed"] = True
-            return False
-        _set(o, others)
-        o["evidence"] += (
-            f" — {control} was tested on your own cases and did not hold, so its part is left out"
-        )
-        return True
-    fraction = float(exp["result"]["saving_fraction"])
-    tested = round(control_spend(conn, feature_id, period, control) * fraction, 2)
-    o["validation"] = "tested_offline"
-    if not others:
+    if passed and not open_parts:
         o["savings_type"] = "tested"
         # A sample is not the traffic: right-sizing tops out at med (spec §7.3).
         o["confidence"] = "med"
-    _set(o, others + tested)  # after the confidence, which the ranking reads
-    candidate = exp["setting"]["candidate_model"]
-    r = exp["result"]
-    o["evidence"] = (
-        f"Tested on {r['compared']} of your own cases: {candidate} in place of {control} — "
-        f"better on {r['better']}, same on {r['same']}, worse on {r['worse']}, nothing broken, "
-        f"{round(fraction * 100)}% less per call."
-    )
-    if others:
-        o["evidence"] += " Other models in this figure are untested ceilings."
-    o["fix"] = f"Move {control} → {candidate}; it held up on your test cases."
+    _set(o, total)  # after the confidence, which the ranking reads
+    sentences = []
+    for exp in passed:
+        r = exp["result"]
+        sentences.append(
+            f"Tested on {r['compared']} of your own cases: {exp['setting']['candidate_model']} "
+            f"in place of {exp['setting']['control_model']} — better on {r['better']}, same on "
+            f"{r['same']}, worse on {r['worse']}, nothing broken, "
+            f"{round(float(r['saving_fraction']) * 100)}% less per call."
+        )
+    for exp in failed:
+        sentences.append(
+            f"{exp['setting']['control_model']} was tested on your own cases and did not hold, "
+            "so its part is left out."
+        )
+    if open_parts:
+        sentences.append("Other models in this figure are untested ceilings.")
+    o["evidence"] = " ".join(sentences)
+    if passed:
+        o["fix"] = (
+            "; ".join(
+                f"Move {e['setting']['control_model']} → {e['setting']['candidate_model']}"
+                for e in passed
+            )
+            + " — held up on your test cases."
+        )
     return True
 
 

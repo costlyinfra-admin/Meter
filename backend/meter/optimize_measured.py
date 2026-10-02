@@ -1071,6 +1071,9 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date, annotate: bool
         "opportunities": unified,
         "totals": totals,  # measured / tested / modeled_ceiling / directional — never combined
         "cache_utilization": cache_utilization,
+        # What testing this feature's recommendations cost this month (EX-2).
+        # Already in the provider's bill; shown, never added (decision 3).
+        "testing_spend": experiments.testing_spend(conn, feature_id, start),
         "actions": actions,  # applied optimizations: projected vs realized (opt spec §11)
     }
 

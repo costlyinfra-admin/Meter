@@ -434,12 +434,27 @@ def create(
         if offline:
             try:
                 setting = offline_tests.validate_setting(
-                    conn, feature_id, period, control_model, candidate_model, loss_margin,
+                    conn,
+                    feature_id,
+                    period,
+                    control_model,
+                    candidate_model,
+                    loss_margin,
                     min_cases,
                 )
             except offline_tests.OfflineTestError as exc:
                 raise ExperimentError(str(exc)) from exc
         baseline = _baseline(conn, feature_id, period, lever)
+        if offline and baseline:
+            # A test covers one model, so it is compared with that model's part
+            # of the recommendation, not with every model's added together.
+            part = next(
+                (t for t in baseline["trail"] if t.get("from_model") == setting["control_model"]),
+                None,
+            )
+            baseline = (
+                None if part is None else {**baseline, "projected_monthly_savings": part["monthly"]}
+            )
         _cancel_waiting(conn, "feature_id = %s AND lever = %s", (feature_id, lever))
         row = conn.execute(
             """
@@ -555,6 +570,23 @@ def cancel(tenant_id: str, experiment_id: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # Feeding results back into the recommendations
 # ---------------------------------------------------------------------------
+def testing_spend(conn, feature_id: str, period: dt.date) -> float:
+    """What this feature's tests cost in `period`, priced by Meter.
+
+    Already part of the provider's bill — the calls ran on the customer's
+    keys — so this is never added to inference. It is shown beside it,
+    labelled as testing (decision 3), so the cost of testing is visible.
+    """
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(test_cost), 0) FROM experiment
+         WHERE feature_id = %s AND period = %s AND status = 'completed'
+        """,
+        (feature_id, period),
+    ).fetchone()
+    return round(float(row[0]), 2)
+
+
 def testable(opportunity: dict) -> bool:
     """Whether "Test this" applies to this recommendation."""
     if opportunity["lever"] == "duplicate_calls":
@@ -592,6 +624,20 @@ def annotate(conn, feature_id: str, period: dt.date, unified: list) -> list:
             (feature_id,),
         ).fetchall()
     }
+    offline_done = {
+        r["setting"]["control_model"]: r
+        for r in (
+            _to_dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT DISTINCT ON (control_model) {_COLUMNS} FROM experiment
+                 WHERE feature_id = %s AND mode = 'offline' AND status = 'completed'
+                 ORDER BY control_model, completed_at DESC
+                """,  # noqa: S608 - constant
+                (feature_id,),
+            ).fetchall()
+        )
+    }
     changed = []
     for o in unified:
         o["testable"] = testable(o)
@@ -603,18 +649,23 @@ def annotate(conn, feature_id: str, period: dt.date, unified: list) -> list:
             if exp is None
             else {
                 "id": exp["id"],
+                "mode": exp["mode"],
                 "status": exp["status"],
                 "outcome": exp["outcome"],
                 "setting_label": exp["setting_label"],
                 "tested_on": (exp["completed_at"] or exp["created_at"])[:10],
             }
         )
-        if exp is None or exp["status"] != "completed":
-            continue
-        if exp["mode"] == "offline":
-            o["experiment"]["note"] = exp["outcome_reason"]
-            if offline_tests.layer(conn, o, exp, feature_id, period):
+        if o["lever"] in OFFLINE:
+            # Each model's part follows the latest finished test OF THAT MODEL,
+            # whatever was tested since — so testing a second model does not
+            # throw away what was learned about the first.
+            if offline_done and offline_tests.layer(conn, o, offline_done, feature_id, period):
                 changed.append(o)
+            if exp is not None and exp["status"] == "completed":
+                o["experiment"]["note"] = exp["outcome_reason"]
+            continue
+        if exp is None or exp["status"] != "completed":
             continue
         now = _simulate(conn, o["lever"], feature_id, period, exp["setting"])
         outcome = now["outcome"] or exp["outcome"]
