@@ -568,6 +568,7 @@ _UNIT_SUFFIX = {
     "steps": " steps",
     "repeats": "x",
     "percent": "%",
+    "guardrails": " guardrails breached",
 }
 
 

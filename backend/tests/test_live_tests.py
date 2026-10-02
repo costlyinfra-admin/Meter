@@ -310,8 +310,11 @@ def test_no_verdict_before_the_minimum_however_good_it_looks(tenant_id, triage):
     done = _evaluate(tenant_id, exp["id"])
     assert (done["status"], done["outcome"]) == ("running", None)
     assert done["result"]["provisional"] is True
-    assert "150 and 150 of the 200 calls" in done["outcome_reason"]
-    assert "2 of 7 days" in done["outcome_reason"]
+    assert (
+        "claude-sonnet-4-6 150 and claude-haiku-4-5 150, of the 200 each group needs"
+        in (done["outcome_reason"])
+    )
+    assert "day 2 of 7" in done["outcome_reason"]
     opp, _ = _opp(tenant_id, triage)
     assert opp["validation"] == "untested" and opp["savings_type"] == "modeled_ceiling"
 
@@ -506,7 +509,7 @@ def test_enough_calls_is_not_enough_without_the_days(tenant_id, triage):
     _age(tenant_id, exp["id"], 2)
     done = _evaluate(tenant_id, exp["id"])
     assert (done["status"], done["outcome"]) == ("running", None)
-    assert "2 of 7 days" in done["outcome_reason"]
+    assert "day 2 of 7" in done["outcome_reason"]
 
 
 def test_the_quality_margin_is_relative_so_any_score_scale_works(tenant_id, triage):
@@ -519,3 +522,27 @@ def test_the_quality_margin_is_relative_so_any_score_scale_works(tenant_id, tria
     _scores(tenant_id, exp["id"], "candidate", [3.88] * 40)
     _age(tenant_id, exp["id"], 2)
     assert _evaluate(tenant_id, exp["id"])["outcome"] == "passed"
+
+
+def test_the_demo_shows_a_live_test_part_way_through(tenant_id, app_env):
+    from meter.sampledata import insert_sample_data
+
+    insert_sample_data(app_env, tenant_id, extended=True)
+    app_env.commit()
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        exp_id, feature = conn.execute(
+            "SELECT id::text, feature_id::text FROM experiment WHERE mode = 'live'"
+        ).fetchone()
+    seen = experiments.get(tenant_id, exp_id)  # opening it computes the comparison
+    assert (seen["status"], seen["outcome"]) == ("running", None)
+    groups = seen["result"]["groups"]
+    assert (groups["control"]["calls"], groups["candidate"]["calls"]) == (1180, 131)
+    assert groups["candidate"]["cost_per_call"] < groups["control"]["cost_per_call"]
+    assert seen["result"]["guardrails"] == []
+    assert "No verdict before both" in seen["outcome_reason"]
+    rs = next(
+        o
+        for o in optimize_measured.opportunities(tenant_id, feature)["opportunities"]
+        if o["lever"] == "model_rightsizing"
+    )
+    assert rs["experiment"]["status"] == "running"

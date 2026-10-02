@@ -85,6 +85,7 @@ METRIC_UNITS = {
     "retry_loop": "repeats",
     "failed_run_cost": "money",
     "cache_hit_rate": "percent",
+    "experiment_guardrail": "guardrails",
 }
 
 #: Metrics whose healthy reading is zero, so "exceeds 0" is a real rule.
@@ -544,6 +545,8 @@ def duplicate_rule(
     original = get_rule(tenant_id, alert_id)
     if original is None:
         return None
+    if original["metric"] in SYSTEM_METRICS:
+        raise AlertError(SYSTEM_RULE_MESSAGE)
     # Rebuild an editable payload from the original (channels come back without
     # secrets, so a duplicated Slack/webhook must be re-authorized — safest default).
     payload = {

@@ -21,6 +21,7 @@ from typing import Optional
 
 import psycopg
 
+from . import pricing
 from .pricing import price
 
 DEFAULT_PERIOD = _dt.date(2026, 5, 1)  # monthly bucket = first of the month
@@ -333,8 +334,17 @@ def _add_usage_signal(
     )
 
 
-def _add_simulation(conn, tenant_id, feature_id, calls, ladder, *, evicted_24h=0,
-                    model="claude-sonnet-4-6", period=DEFAULT_PERIOD):
+def _add_simulation(
+    conn,
+    tenant_id,
+    feature_id,
+    calls,
+    ladder,
+    *,
+    evicted_24h=0,
+    model="claude-sonnet-4-6",
+    period=DEFAULT_PERIOD,
+):
     """Seed the repeated-request simulation counters (EX-1) for one feature.
 
     `ladder` maps each freshness limit's suffix to (hits, tokens_in, tokens_out).
@@ -393,21 +403,38 @@ def _add_offline_test_demo(conn, tenant_id, feature_id, control, candidate, verd
     cases = []
     for i, verdict in enumerate(verdicts):
         tin = 1600 + (i * 37) % 400  # a believable spread, the same for both models
-        cases.append({
-            "case": _hashlib.sha256(f"demo-{control}-{i}".encode()).hexdigest(),
-            "control": {"tokens_in": tin, "tokens_out": out_tokens[0] + (i * 13) % 90,
-                        "latency_ms": 2100 + (i * 53) % 700, "error": False},
-            "candidate": {"tokens_in": tin, "tokens_out": out_tokens[1] + (i * 11) % 80,
-                          "latency_ms": 900 + (i * 41) % 400, "error": False},
-            "check_failures": 0,
-            "verdict": verdict,
-        })
+        cases.append(
+            {
+                "case": _hashlib.sha256(f"demo-{control}-{i}".encode()).hexdigest(),
+                "control": {
+                    "tokens_in": tin,
+                    "tokens_out": out_tokens[0] + (i * 13) % 90,
+                    "latency_ms": 2100 + (i * 53) % 700,
+                    "error": False,
+                },
+                "candidate": {
+                    "tokens_in": tin,
+                    "tokens_out": out_tokens[1] + (i * 11) % 80,
+                    "latency_ms": 900 + (i * 41) % 400,
+                    "error": False,
+                },
+                "check_failures": 0,
+                "verdict": verdict,
+            }
+        )
     offline_tests.record(
-        conn, tenant_id, str(exp_id),
-        {"source": "runner", "runner_version": "2.5.0", "judge_model": control,
-         "judge_usage": {"provider": "anthropic", "tokens_in": 120_000, "tokens_out": 1_600},
-         "cases": cases},
-        DEFAULT_PERIOD, float(spend),
+        conn,
+        tenant_id,
+        str(exp_id),
+        {
+            "source": "runner",
+            "runner_version": "2.5.0",
+            "judge_model": control,
+            "judge_usage": {"provider": "anthropic", "tokens_in": 120_000, "tokens_out": 1_600},
+            "cases": cases,
+        },
+        DEFAULT_PERIOD,
+        float(spend),
     )
     conn.execute(
         "UPDATE experiment SET completed_at = %s WHERE id = %s",
@@ -811,6 +838,7 @@ def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bo
         _add_budget_demo(conn, tenant_id)
         _add_discovery_demo(conn, tenant_id)
         _add_trace_demo(conn, tenant_id, {"triage": triage, "report": report})
+        _add_live_test_demo(conn, tenant_id, report)
         _add_prompt_demo(conn, tenant_id, triage)
 
     # Products are DERIVED, never hand-assigned here: the demo has to show the
@@ -1340,15 +1368,29 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
     # customer chooses along. A few request shapes outlived the SDK's memory
     # over 24 hours, so that limit reads as a minimum.
     _add_simulation(
-        conn, tenant_id, base["report"], 18_000,
-        {"1m": (180, 10_200_000, 1_340_000), "10m": (430, 24_500_000, 3_200_000),
-         "1h": (760, 43_300_000, 5_660_000), "24h": (1_240, 70_600_000, 9_230_000)},
+        conn,
+        tenant_id,
+        base["report"],
+        18_000,
+        {
+            "1m": (180, 10_200_000, 1_340_000),
+            "10m": (430, 24_500_000, 3_200_000),
+            "1h": (760, 43_300_000, 5_660_000),
+            "24h": (1_240, 70_600_000, 9_230_000),
+        },
         evicted_24h=40,
     )
     _add_simulation(
-        conn, tenant_id, base["triage"], 26_000,
-        {"1m": (700, 54_000_000, 3_000_000), "10m": (1_240, 96_000_000, 5_400_000),
-         "1h": (1_900, 147_000_000, 8_300_000), "24h": (2_700, 209_000_000, 11_800_000)},
+        conn,
+        tenant_id,
+        base["triage"],
+        26_000,
+        {
+            "1m": (700, 54_000_000, 3_000_000),
+            "10m": (1_240, 96_000_000, 5_400_000),
+            "1h": (1_900, 147_000_000, 8_300_000),
+            "24h": (2_700, 209_000_000, 11_800_000),
+        },
         evicted_24h=120,
     )
     _add_experiment_demo(conn, tenant_id, base["triage"])
@@ -1356,12 +1398,22 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
     # both held — so its right-sizing figure is tested, not a ceiling, and the
     # Overview has a tested total to show.
     _add_offline_test_demo(
-        conn, tenant_id, base["triage"], "claude-sonnet-4-6", "claude-haiku-4-5",
-        ["better"] * 6 + ["same"] * 30 + ["worse"] * 4, (420, 380),
+        conn,
+        tenant_id,
+        base["triage"],
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        ["better"] * 6 + ["same"] * 30 + ["worse"] * 4,
+        (420, 380),
     )
     _add_offline_test_demo(
-        conn, tenant_id, base["triage"], "claude-opus-4-8", "claude-sonnet-4-6",
-        ["better"] * 4 + ["same"] * 20 + ["worse"] * 2, (520, 470),
+        conn,
+        tenant_id,
+        base["triage"],
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        ["better"] * 4 + ["same"] * 20 + ["worse"] * 2,
+        (520, 470),
     )
 
     # An applied optimization (opt spec §11/§20): dedup was applied in March with a
@@ -2130,6 +2182,144 @@ def _add_alert_demo(conn, tenant_id, features: dict) -> None:
     )
     _add_alert_notif(conn, tenant_id, healthy, past_res, "in_app", "sent")
     _add_alert_notif(conn, tenant_id, healthy, past_res, "email", "sent")
+
+
+def _add_live_test_demo(conn, tenant_id, feature_id) -> None:
+    """DEMO ONLY. A live test part-way through (EX-3): gpt-4o-mini on 10% of
+    Report generator's gpt-4o traffic, three days in, short of its minimum —
+    so the demo shows the provisional comparison and no verdict yet.
+
+    The tagged calls are written directly, like the rest of the trace demo,
+    and priced from the price book. Everything read here is filtered to this
+    tenant: the seeder may hold a connection that bypasses isolation. The
+    comparison itself is computed the first time the test is opened, on the
+    app's own tenant-scoped connection.
+    """
+    from . import live_tests
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    started = now - _dt.timedelta(days=3, hours=2)
+    app = conn.execute(
+        "INSERT INTO ai_application (tenant_id, name, slug, description, owner) "
+        "VALUES (%s, 'Report service', 'report-service', "
+        "'Generates incident reports on request.', 'reporting') RETURNING id",
+        (tenant_id,),
+    ).fetchone()[0]
+    spend, tin, tout = conn.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0)
+          FROM inference_cost
+         WHERE tenant_id = %s AND feature_id = %s AND period = %s AND model = 'gpt-4o'
+           AND source <> 'hook'
+        """,
+        (tenant_id, feature_id, DEFAULT_PERIOD),
+    ).fetchone()
+    ceiling = pricing.downgrade_ceiling("gpt-4o", int(tin), int(tout))
+    baseline = round(float(spend) * ceiling["save_fraction"], 2) if ceiling else None
+    setting = {
+        "provider": "openai",
+        "control_model": "gpt-4o",
+        "candidate_model": "gpt-4o-mini",
+        **live_tests.DEFAULTS,
+    }
+    exp_id = str(
+        conn.execute(
+            """
+        INSERT INTO experiment
+            (tenant_id, feature_id, lever, mode, status, provider, control_model,
+             candidate_model, traffic_share, min_calls, min_days, max_error_increase,
+             max_latency_increase, quality_margin, period, baseline_monthly,
+             baseline_savings_type, baseline_confidence, created_by, created_at)
+        VALUES (%s, %s, 'model_rightsizing', 'live', 'running', 'openai', 'gpt-4o',
+                'gpt-4o-mini', %s, %s, %s, %s, %s, %s, %s, %s, 'modeled_ceiling', 'med',
+                'demo@costlyinfra.com', %s)
+        RETURNING id
+        """,
+            (
+                tenant_id,
+                feature_id,
+                setting["traffic_share"],
+                setting["min_calls"],
+                setting["min_days"],
+                setting["max_error_increase"],
+                setting["max_latency_increase"],
+                setting["quality_margin"],
+                DEFAULT_PERIOD,
+                baseline,
+                started,
+            ),
+        ).fetchone()[0]
+    )
+    live_tests.register_guardrail(
+        conn, tenant_id, exp_id, feature_id, setting, "demo@costlyinfra.com"
+    )
+    # Ten-to-one traffic, as a 10% flag gives: the candidate is the group short
+    # of its minimum, which is what keeps the verdict waiting.
+    for group, model, calls, out, latency, failures in (
+        ("control", "gpt-4o", 1180, 420, 1900, 9),
+        ("candidate", "gpt-4o-mini", 131, 395, 880, 1),
+    ):
+        for i in range(calls):
+            when = started + _dt.timedelta(minutes=3 * i if group == "candidate" else i // 3)
+            failed = i < failures
+            t_in, t_out = (0, 0) if failed else (1500 + (i * 37) % 600, out + (i * 13) % 120)
+            trace_id = conn.execute(
+                """
+                INSERT INTO ai_trace
+                    (tenant_id, application_id, feature_id, external_trace_id, operation_name,
+                     environment, status, started_at, ended_at, duration_ms, last_activity_at)
+                VALUES (%s, %s, %s, %s, 'chat.completions.create', 'production', %s, %s, %s,
+                        %s, %s)
+                RETURNING id
+                """,
+                (
+                    tenant_id,
+                    app,
+                    feature_id,
+                    f"demo-live-{group}-{i:05d}",
+                    "error" if failed else "success",
+                    when,
+                    when + _dt.timedelta(milliseconds=latency),
+                    latency,
+                    when + _dt.timedelta(milliseconds=latency),
+                ),
+            ).fetchone()[0]
+            conn.execute(
+                """
+                INSERT INTO ai_span
+                    (tenant_id, trace_id, external_span_id, span_kind, operation_name, provider,
+                     model, tokens_in, tokens_out, amount, latency_ms, status, started_at,
+                     ended_at, occurred_at, costed_at, experiment_id, experiment_group)
+                VALUES (%s, %s, 's1', 'llm', 'chat.completions.create', 'openai', %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    trace_id,
+                    model,
+                    t_in or None,
+                    t_out or None,
+                    price(model, t_in, t_out, "openai"),
+                    latency + (i * 17) % 400,
+                    "error" if failed else "success",
+                    when,
+                    when + _dt.timedelta(milliseconds=latency),
+                    when,
+                    when,
+                    exp_id,
+                    group,
+                ),
+            )
+    # Quality scores the app sends: a task-success flag per answer.
+    for group, n, total in (("control", 220, 189.0), ("candidate", 46, 39.0)):
+        conn.execute(
+            """
+            INSERT INTO experiment_score
+                (tenant_id, experiment_id, experiment_group, day, n, total, total_squares)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (tenant_id, exp_id, group, started.date(), n, total, total),
+        )
 
 
 def _add_trace_demo(conn, tenant_id, features: dict) -> None:

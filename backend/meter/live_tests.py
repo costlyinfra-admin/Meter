@@ -223,9 +223,10 @@ def decide(groups: dict, setting: dict, elapsed: dt.timedelta) -> tuple:
     needed, days = int(setting["min_calls"]), int(setting["min_days"])
     if min(control["calls"], candidate["calls"]) < needed or elapsed < dt.timedelta(days=days):
         return None, (
-            f"{control['calls']:,} and {candidate['calls']:,} of the {needed:,} calls each group "
-            f"needs, {min(elapsed.days, days)} of {days} days. No verdict before both — an early "
-            "lead is not a result."
+            f"Calls so far: {control['model']} {control['calls']:,} and {candidate['model']} "
+            f"{candidate['calls']:,}, of the {needed:,} each group needs; day "
+            f"{min(elapsed.days, days)} of {days}. No verdict before both — an early lead is "
+            "not a result."
         )
     c_cost, k_cost = control["cost_per_call"], candidate["cost_per_call"]
     if not c_cost or k_cost is None or k_cost >= c_cost:

@@ -102,6 +102,8 @@ def _choices(conn, feature_id: str, period: dt.date) -> list:
 
 def options(tenant_id: str, feature_id: str) -> Optional[dict]:
     """The models a customer can test on this feature, and the rule's dials."""
+    from . import live_tests  # imported here: live_tests imports this module
+
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         if conn.execute("SELECT 1 FROM feature WHERE id = %s", (feature_id,)).fetchone() is None:
             return None
@@ -114,6 +116,12 @@ def options(tenant_id: str, feature_id: str) -> Optional[dict]:
                 "min_cases": DEFAULT_MIN_CASES,
                 "loss_margin_range": list(LOSS_MARGIN_RANGE),
                 "min_cases_range": list(MIN_CASES_RANGE),
+            },
+            # A live test's dials (EX-3): Meter's defaults, and how far each
+            # may be moved.
+            "live": {
+                "defaults": dict(live_tests.DEFAULTS),
+                "ranges": {k: list(v) for k, v in live_tests.RANGES.items()},
             },
         }
 
