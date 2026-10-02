@@ -457,6 +457,39 @@ Each ends with a review, the house rhythm.
 - **EX-3 — Live experiments.** SDK group tagging; per-group comparison from
   `ai_span`; quality-score ingest (SDK and OTel); guardrail alerts; the live
   decision rule.
+
+  ✅ **Built for model right-sizing (2026-10-02).** What is true today, and
+  where it differs from the plan above:
+
+  - **Tagging.** SDK 2.6.0 (Python and Node): `wrap(client, experiment=...,
+    group="control"|"candidate")` tags completed and failed calls;
+    OpenTelemetry spans use `meter.experiment_id` / `meter.experiment_group`.
+    Only a running live test of the same organization can be named; anything
+    else is dropped without costing the batch its spend (migration 0067).
+  - **Quality scores.** `meter.score(experiment, group, value)`, a number on
+    any scale, kept as daily totals per group. The quality margin is relative
+    to the current model's average, so the scale does not matter.
+    **Not built: scores over OpenTelemetry** — the convention's
+    `gen_ai.evaluation.result` is a log record, Meter has no OTLP logs
+    receiver, and the convention is still in development.
+  - **The rule** (`live_tests.py`): no verdict before the minimum calls per
+    group AND the minimum days (default 500 and 7); guardrails stop it early
+    once each group has 100 calls (error rate +1 point, slowest 5% +25%);
+    cost per *successful* call lower at 95%; quality not lower than the
+    margin at 95% where 30+ scores per group exist. All dials loosenable,
+    and a loosened rule is said.
+  - **Guardrail alerts.** Each live test registers a system-managed
+    `experiment_guardrail` rule (in-app), turned off when the test passes or
+    is cancelled, kept on when a guardrail was breached. It cannot be edited
+    or duplicated from the alert form. **Routing it to Slack or email is a
+    follow-up.** Running tests are re-checked when their page is opened and
+    by a scheduled step before the alert evaluation — **which runs daily, slow
+    for a canary; hourly is a hosting decision.**
+  - **Result.** A pass is tested at high confidence (`tested_live`); each
+    model's part of a right-sizing figure follows its latest finished test,
+    offline or live.
+  - **Not yet:** live tests for caching and repeated requests (need a
+    cache-aware cost per call, which spans do not carry).
 - **EX-4 — Meter-hosted offline tests for consenting customers.** Generalise
   `prompt_eval` variants to model and host; OpenAI-compatible hosts; the job
   table (§8.4).
