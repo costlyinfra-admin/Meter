@@ -8,10 +8,22 @@ in an apt path (CI).
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 from meter import db
 from meter.migrations import MIGRATIONS_DIR, apply_migrations
 from pytest_postgresql import factories
+
+# The metering SDK, from this checkout, for the end-to-end tests that drive it.
+# CI does not install it into the backend's environment, and a test file that
+# imports it at the top must not depend on another file having put it on the
+# path first: collection order is alphabetical, and the first file to need it
+# was collected before the one that used to add it.
+_SDK = Path(__file__).resolve().parents[2] / "sdk" / "python"
+if str(_SDK) not in sys.path:
+    sys.path.insert(0, str(_SDK))
 
 # Point pytest-postgresql at a discoverable pg_ctl (PATH, Homebrew, or apt/CI).
 _PG_CTL = db.find_pg_binary("pg_ctl")
