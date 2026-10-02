@@ -47,6 +47,7 @@ from . import (
     discovery,
     discovery_llm,
     entra,
+    experiments,
     features,
     focus,
     forecast,
@@ -718,6 +719,22 @@ _LEVER_PATTERN = r"^(duplicate_calls|prompt_caching|provider_switch|model_rights
 class ApplyOpportunityRequest(BaseModel):
     lever: str = Field(pattern=_LEVER_PATTERN)
     projected_monthly: float = Field(ge=0)
+
+
+class ExperimentRequest(BaseModel):
+    """Start a test of one recommendation (EX-1).
+
+    The bounds here are guards, deliberately wider than what the application
+    accepts: experiments._setting is the validation, and says why in words. A
+    guard tighter than the thing it guards rejects valid input with a 422 that
+    names no field a customer would recognise — test_experiments_api checks
+    every choice the application offers against this model.
+    """
+
+    lever: str = Field(min_length=1, max_length=64)
+    ttl_seconds: Optional[int] = Field(default=None, ge=0, le=10_000_000)
+    scoped_only: Optional[bool] = None
+    cache_ttl: Optional[str] = Field(default=None, min_length=1, max_length=16)
 
 
 class McpTokenRequest(BaseModel):
@@ -1925,6 +1942,39 @@ def create_app() -> FastAPI:
         lever: str = Query(pattern=_LEVER_PATTERN),
     ) -> None:
         optimize_measured.unmark_applied(user["tenant_id"], feature_id, lever)
+
+    # --- Test this (EX-1) --------------------------------------------------
+    @app.post("/api/features/{feature_id}/experiments", status_code=status.HTTP_201_CREATED)
+    def start_experiment(feature_id: str, body: ExperimentRequest, user: CurrentUser) -> dict:
+        try:
+            result = experiments.create(
+                user["tenant_id"],
+                feature_id,
+                body.lever,
+                user["email"],
+                ttl_seconds=body.ttl_seconds,
+                scoped_only=body.scoped_only,
+                cache_ttl=body.cache_ttl,
+            )
+        except experiments.ExperimentError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found")
+        return result
+
+    @app.get("/api/experiments/{experiment_id}")
+    def get_experiment(experiment_id: str, user: CurrentUser) -> dict:
+        result = experiments.get(user["tenant_id"], experiment_id)
+        if result is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+        return result
+
+    @app.post("/api/experiments/{experiment_id}/cancel")
+    def cancel_experiment(experiment_id: str, user: CurrentUser) -> dict:
+        result = experiments.cancel(user["tenant_id"], experiment_id)
+        if result is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+        return result
 
     @app.get("/api/copilot/overview")
     def copilot_overview(

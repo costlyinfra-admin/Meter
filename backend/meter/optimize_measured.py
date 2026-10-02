@@ -432,9 +432,17 @@ _CACHING_FIX_AUTOMATIC = (
 )
 
 
-def _prefix_opportunity(rows: list) -> Optional[dict]:
+def _prefix_opportunity(rows: list, lifetime: str = "5m") -> Optional[dict]:
     """Rows: (provider, model, fingerprint, call_count, prefix_tokens, cached_count,
-    write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n).
+    write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n,
+    cache_windows_1h).
+
+    `lifetime` is the cache lifetime to price: the provider default ("5m"), or
+    "1h" where a provider sells one — what a customer chooses when they test
+    this recommendation (experiments.py). A 1-hour write costs more, and the
+    1-hour window count says how often it would be paid. Providers without a
+    1-hour tier are priced at their default either way: there is nothing to
+    choose there.
 
     Caching is not a discount, it is a trade: reads are cheap and WRITES cost
     more than sending the prefix uncached. So the saving for one prefix is
@@ -476,10 +484,13 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         prefix_tokens,
         cached_count,
         write_calls,
-        cache_windows,
+        five_minute_windows,
         tokens_sum,
         tokens_n,
+        one_hour_windows,
     ) in rows:
+        long = lifetime == "1h" and pricing.has_1h_cache_tier(provider)
+        cache_windows = one_hour_windows if long else five_minute_windows
         mult = pricing.cache_read_mult(provider, model)
         if mult is None:  # provider has no priced cache discount -> don't claim one
             continue
@@ -530,7 +541,7 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
         # would be 1.25 - 1 = 0.25 for Anthropic, understating the cost of a
         # write by more than four times and making sparse traffic — which
         # writes on every call and never reads — look like a saving.
-        forgone = pricing.cache_write_mult(provider) - mult
+        forgone = pricing.cache_write_mult(provider, "1h" if long else "5m") - mult
         saving = unit * (read_gain - Decimal(writes) * forgone)
         if saving <= 0:
             # Caching this prefix costs more than it saves. Not a finding.
@@ -588,6 +599,8 @@ def _prefix_opportunity(rows: list) -> Optional[dict]:
             f"a {max_prefix:,}-token static prefix repeated across "
             f"{total_uncached:,} uncached calls, {cost_side} — {basis}"
         ),
+        # For the simulation's comparison of lifetimes; ignored by the card.
+        "cache_writes": total_writes if priced_writes else None,
         "fix": _CACHING_FIX_AUTOMATIC if automatic else _CACHING_FIX_EXPLICIT,
         "trail": trail[:_MAX_TRAIL],
     }
@@ -754,7 +767,8 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
         SELECT signal_kind, provider, model, fingerprint,
                call_count, prefix_tokens, tokens_in, tokens_out, cached_count,
                fingerprint_version, scope_kind,
-               write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n
+               write_calls, cache_windows, prefix_tokens_sum, prefix_tokens_n,
+               cache_windows_1h
         FROM usage_signal
         WHERE feature_id = %s AND period = %s
         """,
@@ -773,7 +787,7 @@ def _measured(conn, feature_id: str, start: dt.date) -> tuple[list, Optional[flo
     ]
     legacy_dups = sum(int(r[4]) for r in rows if r[0] == "duplicate" and r[9] != "v2")
     pfx_rows = [
-        (r[1], r[2], r[3], r[4], r[5], r[8], r[11], r[12], r[13], r[14])
+        (r[1], r[2], r[3], r[4], r[5], r[8], r[11], r[12], r[13], r[14], r[15])
         for r in rows
         if r[0] == "prefix"
     ]
@@ -981,12 +995,17 @@ def opportunities(
     return {"period": anchor.isoformat(), **result}
 
 
-def _feature_opportunities(conn, feature_id: str, start: dt.date) -> dict:
+def _feature_opportunities(conn, feature_id: str, start: dt.date, annotate: bool = True) -> dict:
     """Compute the unified opportunities for one feature within an open connection.
 
     Shared by the per-feature endpoint and the tenant Overview (opt spec §21), so
     the Overview aggregates over the SAME numbers a feature page shows.
+
+    `annotate` layers on the customer's own tests (experiments.py). Off only
+    when an experiment records what the recommendation said before testing.
     """
+    from . import experiments  # imported here: experiments imports this module
+
     measured, cache_utilization, observable = _measured(conn, feature_id, start)
     estimated = dashboard.heuristic_optimization(conn, feature_id, start)
 
@@ -994,7 +1013,8 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date) -> dict:
     unified += [_unify_directional(o) for o in estimated["opportunities"]]
 
     # Before anything is ranked or totalled: nothing saves more than the bill.
-    _bound_by_spend(unified, _feature_spend(conn, feature_id, start))
+    spend = _feature_spend(conn, feature_id, start)
+    _bound_by_spend(unified, spend)
 
     # Reconciliation reads the CURRENT avoidable spend per applied lever.
     by_lever = {
@@ -1013,6 +1033,13 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date) -> dict:
         elif st is not None:
             o["status"] = "applied"
 
+    # The customer's tests, layered on AFTER reconciliation: an applied action
+    # is measured against the detector's own figure, on the basis it was
+    # applied on, never against one a later test replaced. A replaced figure is
+    # held to the bill like any other.
+    if annotate:
+        _bound_by_spend(experiments.annotate(conn, feature_id, start, unified), spend)
+
     # Suppress double-counting: a measured finding supersedes overlapping estimates.
     _apply_exclusions(unified)
 
@@ -1023,7 +1050,10 @@ def _feature_opportunities(conn, feature_id: str, start: dt.date) -> dict:
             sum(
                 o["projected_monthly_savings"]
                 for o in unified
-                if o["savings_type"] == kind and o["overlaps"] is None
+                if o["savings_type"] == kind
+                and o["overlaps"] is None
+                # A test the customer ran says this does not hold for them.
+                and not o.get("test_failed")
             ),
             2,
         )
@@ -1060,7 +1090,11 @@ def copilot_overview(tenant_id: str, period: Optional[dt.date] = None) -> dict:
                 totals[kind] += r["totals"][kind]
             by_feature.append({"feature_id": str(fid), "name": fname, **r["totals"]})
             for o in r["opportunities"]:
-                if o["savings_type"] == "directional" or o["overlaps"] is not None:
+                if (
+                    o["savings_type"] == "directional"
+                    or o["overlaps"] is not None
+                    or o.get("test_failed")
+                ):
                     continue
                 actionable.append({**o, "feature_id": str(fid), "feature_name": fname})
                 entry = lever_map.setdefault(
