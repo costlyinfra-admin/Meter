@@ -16,6 +16,8 @@ export const METRIC_LABELS: Record<string, string> = {
   retry_loop: "Repeats of one step in a run",
   failed_run_cost: "Cost incurred by failed runs",
   cache_hit_rate: "Prompt cache hit rate (%)",
+  // System-managed: each live test registers one (EX-3). Never offered in the form.
+  experiment_guardrail: "Live test guardrail",
 };
 
 /**
@@ -37,6 +39,7 @@ export const METRIC_UNITS: Record<string, string> = {
   retry_loop: "repeats",
   failed_run_cost: "money",
   cache_hit_rate: "percent",
+  experiment_guardrail: "guardrails",
 };
 
 /** The word that goes on the threshold input's label. */
@@ -57,6 +60,8 @@ export function quantity(metric: string, value: number): string {
   if (unit === "percent")
     return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
   if (unit === "repeats") return `${value.toLocaleString()}x`;
+  if (unit === "guardrails")
+    return `${value.toLocaleString()} guardrail${value === 1 ? "" : "s"} breached`;
   // "1 run", not "1 runs". Mirrors _suffix() in alerts_eval.py.
   const word = value === 1 && unit.endsWith("s") ? unit.slice(0, -1) : unit;
   return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${word}`;
@@ -181,7 +186,11 @@ export function costLink(scopeType: string, scopeRef?: string | null): string {
 }
 
 /** How a rule's condition reads in the table. */
+/** Rules a live test makes and manages itself (EX-3): not edited or copied here. */
+export const SYSTEM_METRICS = new Set(["experiment_guardrail"]);
+
 export function conditionText(r: AlertRule): string {
+  if (r.metric === "experiment_guardrail") return "fires when a guardrail is breached";
   if (r.condition_type === "exceeds") return `exceeds ${quantity(r.metric, r.threshold)}`;
   if (r.condition_type === "falls_below") return `below ${quantity(r.metric, r.threshold)}`;
   if (r.condition_type === "increase_pct") return `+${r.threshold}% vs previous`;

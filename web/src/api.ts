@@ -1073,7 +1073,13 @@ export interface Opportunity {
    *  where a provider sells a choice of cache lifetime). */
   testable?: boolean;
   /** What the customer's latest test of this recommendation says. */
-  validation?: "untested" | "simulated" | "tested_offline" | "failed" | "inconclusive";
+  validation?:
+    | "untested"
+    | "simulated"
+    | "tested_offline"
+    | "tested_live"
+    | "failed"
+    | "inconclusive";
   /** A test said this does not hold: the card stays, out of the totals. */
   test_failed?: boolean;
   experiment?: OpportunityTest | null;
@@ -1092,8 +1098,8 @@ export interface Opportunity {
 /** The latest test of a recommendation, as its card shows it. */
 export interface OpportunityTest {
   id: string;
-  mode?: "simulate" | "offline";
-  status: "waiting_for_data" | "waiting_for_results" | "completed";
+  mode?: "simulate" | "offline" | "live";
+  status: "waiting_for_data" | "waiting_for_results" | "running" | "completed";
   outcome: "passed" | "failed" | "inconclusive" | null;
   setting_label: string;
   tested_on: string;
@@ -1156,7 +1162,46 @@ export type ExperimentResult =
       rule: { loss_margin: number; min_cases: number; relaxed: boolean };
       // Simulations report calls; an offline test reports cases.
       calls?: undefined;
+    }
+  | {
+      kind: "live";
+      groups: { control: LiveGroup; candidate: LiveGroup };
+      /** Guardrails breached, in words. */
+      guardrails: string[];
+      saving_fraction: number;
+      control_monthly_spend: number;
+      monthly_saving: number;
+      rule: LiveDials & { relaxed: boolean };
+      /** True until the minimum is reached: no verdict yet. */
+      provisional: boolean;
+      calls?: undefined;
     };
+
+/** One group of a live test, as Meter measured it. */
+export interface LiveGroup {
+  model: string;
+  calls: number;
+  errors: number;
+  error_rate: number | null;
+  successes: number;
+  cost_per_call: number | null;
+  latency_p95_ms: number | null;
+  /** Calls tagged into this group that ran a different model. */
+  other_model_calls: number;
+  scores: number;
+  quality: number | null;
+  first_call_at: string | null;
+}
+
+/** A live test's dials (EX-3). */
+export interface LiveDials {
+  traffic_share: number;
+  min_calls: number;
+  min_days: number;
+  max_error_increase: number;
+  max_latency_increase: number;
+  quality_margin: number;
+}
 
 /** One model's side of an offline test: priced by Meter. */
 export interface OfflineArm {
@@ -1181,6 +1226,10 @@ export interface OfflineOptions {
     loss_margin_range: [number, number];
     min_cases_range: [number, number];
   };
+  live: {
+    defaults: LiveDials;
+    ranges: Record<keyof LiveDials, [number, number]>;
+  };
 }
 
 /** A test of one recommendation (EX-1, docs/experiments-spec.md). */
@@ -1189,8 +1238,8 @@ export interface Experiment {
   feature_id: string;
   feature_name?: string | null;
   lever: string;
-  mode: "simulate" | "offline";
-  status: "waiting_for_data" | "waiting_for_results" | "completed" | "cancelled";
+  mode: "simulate" | "offline" | "live";
+  status: "waiting_for_data" | "waiting_for_results" | "running" | "completed" | "cancelled";
   outcome: "passed" | "failed" | "inconclusive" | null;
   outcome_reason: string;
   setting: {
@@ -1202,7 +1251,7 @@ export interface Experiment {
     candidate_model?: string;
     loss_margin?: number;
     min_cases?: number;
-  };
+  } & Partial<LiveDials>;
   setting_label: string;
   period: string;
   baseline: { monthly: number; savings_type: string; confidence: string } | null;
@@ -1220,6 +1269,9 @@ export interface Experiment {
   run_expires_at?: string | null;
   /** The run's one credential: present only in the response that created it. */
   token?: string;
+  /** A live test's system-managed guardrail alert. */
+  guardrail_alert_id?: string | null;
+  last_evaluated_at?: string | null;
 }
 
 export interface ExperimentInput {
@@ -1231,6 +1283,13 @@ export interface ExperimentInput {
   candidate_model?: string;
   loss_margin?: number;
   min_cases?: number;
+  mode?: "simulate" | "offline" | "live";
+  traffic_share?: number;
+  min_calls?: number;
+  min_days?: number;
+  max_error_increase?: number;
+  max_latency_increase?: number;
+  quality_margin?: number;
 }
 
 /** An applied optimization, reconciled projected-vs-realized (opt spec §11). */

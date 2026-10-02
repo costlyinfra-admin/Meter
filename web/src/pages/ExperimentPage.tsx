@@ -277,6 +277,171 @@ function OfflineResults({
   );
 }
 
+/** How to send a live test's traffic: two tagged clients and your own flag. */
+function LiveInstructions({ exp }: { exp: Experiment }) {
+  const control = exp.setting.control_model ?? "current-model";
+  const candidate = exp.setting.candidate_model ?? "cheaper-model";
+  const code = [
+    'pip install "costlyinfra-meter>=2.6"   # or: npm install costlyinfra-meter@^2.6',
+    "",
+    `control = meter.wrap(client, feature_id="${exp.feature_id}",`,
+    `                     experiment="${exp.id}", group="control")`,
+    `candidate = meter.wrap(client, feature_id="${exp.feature_id}",`,
+    `                       experiment="${exp.id}", group="candidate")`,
+    "",
+    `# Your own feature flag sends about ${exp.setting.traffic_share ?? 10}% of requests to the candidate.`,
+    "use, model = ((candidate, " +
+      JSON.stringify(candidate) +
+      ") if flags.enabled(user)\n              else (control, " +
+      JSON.stringify(control) +
+      "))",
+    "use.messages.create(model=model, ...)",
+    "",
+    "# Optional, and what makes this a quality test: a score for each answer.",
+    `meter.score("${exp.id}", "candidate" if use is candidate else "control", 1.0)`,
+  ].join("\n");
+  return (
+    <section className="detail-section">
+      <div className="section-head">
+        <h2>Send it live traffic</h2>
+        <span className="section-sub muted">
+          Meter does not route requests. Your flag does; the SDK says which group each call was in.
+        </span>
+      </div>
+      <pre className="test-commands">{code}</pre>
+      <ul className="test-method">
+        <li>
+          Using OpenTelemetry instead? Set <code>meter.experiment_id</code> and{" "}
+          <code>meter.experiment_group</code> on each model call&rsquo;s span.
+        </li>
+        <li>
+          A score can be anything your system already measures — the task succeeded (1) or not (0),
+          a thumbs up, an eval score — as long as both groups use the same scale. Only the number is
+          sent.
+        </li>
+        <li>
+          Tags for this test are accepted only while it runs. Ending it, or a guardrail stopping it,
+          stops them.
+        </li>
+      </ul>
+    </section>
+  );
+}
+
+function pctOrDash(rate: number | null): string {
+  return rate === null ? "—" : `${(rate * 100).toFixed(1)}%`;
+}
+
+function LiveResults({
+  exp,
+  r,
+}: {
+  exp: Experiment;
+  r: Extract<ExperimentResult, { kind: "live" }>;
+}) {
+  const groups = [
+    { name: "Current", g: r.groups.control },
+    { name: "Candidate", g: r.groups.candidate },
+  ];
+  const days = Math.floor((Date.now() - new Date(exp.created_at).getTime()) / 86_400_000);
+  const mismatched = groups.filter((x) => x.g.other_model_calls > 0);
+  return (
+    <section className="detail-section">
+      <div className="section-head">
+        <h2>{r.provisional ? "So far" : "What the test found"}</h2>
+        <span className="section-sub muted">
+          {r.provisional
+            ? `Provisional: no verdict before ${num(r.rule.min_calls)} calls in each group and ${r.rule.min_days} days (day ${Math.min(days, r.rule.min_days)} of ${r.rule.min_days}).`
+            : `${num(r.groups.control.calls + r.groups.candidate.calls)} calls compared`}
+        </span>
+      </div>
+      <div className="mini-table-wrap">
+        <table className="mini-table">
+          <thead>
+            <tr>
+              <th scope="col">Group</th>
+              <th scope="col" className="num">
+                Calls
+              </th>
+              <th scope="col" className="num">
+                Error rate
+              </th>
+              <th scope="col" className="num">
+                Cost per call
+              </th>
+              <th scope="col" className="num">
+                Slowest 5%
+              </th>
+              <th scope="col" className="num">
+                Quality
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(({ name, g }, i) => (
+              <tr
+                key={name}
+                aria-current={i === 1 ? "true" : undefined}
+                className={i === 1 ? "test-chosen" : undefined}
+              >
+                <td>
+                  {g.model}
+                  <span className="muted"> · {name.toLowerCase()}</span>
+                </td>
+                <td className="num">
+                  {num(g.calls)}
+                  {/* The target, only where it is still ahead: "1,180 / 500" reads as short. */}
+                  {r.provisional && g.calls < r.rule.min_calls && (
+                    <span className="muted"> / {num(r.rule.min_calls)}</span>
+                  )}
+                </td>
+                <td className="num">{pctOrDash(g.error_rate)}</td>
+                <td className="num">
+                  {g.cost_per_call === null ? "—" : `$${g.cost_per_call.toFixed(4)}`}
+                </td>
+                <td className="num">
+                  {g.latency_p95_ms === null ? "—" : `${num(g.latency_p95_ms)} ms`}
+                </td>
+                <td className="num">
+                  {g.quality === null ? "—" : `${g.quality.toPrecision(3)} (${num(g.scores)})`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {r.guardrails.length > 0 && (
+        <ul className="test-guardrails" role="alert">
+          {r.guardrails.map((g) => (
+            <li key={g}>{g}</li>
+          ))}
+        </ul>
+      )}
+      {mismatched.map(({ name, g }) => (
+        <p key={name} className="opt-item-test-note">
+          {num(g.other_model_calls)} calls tagged {name.toLowerCase()} ran a different model than{" "}
+          {g.model}. Check that the flag and the model choice agree in your code.
+        </p>
+      ))}
+      {exp.outcome === "passed" && (
+        <p className="test-baseline">
+          {Math.round(r.saving_fraction * 100)}% less per call, applied to the{" "}
+          {money(r.control_monthly_spend)} this feature spent on {r.groups.control.model} this
+          month: <strong>{money(r.monthly_saving)}/mo</strong>, counted as <em>tested</em>.
+        </p>
+      )}
+      <p className="muted">
+        Rule: no verdict before {num(r.rule.min_calls)} calls a group and {r.rule.min_days} days;
+        stopped if the error rate rises more than {(r.rule.max_error_increase * 100).toFixed(1)}{" "}
+        points or the slowest 5% gets more than {Math.round(r.rule.max_latency_increase * 100)}%
+        slower; cost must be clearly lower, and quality may fall by at most{" "}
+        {Math.round(r.rule.quality_margin * 100)}%.
+        {r.rule.relaxed && <strong> This rule was loosened from Meter&rsquo;s default.</strong>}
+      </p>
+    </section>
+  );
+}
+
 function Method({ exp }: { exp: Experiment }) {
   return (
     <section className="detail-section">
@@ -284,7 +449,25 @@ function Method({ exp }: { exp: Experiment }) {
         <h2>How this was worked out</h2>
       </div>
       <ul className="test-method">
-        {exp.mode === "offline" ? (
+        {exp.mode === "live" ? (
+          <>
+            <li>
+              Every call your two clients made was tagged with this test and its group. Meter priced
+              each one itself and compared the groups: cost per successful call (so a model that
+              fails more cannot look cheaper), error rate, slowest-5% latency, and your quality
+              scores where at least 30 per group arrived.
+            </li>
+            <li>
+              No verdict before the minimum calls and days: stopping the moment a result looks good
+              produces false wins. A guardrail can stop it sooner, and its alert tells you.
+            </li>
+            <li>
+              The saving must be clearly lower at 95%, and quality not clearly worse than the
+              margin. Real traffic that holds up counts as <em>tested</em> at high confidence, until
+              your bill confirms the change.
+            </li>
+          </>
+        ) : exp.mode === "offline" ? (
           <>
             <li>
               The test ran on your machine: your cases, through both models, with your keys.{" "}
@@ -407,7 +590,7 @@ export function ExperimentPage() {
           </Link>
           <h1>Test: {title}</h1>
           <p className="muted">
-            {exp.mode === "offline" ? "Tested" : "Simulated"} with {exp.setting_label} · started{" "}
+            {exp.mode === "simulate" ? "Simulated" : "Tested"} with {exp.setting_label} · started{" "}
             {testDate(exp.created_at)} by {exp.created_by}
           </p>
         </div>
@@ -418,11 +601,14 @@ export function ExperimentPage() {
         <p>
           {exp.status === "waiting_for_results"
             ? "Run the test below. The result appears here as soon as it is sent."
-            : exp.outcome_reason}
+            : exp.status === "running" && !exp.outcome_reason
+              ? "Waiting for the first tagged calls."
+              : exp.outcome_reason}
         </p>
       </div>
 
       {exp.status === "waiting_for_results" && <RunInstructions exp={exp} token={token} />}
+      {exp.status === "running" && <LiveInstructions exp={exp} />}
 
       {exp.baseline && (
         <p className="test-baseline">
@@ -441,35 +627,39 @@ export function ExperimentPage() {
       )}
 
       {exp.result?.kind === "offline" && <OfflineResults exp={exp} r={exp.result} />}
+      {exp.result?.kind === "live" && <LiveResults exp={exp} r={exp.result} />}
 
-      {exp.result && exp.result.kind !== "offline" && exp.result.calls > 0 && (
-        <section className="detail-section">
-          <div className="section-head">
-            <h2>What each choice would have saved</h2>
-            <span className="section-sub muted">
-              {num(exp.result.calls)} calls in{" "}
-              {new Date(`${exp.period}T00:00:00`).toLocaleDateString("en-US", {
-                month: "long",
-                year: "numeric",
-              })}
-            </span>
-          </div>
-          {exp.result.kind === "repeats" ? (
-            <RepeatsTable r={exp.result} />
-          ) : (
-            <CachingTable r={exp.result} />
-          )}
-        </section>
-      )}
+      {(exp.result?.kind === "repeats" || exp.result?.kind === "caching") &&
+        exp.result.calls > 0 && (
+          <section className="detail-section">
+            <div className="section-head">
+              <h2>What each choice would have saved</h2>
+              <span className="section-sub muted">
+                {num(exp.result.calls)} calls in{" "}
+                {new Date(`${exp.period}T00:00:00`).toLocaleDateString("en-US", {
+                  month: "long",
+                  year: "numeric",
+                })}
+              </span>
+            </div>
+            {exp.result.kind === "repeats" ? (
+              <RepeatsTable r={exp.result} />
+            ) : (
+              <CachingTable r={exp.result} />
+            )}
+          </section>
+        )}
 
       <Method exp={exp} />
 
       <div className="settings-actions">
-        {exp.status === "waiting_for_data" || exp.status === "waiting_for_results" ? (
+        {exp.status === "waiting_for_data" ||
+        exp.status === "waiting_for_results" ||
+        exp.status === "running" ? (
           <>
             <button onClick={() => void load()}>Check again</button>
             <button className="secondary" onClick={() => void cancel()} disabled={busy}>
-              Cancel the test
+              {exp.status === "running" ? "End the test" : "Cancel the test"}
             </button>
           </>
         ) : (

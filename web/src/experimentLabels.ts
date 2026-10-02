@@ -50,9 +50,13 @@ export function testStatus(
     return { label: "Waiting for data", className: "test-waiting" };
   if (t.status === "waiting_for_results")
     return { label: "Waiting for results", className: "test-waiting" };
+  if (t.status === "running") return { label: "Running", className: "test-waiting" };
   if (t.status === "cancelled") return { label: "Cancelled", className: "test-cancelled" };
   if (t.outcome === "passed")
-    return { label: t.mode === "offline" ? "Tested" : "Simulated", className: "test-passed" };
+    return {
+      label: t.mode === "live" ? "Tested live" : t.mode === "offline" ? "Tested" : "Simulated",
+      className: "test-passed",
+    };
   if (t.outcome === "failed") return { label: "Tested — did not hold", className: "test-failed" };
   return { label: "Inconclusive", className: "test-waiting" };
 }

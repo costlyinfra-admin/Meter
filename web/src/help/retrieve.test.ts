@@ -167,3 +167,15 @@ describe("questions about testing a recommendation", () => {
     );
   });
 });
+
+describe("questions about live tests", () => {
+  // "traffic" and "alert" pull towards the traces and alerts topics; a reader
+  // asking how to try a cheaper model on real users has to reach this one.
+  it.each([
+    "how do I test a cheaper model on a share of live traffic",
+    "what is a guardrail on a live test",
+    "how do I send a quality score for an experiment",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("optimize/testing-a-recommendation");
+  });
+});

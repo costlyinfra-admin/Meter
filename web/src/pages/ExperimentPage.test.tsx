@@ -339,3 +339,103 @@ describe("An offline test", () => {
     expect(await screen.findByText(/This rule was loosened from Meter/)).toBeVisible();
   });
 });
+
+function live(over: Partial<Experiment> = {}): Experiment {
+  const group = (model: string, calls: number, cost: number, err: number) => ({
+    model,
+    calls,
+    errors: Math.round(calls * err),
+    error_rate: err,
+    successes: calls,
+    cost_per_call: cost,
+    latency_p95_ms: 1200,
+    other_model_calls: 0,
+    scores: 0,
+    quality: null,
+    first_call_at: "2026-10-01T10:00:00Z",
+  });
+  return repeats({
+    lever: "model_rightsizing",
+    mode: "live",
+    status: "running",
+    outcome: null,
+    outcome_reason: "120 and 118 of the 500 calls each group needs, 1 of 7 days.",
+    created_at: new Date(Date.now() - 86_400_000).toISOString(),
+    setting: {
+      provider: "anthropic",
+      control_model: "claude-sonnet-4-6",
+      candidate_model: "claude-haiku-4-5",
+      traffic_share: 10,
+      min_calls: 500,
+      min_days: 7,
+      max_error_increase: 0.01,
+      max_latency_increase: 0.25,
+      quality_margin: 0.05,
+    },
+    setting_label: "claude-haiku-4-5 in place of claude-sonnet-4-6 on 10% of live traffic",
+    result: {
+      kind: "live",
+      groups: {
+        control: group("claude-sonnet-4-6", 120, 0.0117, 0.008),
+        candidate: group("claude-haiku-4-5", 118, 0.0037, 0.0085),
+      },
+      guardrails: [],
+      saving_fraction: 0.68,
+      control_monthly_spend: 1800,
+      monthly_saving: 0,
+      rule: {
+        traffic_share: 10,
+        min_calls: 500,
+        min_days: 7,
+        max_error_increase: 0.01,
+        max_latency_increase: 0.25,
+        quality_margin: 0.05,
+        relaxed: false,
+      },
+      provisional: true,
+    },
+    ...over,
+  });
+}
+
+describe("A live test", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("shows how to send it traffic, and its progress as provisional", async () => {
+    vi.mocked(api.experiment).mockResolvedValue(live());
+    renderWithState(null);
+    expect(await screen.findByText("Running")).toBeVisible();
+    const code = document.querySelector(".test-commands")!.textContent!;
+    expect(code).toContain('experiment="e1", group="control"');
+    expect(code).toContain('experiment="e1", group="candidate"');
+    expect(code).toContain("meter.score(");
+    expect(code).toContain("npm install costlyinfra-meter");
+    const found = screen.getByRole("heading", { name: "So far" }).closest("section")!;
+    expect(found).toHaveTextContent("Provisional: no verdict before 500 calls in each group");
+    expect(within(found).getAllByRole("row")[2]).toHaveTextContent("118 / 500");
+    expect(screen.getByRole("button", { name: "End the test" })).toBeVisible();
+  });
+
+  it("names a breached guardrail as an alert", async () => {
+    const exp = live({ status: "completed", outcome: "failed" });
+    if (exp.result?.kind === "live") {
+      exp.result.guardrails = ["claude-haiku-4-5 failed 9.0% of calls against 0.8%."];
+      exp.result.provisional = false;
+    }
+    vi.mocked(api.experiment).mockResolvedValue(exp);
+    renderWithState(null);
+    expect(await screen.findByRole("alert")).toHaveTextContent("failed 9.0% of calls");
+    expect(screen.getByRole("heading", { name: "What the test found" })).toBeVisible();
+    expect(document.querySelector(".test-commands")).toBeNull(); // no longer running
+  });
+
+  it("warns when calls tagged to a group ran a different model", async () => {
+    const exp = live();
+    if (exp.result?.kind === "live") exp.result.groups.candidate.other_model_calls = 12;
+    vi.mocked(api.experiment).mockResolvedValue(exp);
+    renderWithState(null);
+    expect(
+      await screen.findByText(/12 calls tagged candidate ran a different model/),
+    ).toBeVisible();
+  });
+});

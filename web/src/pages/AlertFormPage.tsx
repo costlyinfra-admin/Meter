@@ -119,6 +119,33 @@ export function AlertFormPage() {
     }
   }, [id]);
 
+  // A live test's guardrail (EX-3) is made and turned off by the test itself.
+  // Editing it here would fight the test, so the form says so instead.
+  if (editing && form.metric === "experiment_guardrail")
+    return (
+      <div className="content alert-form-page">
+        <div className="dash-head">
+          <div>
+            <Link to="/alerts" className="link breadcrumb">
+              ← Alerts
+            </Link>
+            <h1>{form.name}</h1>
+          </div>
+        </div>
+        <div className="settings-card">
+          <p>
+            This alert belongs to a live test, which manages it: it fires if the cheaper model fails
+            or slows beyond its guardrail, and turns itself off when the test passes or is ended.
+          </p>
+          {form.scope_ref && (
+            <Link to={`/features/${form.scope_ref}`} className="link">
+              Open the feature and its test →
+            </Link>
+          )}
+        </div>
+      </div>
+    );
+
   const validConditions = meta?.valid_conditions[form.metric] ?? ["exceeds"];
   const validScopes = meta?.valid_scopes[form.metric] ?? ["organization"];
 

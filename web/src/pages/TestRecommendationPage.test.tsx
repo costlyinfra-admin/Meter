@@ -82,6 +82,24 @@ const OPTIONS = {
     loss_margin_range: [0, 0.5] as [number, number],
     min_cases_range: [10, 500] as [number, number],
   },
+  live: {
+    defaults: {
+      traffic_share: 10,
+      min_calls: 500,
+      min_days: 7,
+      max_error_increase: 0.01,
+      max_latency_increase: 0.25,
+      quality_margin: 0.05,
+    },
+    ranges: {
+      traffic_share: [1, 50] as [number, number],
+      min_calls: [100, 100000] as [number, number],
+      min_days: [1, 30] as [number, number],
+      max_error_increase: [0, 0.2] as [number, number],
+      max_latency_increase: [0, 2] as [number, number],
+      quality_margin: [0, 0.5] as [number, number],
+    },
+  },
 };
 
 function renderPage(lever: string) {
@@ -222,7 +240,7 @@ describe("Test this, for model right-sizing", () => {
     );
     expect(screen.getByLabelText("Allowance for worse answers (%)")).toHaveValue(10);
     expect(screen.getByLabelText("Cases needed, at least")).toHaveValue(20);
-    expect(screen.getByText(/Only numbers come back to Meter/)).toBeVisible();
+    expect(screen.getByText(/only numbers come back to Meter/i)).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Start the test" }));
     await waitFor(() =>
@@ -261,6 +279,41 @@ describe("Test this, for model right-sizing", () => {
         expect.objectContaining({ loss_margin: 0.25 }),
       ),
     );
+  });
+
+  it("can test on a share of live traffic instead, with Meter's live rule", async () => {
+    vi.mocked(api.startExperiment).mockResolvedValue({ id: "e10" } as Experiment);
+    renderPage("model_rightsizing");
+    fireEvent.click(await screen.findByRole("radio", { name: /On a share of live traffic/ }));
+    expect(screen.getByLabelText("Calls needed in each group, at least")).toHaveValue(500);
+    expect(screen.getByLabelText("Days needed, at least")).toHaveValue(7);
+    expect(screen.getByLabelText("Error-rate guardrail (points higher, at most)")).toHaveValue(1);
+    expect(screen.queryByLabelText("Cases needed, at least")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start the test" }));
+    await waitFor(() =>
+      expect(api.startExperiment).toHaveBeenCalledWith("f1", {
+        lever: "model_rightsizing",
+        mode: "live",
+        control_model: "claude-sonnet-4-6",
+        candidate_model: "claude-haiku-4-5",
+        traffic_share: 10,
+        min_calls: 500,
+        min_days: 7,
+        max_error_increase: 0.01,
+        max_latency_increase: 0.25,
+        quality_margin: 0.05,
+      }),
+    );
+    // No token to carry: the SDK's own ingest token tags the calls.
+    expect(await screen.findByTestId("at")).toHaveTextContent(/^\/experiments\/e10\s*$/);
+  });
+
+  it("says when the live rule is loosened", async () => {
+    renderPage("model_rightsizing");
+    fireEvent.click(await screen.findByRole("radio", { name: /On a share of live traffic/ }));
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Days needed, at least"), { target: { value: "2" } });
+    expect(screen.getByRole("note")).toHaveTextContent("Looser than Meter");
   });
 
   it("explains when none of the feature's models can be tested", async () => {

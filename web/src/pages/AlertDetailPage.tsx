@@ -16,6 +16,7 @@ import {
   SCOPE_LABELS,
   STATUS_LABELS,
   statusClass,
+  SYSTEM_METRICS,
   WINDOW_LABELS,
   ruleQuantity,
 } from "../alertLabels";
@@ -105,21 +106,25 @@ export function AlertDetailPage() {
           {rule.description && <p className="muted">{rule.description}</p>}
         </div>
         <div className="detail-actions">
-          <Link to={`/alerts/${rule.id}/edit`} className="secondary-link">
-            Edit
-          </Link>
+          {!SYSTEM_METRICS.has(rule.metric) && (
+            <Link to={`/alerts/${rule.id}/edit`} className="secondary-link">
+              Edit
+            </Link>
+          )}
           <button
             className="secondary"
             onClick={() => act(() => api.testAlert(rule.id), "Test sent.")}
           >
             Send test
           </button>
-          <button
-            className="secondary"
-            onClick={() => act(() => api.duplicateAlert(rule.id), "Duplicated.")}
-          >
-            Duplicate
-          </button>
+          {!SYSTEM_METRICS.has(rule.metric) && (
+            <button
+              className="secondary"
+              onClick={() => act(() => api.duplicateAlert(rule.id), "Duplicated.")}
+            >
+              Duplicate
+            </button>
+          )}
           <button
             className="secondary"
             onClick={() => act(() => api.enableAlert(rule.id, !rule.enabled), "Updated.")}

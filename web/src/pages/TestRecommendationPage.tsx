@@ -14,8 +14,8 @@ import { CACHE_CHOICES, FRESHNESS_CHOICES, LEVER_TITLES } from "../experimentLab
 import { money } from "../format";
 
 /**
- * Model right-sizing (EX-2): which model to replace, which to test in its
- * place, and the rule. The test itself runs on the customer's machine.
+ * Model right-sizing: which model to replace, which to test in its place, and
+ * where — on the customer's own cases (EX-2) or a share of live traffic (EX-3).
  */
 function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportunity }) {
   const navigate = useNavigate();
@@ -23,8 +23,16 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
   const [failed, setFailed] = useState(false);
   const [control, setControl] = useState("");
   const [candidate, setCandidate] = useState("");
+  const [how, setHow] = useState<"offline" | "live">("offline");
   const [marginPct, setMarginPct] = useState(10);
   const [minCases, setMinCases] = useState(20);
+  // Live dials, held in the units the form shows: percent and points.
+  const [share, setShare] = useState(10);
+  const [minCalls, setMinCalls] = useState(500);
+  const [minDays, setMinDays] = useState(7);
+  const [errorPts, setErrorPts] = useState(1);
+  const [latencyPct, setLatencyPct] = useState(25);
+  const [qualityPct, setQualityPct] = useState(5);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,6 +47,13 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
         }
         setMarginPct(Math.round(o.rule.loss_margin * 100));
         setMinCases(o.rule.min_cases);
+        const d = o.live.defaults;
+        setShare(d.traffic_share);
+        setMinCalls(d.min_calls);
+        setMinDays(d.min_days);
+        setErrorPts(Math.round(d.max_error_increase * 1000) / 10);
+        setLatencyPct(Math.round(d.max_latency_increase * 100));
+        setQualityPct(Math.round(d.quality_margin * 100));
       })
       .catch(() => setFailed(true));
   }, [featureId]);
@@ -61,36 +76,83 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
     );
 
   const current = options.controls.find((c) => c.model === control) ?? options.controls[0];
-  const loosened = marginPct / 100 > options.rule.loss_margin || minCases < options.rule.min_cases;
+  const d = options.live.defaults;
+  const loosened =
+    how === "offline"
+      ? marginPct / 100 > options.rule.loss_margin || minCases < options.rule.min_cases
+      : minCalls < d.min_calls ||
+        minDays < d.min_days ||
+        errorPts / 100 > d.max_error_increase ||
+        latencyPct / 100 > d.max_latency_increase ||
+        qualityPct / 100 > d.quality_margin;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const exp = await api.startExperiment(featureId, {
-        lever: "model_rightsizing",
-        control_model: control,
-        candidate_model: candidate,
-        loss_margin: marginPct / 100,
-        min_cases: minCases,
-      });
-      // The run's token travels with this navigation only; it is never
-      // fetched again.
-      navigate(`/experiments/${exp.id}`, { state: { token: exp.token } });
+      const body: ExperimentInput =
+        how === "offline"
+          ? {
+              lever: "model_rightsizing",
+              control_model: control,
+              candidate_model: candidate,
+              loss_margin: marginPct / 100,
+              min_cases: minCases,
+            }
+          : {
+              lever: "model_rightsizing",
+              mode: "live",
+              control_model: control,
+              candidate_model: candidate,
+              traffic_share: share,
+              min_calls: minCalls,
+              min_days: minDays,
+              max_error_increase: errorPts / 100,
+              max_latency_increase: latencyPct / 100,
+              quality_margin: qualityPct / 100,
+            };
+      const exp = await api.startExperiment(featureId, body);
+      // An offline run's token travels with this navigation only; it is never
+      // fetched again. A live test has none: the SDK's own token tags calls.
+      navigate(`/experiments/${exp.id}`, { state: exp.token ? { token: exp.token } : null });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not start the test.");
       setBusy(false);
     }
   }
 
+  function dial(
+    id: string,
+    label: string,
+    value: number,
+    set: (v: number) => void,
+    [lo, hi]: [number, number],
+    step = 1,
+  ) {
+    return (
+      <div className="settings-field settings-field-inline">
+        <label htmlFor={id}>{label}</label>
+        <input
+          id={id}
+          type="number"
+          min={lo}
+          max={hi}
+          step={step}
+          value={value}
+          onChange={(e) => set(Number(e.target.value))}
+        />
+      </div>
+    );
+  }
+  const r = options.live.ranges;
+
   return (
     <form className="settings-card" onSubmit={submit}>
       <p>
         Meter estimated up to <strong>{money(opp.projected_monthly_savings)}/mo</strong> if a
         cheaper model holds up for this feature. Whether it does is a question about answers, so the
-        test runs where they are: on your machine, on your own cases, with your own keys and a judge
-        you choose. Only numbers come back to Meter.
+        test runs where they are, and only numbers come back to Meter.
       </p>
 
       <div className="settings-field">
@@ -124,45 +186,111 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
       </div>
 
       <fieldset className="test-choices">
-        <legend>The rule</legend>
-        <p className="settings-hint muted">
-          The cheaper model passes if no answer comes back broken, it is not worse more often than
-          it is better beyond the allowance, there are enough cases, and it costs less per call.
-        </p>
-        <div className="settings-field settings-field-inline">
-          <label htmlFor="t-margin">Allowance for worse answers (%)</label>
+        <legend>Where to test it</legend>
+        <label className="test-choice">
           <input
-            id="t-margin"
-            type="number"
-            min={Math.round(options.rule.loss_margin_range[0] * 100)}
-            max={Math.round(options.rule.loss_margin_range[1] * 100)}
-            value={marginPct}
-            onChange={(e) => setMarginPct(Number(e.target.value))}
+            type="radio"
+            name="how"
+            checked={how === "offline"}
+            onChange={() => setHow("offline")}
           />
-        </div>
-        <div className="settings-field settings-field-inline">
-          <label htmlFor="t-cases">Cases needed, at least</label>
-          <input
-            id="t-cases"
-            type="number"
-            min={options.rule.min_cases_range[0]}
-            max={options.rule.min_cases_range[1]}
-            value={minCases}
-            onChange={(e) => setMinCases(Number(e.target.value))}
-          />
-        </div>
-        {loosened && (
-          <p className="opt-item-test-note" role="note">
-            Looser than Meter&rsquo;s rule ({Math.round(options.rule.loss_margin * 100)}%, at least{" "}
-            {options.rule.min_cases} cases). That is allowed, and the result will say so wherever it
-            appears.
-          </p>
-        )}
+          <span>
+            <strong>On your own test cases</strong>
+            <span className="muted">
+              Before anything ships. Your cases go through both models on your machine, with your
+              keys, and a judge you choose compares the answers.
+            </span>
+          </span>
+        </label>
+        <label className="test-choice">
+          <input type="radio" name="how" checked={how === "live"} onChange={() => setHow("live")} />
+          <span>
+            <strong>On a share of live traffic</strong>
+            <span className="muted">
+              Your own feature flag sends some requests to the cheaper model. Meter compares the two
+              groups on cost, errors and latency — and quality, if your system sends a score.
+            </span>
+          </span>
+        </label>
       </fieldset>
 
+      {how === "offline" ? (
+        <fieldset className="test-choices">
+          <legend>The rule</legend>
+          <p className="settings-hint muted">
+            The cheaper model passes if no answer comes back broken, it is not worse more often than
+            it is better beyond the allowance, there are enough cases, and it costs less per call.
+          </p>
+          {dial("t-margin", "Allowance for worse answers (%)", marginPct, setMarginPct, [
+            Math.round(options.rule.loss_margin_range[0] * 100),
+            Math.round(options.rule.loss_margin_range[1] * 100),
+          ])}
+          {dial("t-cases", "Cases needed, at least", minCases, setMinCases, [
+            options.rule.min_cases_range[0],
+            options.rule.min_cases_range[1],
+          ])}
+          {loosened && (
+            <p className="opt-item-test-note" role="note">
+              Looser than Meter&rsquo;s rule ({Math.round(options.rule.loss_margin * 100)}%, at
+              least {options.rule.min_cases} cases). That is allowed, and the result will say so
+              wherever it appears.
+            </p>
+          )}
+        </fieldset>
+      ) : (
+        <fieldset className="test-choices">
+          <legend>The rule</legend>
+          <p className="settings-hint muted">
+            No verdict before both minimums — an early lead is not a result. A guardrail stops the
+            test at once, and alerts you, if the cheaper model fails or slows beyond its limit.
+          </p>
+          {dial(
+            "t-share",
+            "Share of traffic you will send to it (%)",
+            share,
+            setShare,
+            r.traffic_share,
+          )}
+          {dial(
+            "t-calls",
+            "Calls needed in each group, at least",
+            minCalls,
+            setMinCalls,
+            r.min_calls,
+          )}
+          {dial("t-days", "Days needed, at least", minDays, setMinDays, r.min_days)}
+          {dial(
+            "t-errors",
+            "Error-rate guardrail (points higher, at most)",
+            errorPts,
+            setErrorPts,
+            [r.max_error_increase[0] * 100, r.max_error_increase[1] * 100],
+            0.1,
+          )}
+          {dial(
+            "t-latency",
+            "Latency guardrail (% slower at the slowest 5%, at most)",
+            latencyPct,
+            setLatencyPct,
+            [r.max_latency_increase[0] * 100, r.max_latency_increase[1] * 100],
+          )}
+          {dial("t-quality", "Quality may fall by at most (%)", qualityPct, setQualityPct, [
+            r.quality_margin[0] * 100,
+            r.quality_margin[1] * 100,
+          ])}
+          {loosened && (
+            <p className="opt-item-test-note" role="note">
+              Looser than Meter&rsquo;s rule. That is allowed, and the result will say so wherever
+              it appears.
+            </p>
+          )}
+        </fieldset>
+      )}
+
       <p className="settings-hint muted">
-        Running it calls both models once per case, plus the judge twice, on your provider account.
-        Meter shows what it cost afterwards; it is part of your provider bill either way.
+        {how === "offline"
+          ? "Running it calls both models once per case, plus the judge twice, on your provider account. Meter shows what it cost afterwards; it is part of your provider bill either way."
+          : "Meter does not route traffic: your feature flag does. The cheaper model's calls are real production calls, billed as usual."}
       </p>
 
       <div className="settings-actions">

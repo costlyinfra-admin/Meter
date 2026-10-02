@@ -10,7 +10,7 @@
  * organization's real applications rather than a free-text box.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type AlertMeta } from "../api";
 import { AlertFormPage } from "./AlertFormPage";
@@ -329,4 +329,42 @@ describe("AlertFormPage — started from the Forecast page", () => {
     renderAt("/alerts/new?metric=combined_cost&condition=forecast_budget_pct");
     expect(await screen.findByText(/no budget is configured/i)).toBeInTheDocument();
   });
+});
+
+it("explains, instead of editing, an alert that belongs to a live test", async () => {
+  vi.mocked(api.alertsMeta).mockResolvedValue(META);
+  vi.mocked(api.getSettings).mockResolvedValue({ timezone: "UTC" } as never);
+  vi.mocked(api.listFeatures).mockResolvedValue([]);
+  vi.mocked(api.aiApplications).mockResolvedValue({ applications: [] } as never);
+  vi.mocked(api.getAlert).mockResolvedValue({
+    id: "a9",
+    name: "Live test guardrail: claude-haiku-4-5 in place of claude-sonnet-4-6",
+    description: "",
+    metric: "experiment_guardrail",
+    scope_type: "feature",
+    scope_ref: "f1",
+    condition_type: "exceeds",
+    threshold: 0,
+    budget_amount: null,
+    window: "hourly",
+    cooldown: "day",
+    recovery_notify: false,
+    enabled: true,
+    channels: [{ channel: "in_app", target: null }],
+  } as never);
+  render(
+    <MemoryRouter initialEntries={["/alerts/a9/edit"]}>
+      <AuthProvider>
+        <Routes>
+          <Route path="/alerts/:id/edit" element={<AlertFormPage />} />
+        </Routes>
+      </AuthProvider>
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText(/This alert belongs to a live test/)).toBeVisible();
+  expect(screen.getByRole("link", { name: /Open the feature and its test/ })).toHaveAttribute(
+    "href",
+    "/features/f1",
+  );
+  expect(screen.queryByLabelText("Alert name")).not.toBeInTheDocument();
 });

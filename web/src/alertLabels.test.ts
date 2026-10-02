@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AlertRule } from "./api";
 import {
   conditionText,
   costLink,
@@ -146,5 +147,14 @@ describe("alertLabels — request-level metrics", () => {
         threshold: 40,
       } as never),
     ).toBe("below 40%");
+  });
+});
+
+describe("a live test's guardrail alert", () => {
+  const rule = { metric: "experiment_guardrail", condition_type: "exceeds", threshold: 0 };
+  it("says what it watches, not a dollar amount", () => {
+    expect(conditionText(rule as AlertRule)).toBe("fires when a guardrail is breached");
+    expect(ruleQuantity(rule, 1)).toBe("1 guardrail breached");
+    expect(ruleQuantity(rule, 2)).toBe("2 guardrails breached");
   });
 });

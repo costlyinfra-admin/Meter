@@ -14,6 +14,7 @@ import {
   SCOPE_LABELS,
   STATUS_LABELS,
   statusClass,
+  SYSTEM_METRICS,
   WINDOW_LABELS,
   ruleQuantity,
 } from "../alertLabels";
@@ -340,18 +341,23 @@ function RulesTab({
                         <li>
                           <Link to={`/alerts/${r.id}`}>View details</Link>
                         </li>
-                        <li>
-                          <Link to={`/alerts/${r.id}/edit`}>Edit</Link>
-                        </li>
-                        <li>
-                          <button
-                            onClick={() =>
-                              onAct(() => api.duplicateAlert(r.id), "Alert duplicated.")
-                            }
-                          >
-                            Duplicate
-                          </button>
-                        </li>
+                        {/* A live test's guardrail is the test's to manage. */}
+                        {!SYSTEM_METRICS.has(r.metric) && (
+                          <>
+                            <li>
+                              <Link to={`/alerts/${r.id}/edit`}>Edit</Link>
+                            </li>
+                            <li>
+                              <button
+                                onClick={() =>
+                                  onAct(() => api.duplicateAlert(r.id), "Alert duplicated.")
+                                }
+                              >
+                                Duplicate
+                              </button>
+                            </li>
+                          </>
+                        )}
                         <li>
                           <button
                             onClick={() =>

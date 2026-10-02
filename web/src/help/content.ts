@@ -1030,7 +1030,15 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "Meter prices the tokens itself and applies its rule: nothing broken, not worse more often than better beyond the allowance, enough cases, and cheaper per call. A pass makes the saving **tested**; a fail keeps the card, out of the totals. What the run cost is shown on the feature as testing — it is already in your provider bill, so it is never added again.",
           ),
           p(
-            "Right-sizing works on Anthropic and OpenAI models today. Testing other recommendations, and on a share of live traffic, comes next.",
+            'Right-sizing can also be tested **on a share of live traffic**. Meter does not route requests — your own feature flag does. Wrap your client twice with the SDK (2.6 or later), once per group, and tag each with the test: `meter.wrap(client, experiment=..., group="control")` and `group="candidate"`. Meter then compares the two groups on what it already measures for every call: cost per successful call, error rate and the slowest 5% of latency. Send `meter.score(experiment, group, value)` for each answer — a success flag, a thumbs up, an eval score, on any scale both groups share — and quality becomes part of the verdict too.',
+          ),
+          list(
+            "**No verdict before the minimum** — by default 500 calls in each group and 7 days. An early lead is not a result, so until then the comparison is shown as provisional and the recommendation does not move.",
+            "**Guardrails stop it early.** If the cheaper model's error rate rises more than a point, or its slowest 5% gets more than a quarter slower, the test stops as failed and its guardrail alert fires. The alert appears in Alerts and is managed by the test.",
+            "**A pass needs a clear saving**, lower at 95% confidence, and quality no more than 5% below the current model's average where scores were sent. It counts as **tested**, at high confidence, until your bill confirms the change.",
+          ),
+          p(
+            "Right-sizing works on Anthropic and OpenAI models today. Testing other recommendations on live traffic comes next.",
           ),
         ],
       },
