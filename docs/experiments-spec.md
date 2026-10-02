@@ -383,6 +383,36 @@ Each ends with a review, the house rhythm.
   prompt caching and repeated requests. No content, no tokens, no new consent.
   *Why first:* it proves the feedback loop end to end, at zero privacy and cost
   risk.
+
+  ✅ **Built (2026-10-01).** What is true today, and where it differs from the
+  plan above:
+
+  - **What can be tested.** Repeated requests (the customer picks how old a
+    cached answer may be — 1 minute, 10 minutes, 1 hour or 24 hours — and
+    whether only same-customer repeats count) and prompt caching (5-minute vs
+    1-hour cache, offered only where the provider sells both).
+  - **Counters.** SDK 2.4.0 (Python and Node, identical) sends a totals-only
+    simulation summary and a 1-hour cache-write count (`usage_simulation`,
+    `usage_signal.cache_windows_1h`, migration 0065). The 10-minute count
+    agrees with the duplicate detector by test. **2.4.0 is not published.**
+  - **An experiment stores the customer's setting.** The card's figure is
+    recomputed each month under it; the experiment keeps what it found when
+    it ran (`experiments.py`). A passed simulation replaces the figure and
+    keeps the savings type; a failed one keeps the card, out of every total
+    and the ranking; under 200 calls it waits.
+  - **Deferred to EX-2:** the `tested` savings type and its Overview figure.
+    A simulation never produces one, and an always-empty card would only
+    confuse.
+  - **Ordering rule added:** results are layered on after reconciliation, so
+    an applied fix keeps being measured against the figure it was applied on;
+    a replaced figure is still bounded by the bill.
+  - **Only on the feature page.** The Copilot Overview shows the recomputed
+    figures and leaves out failed ones, but has no test badge yet.
+  - **Gap found, not fixed here:** the caching detector prices only the
+    5-minute cache, so where that would lose money it recommends nothing —
+    even when the 1-hour cache would save. There is then no card to test, in
+    exactly the case the 1-hour test matters most. The fix is in the detector
+    (price both lifetimes, recommend the better), not in testing.
 - **EX-2 — Customer-side offline tests, model right-sizing first** (decision 6).
   The results endpoint with scoped tokens; `meter test` with built-in replay
   for right-sizing, then provider switch and output reduction once the loop
