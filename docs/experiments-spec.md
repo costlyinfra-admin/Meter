@@ -418,6 +418,42 @@ Each ends with a review, the house rhythm.
   for right-sizing, then provider switch and output reduction once the loop
   has been reviewed on right-sizing; promptfoo config generation and importers
   (promptfoo, Inspect, DeepEval); test-cost attribution (§7.5).
+
+  ✅ **Built for model right-sizing (2026-10-01).** What is true today, and
+  where it differs from the plan above:
+
+  - **The loop.** "Test this" on a right-sizing card: choose the model to
+    replace and a cheaper same-vendor one (the recommendation's target by
+    default), and the rule's two dials. Meter issues a one-time token
+    (`experiment_token`, hashed, 14 days, single use, revoked on cancel or
+    replacement) that can fetch that test's spec and post its results — and
+    nothing else. Results are a closed, numbers-only shape (`experiment_case`,
+    migration 0066); Meter prices the tokens and applies the rule
+    (`offline_tests.py`).
+  - **The runner** is `meter-test` in the **Python SDK 2.5.0** (`testing.py`,
+    standard library only), not `meter test`: `run` replays cases with the
+    customer's keys and judge (both orders), `import promptfoo` and
+    `import inspect` read those tools' results, `--dry-run` prints what would
+    be sent. Formats were checked against promptfoo's type definitions and
+    Inspect's log docs. **2.5.0 is not published. Node has no runner yet.**
+  - **Not built: the DeepEval importer** — its saved-run format is
+    undocumented beyond "the schema Confident AI uses" and records no per-case
+    token usage or model, so it could never supply a test's cost. **Not
+    built: promptfoo config generation** — the run page gives the import
+    command instead; a generated config can follow if customers ask.
+  - **Providers.** Anthropic and OpenAI. Gemini models are right-sized but not
+    offered a test the runner cannot run.
+  - **`tested` savings type** (decision 2): a fourth figure everywhere — its
+    own Overview card once non-zero, the ranking, by-feature, MCP tools, and
+    the identified-savings sums on the budget panel and Forecast. A
+    recommendation covering several models is built part by part, each from
+    the latest finished test of that model, and becomes `tested` only when
+    every part has been tested and at least one held.
+  - **Test spend** (decision 3) is priced from the run's reported tokens,
+    judge included, and shown on the feature and the result as testing. It is
+    never added to inference: the calls ran on the customer's keys, so they are
+    already in the provider's bill, and adding them would count them twice.
+  - **Not yet:** provider switch and output reduction (after this review).
 - **EX-3 — Live experiments.** SDK group tagging; per-group comparison from
   `ai_span`; quality-score ingest (SDK and OTel); guardrail alerts; the live
   decision rule.
