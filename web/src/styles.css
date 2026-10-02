@@ -8068,3 +8068,34 @@ td.num:has(> .opt-ceiling) {
   height: 0.6rem;
   accent-color: var(--chart-4);
 }
+
+/* Prediction vs outcome (EX-5) ----------------------------------------------- */
+.prediction-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+}
+.prediction-note {
+  font-size: 0.8rem;
+}
+.prediction-rose {
+  color: var(--warn);
+}
+.calibration {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+.calibration h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+.calibration p {
+  margin: 0 0 0.5rem;
+}
+.calibration-kinds {
+  margin: 0 0 0.5rem;
+  padding-left: 1.2rem;
+  line-height: 1.55;
+}

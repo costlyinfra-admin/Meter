@@ -548,6 +548,44 @@ Each ends with a review, the house rhythm.
 - **EX-5 — Prediction vs outcome.** Freeze the prediction at apply time; report
   the calibration in the Prove loop and the Overview.
 
+  ✅ **Built (2026-10-02).** What is true today, and where it differs from the
+  plan above:
+
+  - **What is frozen** (migration 0069, `optimize_measured._prediction`).
+    Marking a change applied now records Meter's **own** figure for it —
+    recomputed on the server for the applied period, so the browser can no
+    longer choose what is frozen (its figure is used only where Meter no
+    longer finds the opportunity, and the predicted fall is then capped at the
+    whole bill) — with its
+    savings type, confidence, test status, the test behind it, and the
+    feature's spend that month. Every applied change gets this, tested or
+    not, so tested and untested claims can be compared.
+  - **The prediction** is the saving as a share of that spend: how much
+    cheaper a unit of the feature's work (a call, or a million input tokens)
+    should get. It is checked against the same billed cost per unit the
+    Prove loop already reads (§20 amended), from the month after the change:
+    `delivered = actual fall ÷ predicted fall`. A rise is reported as a rise,
+    not as a gap.
+  - **Not scored: removing repeated calls.** It makes fewer calls, not
+    cheaper ones, so cost per unit cannot see it; those changes say so.
+    *This also means the §20 rule can almost never verify a deduplication
+    fix — flagged as a follow-up, not changed here.*
+  - **Calibration** (`copilot_overview()["calibration"]`): the median share
+    delivered across checked changes, separately for tested, measured and
+    ceiling figures — never pooled into one — with counts of changes still
+    waiting and of changes applied before predictions were kept (not
+    back-filled: a prediction reconstructed later is not one made at the
+    time). Shown under **Applied & verified** on the Optimize page; each
+    applied row, there and on the feature page, has a **Predicted vs bill**
+    column.
+  - **Caveat, stated on the page:** the figure is feature-wide, so anything
+    else that changed the feature moves it. One change proves little; the
+    pattern is the point, and fewer than three checked changes say so.
+  - **Not built:** a calibration figure on the main Overview (it sits on the
+    Optimize page, which §21 calls the Copilot Overview); comparing a tested
+    model's own predicted cost per call with that model's billed cost per
+    call, which needs per-model request counts from the connector.
+
 ## 11. Decisions (founder, 2026-10-01)
 
 | # | Question | Decision |

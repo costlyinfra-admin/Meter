@@ -978,6 +978,12 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           note(
             "This is the part most cost tools skip. An estimate that is never checked against the invoice is a guess with a dollar sign on it.",
           ),
+          p(
+            "**Meter's own predictions are checked too.** When you mark a change applied, Meter freezes what it predicted: its figure, whether that figure was measured, tested or a ceiling, how confident it was, and the test behind it if there was one. As a share of what the feature cost that month, the saving says how much cheaper a unit of its work should get. From the following month, **Predicted vs bill** puts that beside the fall your provider's billing actually shows, and how much of the predicted saving arrived.",
+          ),
+          p(
+            "On the Optimize page, **Meter's predictions against your bill** gives the median across every change the bill could check, separately for tested figures, measured figures and ceilings, so you can see how far to trust each kind. One change proves little: the figure is feature-wide, and anything else that changed the feature moves it. Removing repeated calls is not scored this way, because it makes fewer calls rather than cheaper ones.",
+          ),
         ],
       },
       {

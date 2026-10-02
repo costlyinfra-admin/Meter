@@ -458,6 +458,62 @@ def _add_offline_test_demo(
     )
 
 
+def _add_prediction_demo(conn, tenant_id) -> None:
+    """A change applied with Meter's prediction frozen, and the bill since (EX-5).
+
+    Phishing detection turned on prompt caching in March 2026. Meter predicted
+    its cost per call would fall 18%; the bill since shows about 15% — most of
+    the promise, not all of it, which is what a calibration figure is for.
+
+    The fall is written into the bill as more calls for the same dollars, so
+    no spend figure anywhere in the demo moves. Read for THIS tenant only: the
+    seeder's connection may bypass tenant isolation.
+    """
+    row = conn.execute(
+        "SELECT id FROM feature WHERE tenant_id = %s AND name = 'Phishing detection'",
+        (tenant_id,),
+    ).fetchone()
+    if row is None:
+        return
+    feature_id = row[0]
+    applied = _dt.date(2026, 3, 1)
+    spend = conn.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0) FROM inference_cost
+         WHERE tenant_id = %s AND feature_id = %s AND period = %s AND source <> 'hook'
+        """,
+        (tenant_id, feature_id, applied),
+    ).fetchone()[0]
+    if not spend:
+        return
+    conn.execute(
+        """
+        UPDATE inference_cost SET request_count = round(request_count * 1.18)
+         WHERE tenant_id = %s AND feature_id = %s AND period > %s AND request_count IS NOT NULL
+        """,
+        (tenant_id, feature_id, applied),
+    )
+    reduction = 0.18
+    conn.execute(
+        """
+        INSERT INTO optimization_action
+            (tenant_id, feature_id, lever, applied_on, projected_monthly,
+             predicted_savings_type, predicted_confidence, predicted_validation,
+             predicted_spend, predicted_reduction, predicted_at)
+        VALUES (%s, %s, 'prompt_caching', %s, %s, 'measured', 'med', 'untested', %s, %s, %s)
+        """,
+        (
+            tenant_id,
+            feature_id,
+            applied,
+            round(float(spend) * reduction, 2),
+            spend,
+            reduction,
+            _dt.datetime(2026, 3, 12, 15, 0, tzinfo=_dt.timezone.utc),
+        ),
+    )
+
+
 def _add_experiment_demo(conn, tenant_id, feature_id) -> None:
     """One finished test, so the demo shows a recommendation that has been
     tested: triage's prompt caching, under the 1-hour cache.
@@ -1446,6 +1502,8 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         """,
         (tenant_id, base["triage"], _dt.date(2026, 3, 1)),
     )
+
+    _add_prediction_demo(conn, tenant_id)
 
     # 2c) A feature on a HOSTED open model — cross-provider arbitrage (opt spec
     #     §16, M-opt-8). The same Llama-3.1-70B is ~59% cheaper on DeepInfra

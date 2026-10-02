@@ -126,6 +126,25 @@ describe("CopilotPage", () => {
     // The verified rollup.
     expect(screen.getByText(/✓ Verified/)).toBeInTheDocument();
   });
+
+  it("holds Meter's frozen predictions against the bill, beside the Prove loop", async () => {
+    vi.mocked(api.copilotOverview).mockResolvedValue({
+      ...OVERVIEW,
+      calibration: {
+        count: 1,
+        median_delivered: 0.85,
+        by_savings_type: [{ savings_type: "measured", count: 1, median_delivered: 0.85 }],
+        waiting: 0,
+        unpredicted: 1,
+      },
+    });
+    renderPage();
+    expect(
+      await screen.findByRole("heading", { name: "Meter’s predictions against your bill" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/of the predicted saving/)).toHaveTextContent("85%");
+    expect(screen.getByRole("columnheader", { name: "Predicted vs bill" })).toBeInTheDocument();
+  });
 });
 
 const SPEND_TO_REVIEW: BillingOpportunity = {

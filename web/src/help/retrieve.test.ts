@@ -193,3 +193,15 @@ describe("questions about Meter running a model test", () => {
     expect(ids(question)).toContain("optimize/testing-a-recommendation");
   });
 });
+
+describe("questions about how accurate Meter's predictions are", () => {
+  // "prediction" and "accurate" pull towards the forecast topic; a reader
+  // asking whether Meter's savings claims come true has to reach this one.
+  it.each([
+    "how accurate are Meter's savings predictions",
+    "did the saving Meter predicted actually show up on our bill",
+    "what does predicted vs bill mean",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("optimize/applying");
+  });
+});

@@ -1366,6 +1366,39 @@ export interface OptimizationAction {
   /** Set when everything the signals can show is satisfied and the bill still
    *  would not confirm it. Says which part was missing. */
   verification_note: string | null;
+  /** What Meter predicted when this was applied, frozen then (EX-5). Null for
+   *  changes applied before predictions were recorded. */
+  prediction?: ActionPrediction | null;
+  /** How much of the predicted fall in cost per unit the bill shows arriving. */
+  outcome?: { reduction: number; delivered: number | null } | null;
+  /** Why there is no outcome yet, or never will be. */
+  outcome_note?: string | null;
+}
+
+/** A frozen prediction: the cost of a unit of work should fall by `reduction`. */
+export interface ActionPrediction {
+  savings_type: "measured" | "tested" | "modeled_ceiling" | "directional" | null;
+  confidence: "high" | "med" | "low" | null;
+  validation: string | null;
+  experiment_id: string | null;
+  /** Share of the feature's spend the saving was, when applied (0–1). */
+  reduction: number;
+  /** What a unit of work should cost after the change, from the bill before it. */
+  unit_cost: number | null;
+  predicted_at: string | null;
+}
+
+/** How Meter's frozen predictions held up against the bill (EX-5). */
+export interface Calibration {
+  /** Changes whose prediction the bill could check. */
+  count: number;
+  /** Median share of the predicted saving that arrived: 1 is as predicted. */
+  median_delivered: number | null;
+  by_savings_type: { savings_type: string; count: number; median_delivered: number | null }[];
+  /** Predicted, but not checkable yet (or not by cost per unit). */
+  waiting: number;
+  /** Applied before Meter recorded predictions. */
+  unpredicted: number;
 }
 
 export interface FeatureOpportunities {
@@ -1429,6 +1462,8 @@ export interface CopilotOverview {
     count: number;
   }[];
   applied: (OptimizationAction & { feature_id: string; feature_name: string })[];
+  /** Meter's predictions against the bill, by kind of figure (EX-5). */
+  calibration?: Calibration;
   // Billing-only path: kept out of every total above.
   has_sdk_telemetry: boolean;
   /** Telemetry arrives, but not the salted signals the measured levers need. */

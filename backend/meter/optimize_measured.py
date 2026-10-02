@@ -915,7 +915,9 @@ def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict)
     """
     rows = conn.execute(
         """
-        SELECT lever, applied_on, projected_monthly
+        SELECT lever, applied_on, projected_monthly, predicted_savings_type,
+               predicted_confidence, predicted_validation, experiment_id,
+               predicted_reduction, predicted_at
         FROM optimization_action
         WHERE feature_id = %s
         ORDER BY applied_on
@@ -926,7 +928,7 @@ def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict)
     # The bill, once per period rather than once per action.
     now_cost = _unit_cost(conn, feature_id, start)
     before_cache: dict[dt.date, Optional[tuple[float, str]]] = {}
-    for lever, applied_on, projected in rows:
+    for lever, applied_on, projected, *frozen in rows:
         projected = round(float(projected), 2)
         current = round(float(measured_by_lever.get(lever, 0.0)), 2)
         elapsed = _months_between(applied_on, start)
@@ -972,9 +974,99 @@ def _actions(conn, feature_id, start, measured_by_lever: dict, observable: dict)
                 "unit_cost_unit": before[1] if agrees is not None else None,
                 "bill_agrees": agrees,
                 "verification_note": note,
+                # What Meter predicted when this was applied, and how much of
+                # it the bill shows arriving (EX-5).
+                **_prediction_check(lever, frozen, elapsed, before, now_cost, agrees, why_not),
             }
         )
     return out
+
+
+#: Levers that make each unit of work cheaper, which the bill's cost per unit
+#: can check. Removing repeated calls makes fewer calls, not cheaper ones.
+PRICE_LEVERS = ("prompt_caching", "model_rightsizing", "provider_switch")
+
+
+def _prediction_check(lever, frozen, elapsed, before, now_cost, agrees, why_not) -> dict:
+    """The frozen prediction for one applied change, and the bill's answer.
+
+    The prediction is that a unit of the feature's work gets cheaper by the
+    saving's share of the feature's spend when it was applied. The bill's
+    answer is how far its cost per unit actually fell since — the same two
+    numbers the Prove loop already shows. `delivered` is the share of the
+    predicted fall that arrived: 1.0 is exactly as predicted, 0.5 half, and
+    below 0 the cost per unit rose.
+
+    It is a feature-wide number, so anything else that changed the feature's
+    cost per unit moves it too. It is reported as what the bill shows, not as
+    proof of cause; the pattern across many changes is the point.
+    """
+    savings_type, confidence, validation, experiment_id, reduction, predicted_at = frozen
+    prediction = None
+    if reduction is not None:
+        prediction = {
+            "savings_type": savings_type,
+            "confidence": confidence,
+            "validation": validation,
+            "experiment_id": str(experiment_id) if experiment_id else None,
+            "reduction": float(reduction),
+            "unit_cost": round(before[0] * (1 - float(reduction)), 6) if before else None,
+            "predicted_at": predicted_at.isoformat() if predicted_at else None,
+        }
+    outcome, note = None, None
+    if predicted_at is None:
+        note = "Applied before Meter recorded its predictions."
+    elif reduction is None:
+        note = "The feature had no billed spend when this was applied, so nothing was predicted."
+    elif lever not in PRICE_LEVERS:
+        note = (
+            "Removing repeated calls makes fewer calls, not cheaper ones, so the bill's cost "
+            "per unit cannot check this prediction."
+        )
+    elif elapsed <= 0:
+        note = "Checked against the bill from the month after it was applied."
+    elif agrees is None:  # the bill could not be asked; False is an answer
+        note = f"Not checked against the bill: {why_not}."
+    else:
+        actual = 1 - now_cost[0] / before[0]
+        outcome = {
+            "reduction": round(actual, 6),
+            "delivered": round(actual / float(reduction), 4) if float(reduction) > 0 else None,
+        }
+    return {"prediction": prediction, "outcome": outcome, "outcome_note": note}
+
+
+def _calibration(applied: list) -> dict:
+    """How Meter's frozen predictions held up against the bill, by kind of figure.
+
+    The median share of the predicted fall in cost per unit that arrived. A
+    measured figure, a tested one and a ceiling make different promises; a
+    buyer deciding how far to trust each needs them apart, never pooled.
+    """
+    import statistics
+
+    checked = [a for a in applied if a.get("outcome") and a["outcome"]["delivered"] is not None]
+
+    def summary(rows: list) -> dict:
+        values = [r["outcome"]["delivered"] for r in rows]
+        return {
+            "count": len(rows),
+            "median_delivered": round(statistics.median(values), 4) if values else None,
+        }
+
+    kinds = []
+    for kind in ("tested", "measured", "modeled_ceiling"):
+        rows = [a for a in checked if a["prediction"]["savings_type"] == kind]
+        if rows:
+            kinds.append({"savings_type": kind, **summary(rows)})
+    return {
+        **summary(checked),
+        "by_savings_type": kinds,
+        # Predictions not yet, or never, checkable — counted, so the figure
+        # above is never read as covering every change.
+        "waiting": sum(1 for a in applied if a.get("prediction") and not a.get("outcome")),
+        "unpredicted": sum(1 for a in applied if not a.get("prediction")),
+    }
 
 
 def opportunities(
@@ -1181,6 +1273,8 @@ def copilot_overview(tenant_id: str, period: Optional[dt.date] = None) -> dict:
         "by_feature": by_feature,
         "by_lever": by_lever,
         "applied": applied,
+        # Meter's frozen predictions against the bill (EX-5).
+        "calibration": _calibration(applied),
         # --- Billing-only path (no SDK required) -------------------------------
         # Separate from every total above: these are spend-to-review, visibility,
         # concentration, growth and control gaps — never measured/modelled savings.
@@ -1200,27 +1294,84 @@ def mark_applied(
     projected_monthly: float,
     period: Optional[dt.date] = None,
 ) -> Optional[dict]:
-    """Freeze a measured opportunity's projection as of a period (opt spec §11).
+    """Freeze a measured opportunity's projection as of a period (opt spec §11),
+    and the prediction it makes for the bill (EX-5).
 
     Returns None if the feature doesn't exist. Idempotent per (feature, lever):
     re-applying updates the applied period and frozen projection.
+
+    The figure frozen is Meter's own, recomputed here for the applied period —
+    the one the card showed — with what it rested on. `projected_monthly`, sent
+    by the browser, is used only where Meter no longer finds the opportunity.
     """
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         if conn.execute("SELECT 1 FROM feature WHERE id = %s", (feature_id,)).fetchone() is None:
             return None
         applied_on = dashboard._resolve_period(conn, period)
+        p = _prediction(conn, feature_id, lever, applied_on, projected_monthly)
         conn.execute(
             """
             INSERT INTO optimization_action (tenant_id, feature_id, lever, applied_on,
-                                             projected_monthly)
-            VALUES (%s, %s, %s, %s, %s)
+                                             projected_monthly, predicted_savings_type,
+                                             predicted_confidence, predicted_validation,
+                                             experiment_id, predicted_spend,
+                                             predicted_reduction, predicted_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             ON CONFLICT (tenant_id, feature_id, lever) DO UPDATE
             SET applied_on = EXCLUDED.applied_on,
-                projected_monthly = EXCLUDED.projected_monthly
+                projected_monthly = EXCLUDED.projected_monthly,
+                predicted_savings_type = EXCLUDED.predicted_savings_type,
+                predicted_confidence = EXCLUDED.predicted_confidence,
+                predicted_validation = EXCLUDED.predicted_validation,
+                experiment_id = EXCLUDED.experiment_id,
+                predicted_spend = EXCLUDED.predicted_spend,
+                predicted_reduction = EXCLUDED.predicted_reduction,
+                predicted_at = EXCLUDED.predicted_at
             """,
-            (tenant_id, feature_id, lever, applied_on, projected_monthly),
+            (
+                tenant_id,
+                feature_id,
+                lever,
+                applied_on,
+                p["monthly"],
+                p["savings_type"],
+                p["confidence"],
+                p["validation"],
+                p["experiment_id"],
+                p["spend"],
+                p["reduction"],
+            ),
         )
-    return {"lever": lever, "applied_on": applied_on.isoformat()}
+    return {"lever": lever, "applied_on": applied_on.isoformat(), "prediction": p}
+
+
+def _prediction(
+    conn, feature_id: str, lever: str, period: dt.date, fallback_monthly: float
+) -> dict:
+    """What Meter is claiming for this change, as it stands in `period`.
+
+    The saving as a share of the feature's spend that month is the part the
+    bill can check later: a unit of the feature's work should cost that much
+    less, at the same traffic. Bounded at 1 — nothing saves more than the
+    bill, and _bound_by_spend already holds the figure to it.
+    """
+    found = _feature_opportunities(conn, feature_id, period)["opportunities"]
+    matches = [o for o in found if o["lever"] == lever]
+    o = next((m for m in matches if m["savings_type"] != "directional"), None) or next(
+        iter(matches), None
+    )
+    spend = _feature_spend(conn, feature_id, period)
+    monthly = round(float(o["projected_monthly_savings"]) if o else fallback_monthly, 2)
+    tested = o is not None and o.get("validation") in ("simulated", "tested_offline", "tested_live")
+    return {
+        "monthly": monthly,
+        "savings_type": o["savings_type"] if o else None,
+        "confidence": o["confidence"] if o else None,
+        "validation": o.get("validation") if o else None,
+        "experiment_id": (o.get("experiment") or {}).get("id") if tested else None,
+        "spend": round(spend, 4),
+        "reduction": round(min(monthly / spend, 1.0), 6) if spend > 0 else None,
+    }
 
 
 def unmark_applied(tenant_id: str, feature_id: str, lever: str) -> None:

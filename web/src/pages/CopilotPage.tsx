@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, type CopilotOverview } from "../api";
 import { ConfidenceBadge } from "../components/badges";
+import { CalibrationSummary, PredictionCell } from "../components/PredictionCheck";
 import { money } from "../format";
 
 /** Plain labels for billing-only findings — never the word "savings". */
@@ -291,7 +292,8 @@ export function CopilotPage() {
               <div className="section-head">
                 <h2>Applied &amp; verified</h2>
                 <span className="section-sub muted">
-                  Projected savings reconciled against the measured drop since.
+                  Projected savings reconciled against the measured drop since, and Meter&rsquo;s
+                  frozen prediction held against your bill.
                 </span>
               </div>
               <div className="mini-table-wrap">
@@ -302,6 +304,7 @@ export function CopilotPage() {
                       <th>Feature</th>
                       <th className="num">Projected</th>
                       <th className="num">Realized</th>
+                      <th className="num">Predicted vs bill</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -339,11 +342,15 @@ export function CopilotPage() {
                             </>
                           )}
                         </td>
+                        <td className="num">
+                          <PredictionCell action={a} />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {data.calibration && <CalibrationSummary calibration={data.calibration} />}
             </section>
           )}
         </>

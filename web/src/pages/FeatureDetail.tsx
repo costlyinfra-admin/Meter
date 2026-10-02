@@ -24,9 +24,10 @@ import { CategoryBadge, ConfidenceBadge, ProductBadge } from "../components/badg
 import { CategoryPicker } from "../components/CategoryPicker";
 import { ProductPicker } from "../components/ProductPicker";
 import { PeriodSelector } from "../components/PeriodSelector";
+import { PredictionCell } from "../components/PredictionCheck";
 import { TrendChart } from "../components/TrendChart";
 import { testDate, testStatus } from "../experimentLabels";
-import { compact, money, num } from "../format";
+import { compact, money, num, unitMoney } from "../format";
 
 /** Series colours — the --chart-1..6 ramp from styles.css, led by lime because
  *  lime is the data colour on costlyinfra.com. Kept in sync by hand: these are
@@ -557,7 +558,7 @@ function UnitCost({ action }: { action: OptimizationAction }) {
   }
   return (
     <span title={`Per ${unit}, from your provider's own billing data`}>
-      {money(before)} → <strong>{money(now)}</strong>
+      {unitMoney(before)} → <strong>{unitMoney(now)}</strong>
       <span className="section-sub muted"> /{unit === "call" ? "call" : "1M in"}</span>
     </span>
   );
@@ -570,7 +571,8 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
       <h4 className="opt-applied-title">Applied optimizations</h4>
       <span className="section-sub muted">
         Projected savings frozen at apply time, reconciled against the measured drop since — and
-        confirmed only where the bill agrees that a unit of work got cheaper.
+        confirmed only where the bill agrees that a unit of work got cheaper. Meter&rsquo;s
+        prediction for that cost is frozen too, and held against the bill.
       </span>
       <div className="mini-table-wrap">
         <table className="mini-table">
@@ -581,6 +583,7 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
               <th className="num">Projected</th>
               <th className="num">Realized</th>
               <th className="num">Cost per unit</th>
+              <th className="num">Predicted vs bill</th>
             </tr>
           </thead>
           <tbody>
@@ -618,6 +621,9 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
                 </td>
                 <td className="num">
                   <UnitCost action={a} />
+                </td>
+                <td className="num">
+                  <PredictionCell action={a} />
                 </td>
               </tr>
             ))}
