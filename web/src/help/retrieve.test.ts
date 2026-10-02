@@ -138,3 +138,32 @@ describe("questions about forecasting", () => {
     );
   });
 });
+
+describe("questions about testing a recommendation", () => {
+  // "test" and "simulate" appear in the prompt-rewrite evaluation topic too,
+  // which needs consent and spends tokens. A reader asking how to check a
+  // caching or repeated-request finding first has to reach the free one.
+  it.each([
+    "how do I test a recommendation before changing anything",
+    "can I simulate a response cache with a shorter freshness limit",
+    "what does tested did not hold mean",
+    "does running a test cost anything",
+  ])("reaches the topic from %j", (question) => {
+    expect(ids(question)).toContain("optimize/testing-a-recommendation");
+  });
+
+  it("answers the cache-lifetime question from the caching topic, and points to the test", () => {
+    // A question about which cache to use is first a question about caching,
+    // so it lands on that topic — which has to say how to settle it.
+    const [first] = retrieve("should I use the 1-hour prompt cache or the 5-minute one");
+    expect(first.id).toBe("optimize/prompt-caching");
+    const found = findTopic("optimize", "prompt-caching")!;
+    expect(JSON.stringify(found.topic.blocks)).toContain("/help/optimize/testing-a-recommendation");
+  });
+
+  it("leads with it, rather than with testing a prompt rewrite", () => {
+    expect(retrieve("how do I test a recommendation before changing anything")[0].id).toBe(
+      "optimize/testing-a-recommendation",
+    );
+  });
+});

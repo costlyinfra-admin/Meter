@@ -119,7 +119,7 @@ def test_a_passing_test_replaces_the_figure_and_says_where_it_came_from(tenant_i
     assert opp["projected_monthly_savings"] == 30.0
     assert opp["projected_annual_savings"] == 360.0
     assert opp["validation"] == "simulated"
-    assert opp["evidence"].startswith("Simulated with answers reused for up to 1 hour")
+    assert opp["evidence"].startswith("Simulated — A cache keeping answers for up to 1 hour")
     assert "up to 1 hour" in opp["fix"]
     # Simulated is not tested: the type does not change (spec §7.2).
     assert opp["savings_type"] == "modeled_ceiling"
@@ -380,3 +380,43 @@ def test_caching_is_not_offered_for_testing_where_there_is_no_lifetime_to_choose
     )
     opp, _ = _opp(tenant_id, feature, "prompt_caching")
     assert opp is not None and opp["testable"] is False
+
+
+# ---------------------------------------------------------------------------
+# The demo
+# ---------------------------------------------------------------------------
+def test_the_demo_shows_a_tested_recommendation_and_agrees_with_itself(tenant_id, app_env):
+    """The demo seeds one finished test and the counters for more. Its tests
+    must agree with its own recommendations: at the detector's own setting, a
+    simulation has to land on the detector's own figure."""
+    from meter.sampledata import DEFAULT_PERIOD, insert_sample_data
+
+    insert_sample_data(app_env, tenant_id, extended=True)
+    app_env.commit()
+    with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
+        ids = dict(conn.execute("SELECT name, id::text FROM feature").fetchall())
+    triage, report = ids["AI threat triage"], ids["Report generator"]
+
+    caching = next(
+        o
+        for o in optimize_measured.opportunities(tenant_id, triage, DEFAULT_PERIOD)["opportunities"]
+        if o["lever"] == "prompt_caching"
+    )
+    assert caching["validation"] == "simulated"
+    assert caching["experiment"]["setting_label"] == "a 1-hour prompt cache"
+    exp = experiments.get(tenant_id, caching["experiment"]["id"])
+    # The 1-hour cache wins here, by a little, and the card shows its figure.
+    assert exp["result"]["monthly_saving"] > exp["baseline"]["monthly"]
+    assert caching["projected_monthly_savings"] == exp["result"]["monthly_saving"]
+
+    repeats = next(
+        o
+        for o in optimize_measured.opportunities(tenant_id, report, DEFAULT_PERIOD)["opportunities"]
+        if o["lever"] == "duplicate_calls"
+    )
+    assert repeats["testable"] and repeats["validation"] == "untested"
+    at_default = experiments.create(
+        tenant_id, report, "duplicate_calls", ACTOR, ttl_seconds=600, scoped_only=True
+    )
+    assert at_default["outcome"] == "passed"
+    assert at_default["result"]["monthly_saving"] == repeats["projected_monthly_savings"]

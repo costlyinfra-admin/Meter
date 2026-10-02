@@ -418,6 +418,101 @@ describe("FeatureDetail", () => {
     expect(await screen.findByText(/measured as Prompt caching/)).toBeInTheDocument();
   });
 
+  it("offers Test this only where a test exists", async () => {
+    vi.mocked(api.featureOpportunities).mockResolvedValue({
+      ...OPPORTUNITIES,
+      opportunities: [
+        opp({ ...OPPORTUNITIES.opportunities[0], testable: false }),
+        opp({ ...OPPORTUNITIES.opportunities[1], testable: true, experiment: null }),
+      ],
+    });
+    renderDetail();
+    const links = await screen.findAllByRole("link", { name: "Test this" });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/features/f1/test/duplicate_calls");
+  });
+
+  it("does not offer a test of a fix that is already applied", async () => {
+    vi.mocked(api.featureOpportunities).mockResolvedValue({
+      ...OPPORTUNITIES,
+      opportunities: [opp({ ...OPPORTUNITIES.opportunities[1], testable: true })],
+      actions: [
+        {
+          lever: "duplicate_calls",
+          applied_on: "2026-03-01",
+          projected_monthly: 500,
+          current_avoidable: 369,
+          realized_monthly: 131,
+          status: "measured",
+        } as OptimizationAction,
+      ],
+    });
+    renderDetail();
+    await screen.findByText(/✓ Applied/);
+    expect(screen.queryByRole("link", { name: "Test this" })).not.toBeInTheDocument();
+  });
+
+  it("shows what a test found, and links to it", async () => {
+    vi.mocked(api.featureOpportunities).mockResolvedValue({
+      ...OPPORTUNITIES,
+      opportunities: [
+        opp({
+          ...OPPORTUNITIES.opportunities[0],
+          testable: true,
+          validation: "simulated",
+          experiment: {
+            id: "e1",
+            status: "completed",
+            outcome: "passed",
+            setting_label: "a 1-hour prompt cache",
+            tested_on: "2026-05-19",
+          },
+        }),
+      ],
+    });
+    renderDetail();
+    const badge = await screen.findByRole("link", { name: /Simulated · May 19, 2026/ });
+    expect(badge).toHaveAttribute("href", "/experiments/e1");
+    expect(badge).toHaveAttribute("title", "Tested with a 1-hour prompt cache");
+    expect(screen.getByRole("link", { name: "Test again" })).toBeInTheDocument();
+  });
+
+  it("keeps a card a test said does not hold, marked and out of the totals", async () => {
+    vi.mocked(api.featureOpportunities).mockResolvedValue({
+      ...OPPORTUNITIES,
+      opportunities: [
+        opp({
+          ...OPPORTUNITIES.opportunities[1],
+          testable: true,
+          validation: "failed",
+          test_failed: true,
+          experiment: {
+            id: "e2",
+            status: "completed",
+            outcome: "failed",
+            setting_label: "answers reused for up to 1 minute",
+            tested_on: "2026-05-20",
+            note: "A cache keeping answers for up to 1 minute would have served only 3 calls.",
+          },
+        }),
+      ],
+      totals: { measured: 0, modeled_ceiling: 0, directional: 0 },
+    });
+    renderDetail();
+    expect(await screen.findByRole("link", { name: /Tested — did not hold/ })).toHaveAttribute(
+      "href",
+      "/experiments/e2",
+    );
+    expect(screen.getByText(/Your test says this does not hold/)).toHaveTextContent(
+      "would have served only 3 calls",
+    );
+    expect(screen.getByText("Repeated request candidates").closest("li")).toHaveClass(
+      "opt-item-failed",
+    );
+    // Its figure is not presented as an "up to" ceiling any more.
+    expect(screen.queryByText("up to")).not.toBeInTheDocument();
+  });
+
   it("shows validate/verify guidance on each measured card", async () => {
     renderDetail();
     expect(await screen.findAllByText("How to apply & verify")).toHaveLength(2);

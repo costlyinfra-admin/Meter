@@ -944,6 +944,9 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p(
             "Savings are priced from published list rates, not read off your invoice. If you have negotiated pricing, treat the figure as proportional rather than exact.",
           ),
+          p(
+            "The figure assumes the provider's default 5-minute cache. Some providers also sell a 1-hour cache: each write costs more, but sparse traffic rewrites it far less often, so which saves more depends on the gaps between your calls. To find out for your traffic, [test it](/help/optimize/testing-a-recommendation) — **Test this** on the card prices both.",
+          ),
           note(
             "Repeated requests and uncached prefixes often describe the same tokens, so Meter counts whichever is larger and drops the other rather than adding both.",
           ),
@@ -970,6 +973,49 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           ),
           note(
             "This is the part most cost tools skip. An estimate that is never checked against the invoice is a guess with a dollar sign on it.",
+          ),
+        ],
+      },
+      {
+        slug: "testing-a-recommendation",
+        title: "Testing a recommendation",
+        summary: "Replace Meter's assumption with yours, before you change anything.",
+        blocks: [
+          p(
+            "Some recommendations rest on an assumption only you can check. **Test this**, on a recommendation's card, lets you say what is true for your product, and Meter works out what the recommendation is worth then.",
+          ),
+          table(
+            ["Recommendation", "What you choose", "What the test answers"],
+            [
+              [
+                "**Repeated request candidates**",
+                "How old a cached answer may be (1 minute to 24 hours), and whether an answer may only be reused for the same customer",
+                "How many calls a cache that fresh would have served, and what they cost",
+              ],
+              [
+                "**Prompt caching**",
+                "A 5-minute or a 1-hour cache, where the provider sells both",
+                "Which lifetime saves more once the cost of writing the cache is paid",
+              ],
+            ],
+          ),
+          p(
+            "So if you are wondering whether to use the 1-hour prompt cache or the 5-minute one, or how short a freshness limit a response cache could have and still pay off, test it rather than guess.",
+          ),
+          p(
+            "These tests are **simulations**. In optimize mode the SDK counts, on your servers, how often each choice would have paid off, and sends only the counts. Meter reads no prompt or response and calls no model, so a test costs nothing. It needs the Python or Node SDK 2.4 or later, and at least 200 calls in the month; until then it waits and finishes on its own.",
+          ),
+          p("What a result does to the recommendation:"),
+          list(
+            "**Simulated** — the card's figure becomes the one under your setting, its evidence says so, and its place in the ranking follows. It is recomputed every month under the same setting, so it stays current.",
+            "**Tested — did not hold** — the card stays where you can see it, marked, and leaves every total and the ranking. A failed test is evidence, not a deletion.",
+            "**Waiting for data** — nothing changes yet.",
+          ),
+          note(
+            "A test does not verify anything. Only your bill can do that, after you make the change and mark it applied — and a fix you have already applied keeps being checked against the figure it was applied on, whatever a later test says.",
+          ),
+          p(
+            "Testing other recommendations on your own test cases, and on a share of live traffic, comes next.",
           ),
         ],
       },

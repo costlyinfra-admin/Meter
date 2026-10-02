@@ -282,6 +282,7 @@ def _add_usage_signal(
     cached_count=0,
     write_calls=0,
     cache_windows=None,
+    cache_windows_1h=None,
     prefix_samples=0,
     # The demo seeds v2 signals: a v1 row is a LEGACY row by definition, and the
     # detector excludes those, so seeding v1 would leave the demo's repeated-
@@ -302,9 +303,10 @@ def _add_usage_signal(
                                   tokens_in, tokens_out, cached_count,
                                   fingerprint_version, scope_kind,
                                   write_calls, cache_windows,
-                                  prefix_tokens_sum, prefix_tokens_n, prefix_measured)
+                                  prefix_tokens_sum, prefix_tokens_n, prefix_measured,
+                                  cache_windows_1h)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s)
+                %s, %s, %s, %s)
         """,
         (
             tenant_id,
@@ -326,8 +328,76 @@ def _add_usage_signal(
             (prefix_tokens or 0) * prefix_samples,
             prefix_samples,
             prefix_samples > 0,
+            cache_windows_1h,
         ),
     )
+
+
+def _add_simulation(conn, tenant_id, feature_id, calls, ladder, *, evicted_24h=0,
+                    model="claude-sonnet-4-6", period=DEFAULT_PERIOD):
+    """Seed the repeated-request simulation counters (EX-1) for one feature.
+
+    `ladder` maps each freshness limit's suffix to (hits, tokens_in, tokens_out).
+    The 10-minute step must agree with the feature's duplicate signals, as it
+    does for a real SDK, or the demo would show a test contradicting the
+    recommendation it tests.
+    """
+    cols = ["calls"]
+    values = [calls]
+    for suffix, (hits, tin, tout) in ladder.items():
+        cols += [f"hits_{suffix}", f"hit_tokens_in_{suffix}", f"hit_tokens_out_{suffix}"]
+        values += [hits, tin, tout]
+    cols.append("evicted_24h")
+    values.append(evicted_24h)
+    conn.execute(
+        f"""
+        INSERT INTO usage_simulation (tenant_id, feature_id, provider, model, period,
+                                      scope_kind, {", ".join(cols)})
+        VALUES (%s, %s, 'anthropic', %s, %s, 'explicit', {", ".join(["%s"] * len(cols))})
+        """,  # noqa: S608 - column names are this function's own constants
+        (tenant_id, feature_id, model, period, *values),
+    )
+
+
+def _add_experiment_demo(conn, tenant_id, feature_id) -> None:
+    """One finished test, so the demo shows a recommendation that has been
+    tested: triage's prompt caching, under the 1-hour cache.
+
+    Run through the real simulation, so the stored result is what the product
+    computes. Only the simulation's own queries run here — each filtered to this
+    feature — because the seeder may hold a connection that bypasses tenant
+    isolation.
+    """
+    from . import experiments, optimize_measured
+
+    rows = experiments._prefix_rows(conn, feature_id, DEFAULT_PERIOD)
+    detector = optimize_measured._prefix_opportunity(rows)
+    exp_id = conn.execute(
+        """
+        INSERT INTO experiment (tenant_id, feature_id, lever, mode, status, cache_ttl, period,
+                                baseline_monthly, baseline_savings_type, baseline_confidence,
+                                created_by, created_at)
+        VALUES (%s, %s, 'prompt_caching', 'simulate', 'waiting_for_data', '1h', %s,
+                %s, %s, %s, 'demo@costlyinfra.com', %s)
+        RETURNING id
+        """,
+        (
+            tenant_id,
+            feature_id,
+            DEFAULT_PERIOD,
+            detector["savings"] if detector else None,
+            detector["savings_type"] if detector else None,
+            detector["confidence"] if detector else None,
+            _dt.datetime(2026, 5, 19, 15, 30, tzinfo=_dt.timezone.utc),
+        ),
+    ).fetchone()[0]
+    result = experiments._simulate(
+        conn, "prompt_caching", feature_id, DEFAULT_PERIOD, {"cache_ttl": "1h"}
+    )
+    experiments._apply_result(conn, str(exp_id), result, DEFAULT_PERIOD)
+    # Finished when it was started, in the demo's own May — not on the day the
+    # demo happened to be seeded.
+    conn.execute("UPDATE experiment SET completed_at = created_at WHERE id = %s", (exp_id,))
 
 
 def insert_sample_data(conn: psycopg.Connection, tenant_id: str, *, extended: bool = False) -> dict:
@@ -1198,12 +1268,35 @@ def _add_extended_demo(conn, tenant_id, base: dict) -> int:
         prefix_tokens=4100,
         cached_count=2080,
         cache_windows=700,
+        # The same traffic at a 1-hour cache lifetime: far fewer gaps outlive
+        # an hour than five minutes, so ~120 writes rather than ~700 — enough
+        # to make the 1-hour cache the cheaper choice here, by a little.
+        cache_windows_1h=120,
         # The provider reported a creation size on each of those writes, so the
         # demo shows the measured path rather than the character estimate.
         prefix_samples=700,
         tokens_in=106_600_000,
         tokens_out=5_200_000,
     )
+    # "Test this" (EX-1): the simulation counters a current SDK sends alongside
+    # those signals. The 10-minute step on each feature is that feature's
+    # duplicate signals exactly; the other limits show the trade-off a
+    # customer chooses along. A few request shapes outlived the SDK's memory
+    # over 24 hours, so that limit reads as a minimum.
+    _add_simulation(
+        conn, tenant_id, base["report"], 18_000,
+        {"1m": (180, 10_200_000, 1_340_000), "10m": (430, 24_500_000, 3_200_000),
+         "1h": (760, 43_300_000, 5_660_000), "24h": (1_240, 70_600_000, 9_230_000)},
+        evicted_24h=40,
+    )
+    _add_simulation(
+        conn, tenant_id, base["triage"], 26_000,
+        {"1m": (700, 54_000_000, 3_000_000), "10m": (1_240, 96_000_000, 5_400_000),
+         "1h": (1_900, 147_000_000, 8_300_000), "24h": (2_700, 209_000_000, 11_800_000)},
+        evicted_24h=120,
+    )
+    _add_experiment_demo(conn, tenant_id, base["triage"])
+
     # An applied optimization (opt spec §11/§20): dedup was applied in March with a
     # $500/mo projection. This month's duplicate waste is ~$369, so the realized
     # saving is ~$131/mo — and it has held for 2 periods (Mar→May), so it's VERIFIED,

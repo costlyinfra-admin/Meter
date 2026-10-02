@@ -7891,3 +7891,105 @@ button.span-head:focus-visible {
   padding-left: 1.2rem;
   line-height: 1.55;
 }
+
+/* Test this (EX-1) ---------------------------------------------------------- */
+/* A link drawn as the neighbouring "Mark as applied" button. */
+.opt-test-btn {
+  display: inline-block;
+  text-decoration: none;
+}
+.test-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  padding: 0.1rem 0.5rem;
+  text-decoration: none;
+  color: var(--ink-soft);
+  background: var(--line);
+}
+.test-badge.test-passed {
+  color: var(--good);
+  background: var(--good-tint);
+}
+/* Amber, as the Overview marks a figure that does not hold. */
+.test-badge.test-failed {
+  color: var(--warn);
+  background: var(--warn-tint);
+}
+.test-badge.test-cancelled {
+  color: var(--muted);
+}
+/* A failed test leaves the card in place and its figure out of every total. */
+.opt-item-failed .opt-item-savings {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.opt-item-test-note {
+  font-size: 0.8rem;
+  color: var(--warn);
+  margin: 0.25rem 0 0;
+}
+.test-choices {
+  border: 0;
+  margin: 1rem 0;
+  padding: 0;
+}
+.test-choices legend {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+.test-choice {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.45rem 0;
+  cursor: pointer;
+}
+.test-choice input {
+  margin-top: 0.2rem;
+  flex: none;
+}
+.test-choice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.9rem;
+}
+.test-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.test-outcome p {
+  margin: 0;
+  flex: 1 1 20rem;
+}
+.test-outcome.test-passed {
+  border-color: var(--good);
+}
+.test-outcome.test-failed {
+  border-color: var(--warn);
+}
+.test-baseline {
+  margin: 0 0 1rem;
+}
+.mini-table tr.test-chosen td {
+  font-weight: 600;
+  background: var(--accent-soft);
+}
+.test-method,
+.test-history {
+  margin: 0;
+  padding-left: 1.2rem;
+  line-height: 1.55;
+}
+.test-history li {
+  margin-bottom: 0.25rem;
+}

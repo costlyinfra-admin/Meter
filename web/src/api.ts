@@ -1068,6 +1068,14 @@ export interface Opportunity {
   verification: string;
   status: string;
   overlaps: string | null; // set when superseded by an overlapping lever (opt spec §22)
+  /** Whether "Test this" applies (EX-1: repeated requests, and prompt caching
+   *  where a provider sells a choice of cache lifetime). */
+  testable?: boolean;
+  /** What the customer's latest test of this recommendation says. */
+  validation?: "untested" | "simulated" | "failed" | "inconclusive";
+  /** A test said this does not hold: the card stays, out of the totals. */
+  test_failed?: boolean;
+  experiment?: OpportunityTest | null;
   trail: {
     fingerprint?: string;
     provider?: string;
@@ -1078,6 +1086,84 @@ export interface Opportunity {
     prefix_tokens?: number;
     cached?: number;
   }[];
+}
+
+/** The latest test of a recommendation, as its card shows it. */
+export interface OpportunityTest {
+  id: string;
+  status: "waiting_for_data" | "completed";
+  outcome: "passed" | "failed" | "inconclusive" | null;
+  setting_label: string;
+  tested_on: string;
+  note?: string;
+}
+
+/** One freshness limit in a repeated-request simulation. */
+export interface RepeatStep {
+  ttl_seconds: number;
+  label: string;
+  hits: number;
+  hit_rate: number;
+  monthly_saving: number;
+  /** The SDK forgot some requests early: this is a minimum. */
+  lower_bound: boolean;
+}
+
+/** One cache lifetime in a prompt-caching simulation. */
+export interface CacheLifetime {
+  cache_ttl: "5m" | "1h";
+  label: string;
+  monthly_saving: number;
+  cache_writes: number | null;
+}
+
+export type ExperimentResult =
+  | {
+      kind: "repeats";
+      calls: number;
+      unscoped_calls: number;
+      scoped_only: boolean;
+      ttl_seconds: number;
+      ladder: RepeatStep[];
+      monthly_saving: number;
+      hits: number;
+      hit_rate: number;
+    }
+  | {
+      kind: "caching";
+      calls: number;
+      cache_ttl: "5m" | "1h";
+      lifetimes: CacheLifetime[];
+      monthly_saving: number;
+    };
+
+/** A test of one recommendation (EX-1, docs/experiments-spec.md). */
+export interface Experiment {
+  id: string;
+  feature_id: string;
+  feature_name?: string | null;
+  lever: string;
+  mode: "simulate";
+  status: "waiting_for_data" | "completed" | "cancelled";
+  outcome: "passed" | "failed" | "inconclusive" | null;
+  outcome_reason: string;
+  setting: { ttl_seconds?: number; scoped_only?: boolean; cache_ttl?: "5m" | "1h" };
+  setting_label: string;
+  period: string;
+  baseline: { monthly: number; savings_type: string; confidence: string } | null;
+  result: ExperimentResult | null;
+  created_by: string;
+  created_at: string;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  history?: Experiment[];
+}
+
+export interface ExperimentInput {
+  lever: string;
+  ttl_seconds?: number;
+  scoped_only?: boolean;
+  cache_ttl?: "5m" | "1h";
 }
 
 /** An applied optimization, reconciled projected-vs-realized (opt spec §11). */
@@ -2147,6 +2233,17 @@ export const api = {
 
   unapplyOpportunity: (id: string, lever: string) =>
     request<void>(`/features/${id}/opportunities/apply?lever=${lever}`, { method: "DELETE" }),
+
+  startExperiment: (featureId: string, body: ExperimentInput) =>
+    request<Experiment>(`/features/${featureId}/experiments`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  experiment: (id: string) => request<Experiment>(`/experiments/${id}`),
+
+  cancelExperiment: (id: string) =>
+    request<Experiment>(`/experiments/${id}/cancel`, { method: "POST" }),
 
   copilotOverview: (period?: string) =>
     request<CopilotOverview>(`/copilot/overview${period ? `?period=${period}` : ""}`),

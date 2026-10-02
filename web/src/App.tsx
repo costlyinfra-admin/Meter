@@ -26,6 +26,8 @@ import { Login } from "./pages/Login";
 import { HelpPage } from "./pages/HelpPage";
 import { PricingPage } from "./pages/PricingPage";
 import { ForecastPage } from "./pages/ForecastPage";
+import { ExperimentPage } from "./pages/ExperimentPage";
+import { TestRecommendationPage } from "./pages/TestRecommendationPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { Signup } from "./pages/Signup";
 import { AdminConnectors } from "./pages/admin/AdminConnectors";
@@ -102,6 +104,8 @@ export function App() {
         <Route path="/forecast" element={<ForecastPage />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="/features/:id" element={<FeatureDetail />} />
+        <Route path="/features/:featureId/test/:lever" element={<TestRecommendationPage />} />
+        <Route path="/experiments/:id" element={<ExperimentPage />} />
         <Route path="/install-sdk" element={<InstallSdkPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/alerts/new" element={<AlertFormPage />} />

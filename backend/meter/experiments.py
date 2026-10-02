@@ -51,6 +51,8 @@ TTL_CHOICES = {60: "1 minute", 600: "10 minutes", 3600: "1 hour", 86400: "24 hou
 _TTL_SUFFIX = {60: "1m", 600: "10m", 3600: "1h", 86400: "24h"}
 #: Cache lifetimes a provider sells.
 CACHE_TTLS = {"5m": "5 minutes", "1h": "1 hour"}
+#: The same, as the word before "cache".
+_CACHE_ADJ = {"5m": "5-minute", "1h": "1-hour"}
 #: Calls a simulation needs before it decides anything. A handful of calls
 #: agreeing is not evidence about a month of traffic.
 MIN_CALLS = 200
@@ -204,7 +206,7 @@ def _simulate_caching(conn, feature_id: str, period: dt.date, cache_ttl: str) ->
         "lifetimes": lifetimes,
         "monthly_saving": chosen["monthly_saving"],
     }
-    label = CACHE_TTLS[cache_ttl]
+    label = _CACHE_ADJ[cache_ttl]
     unknown_long = cache_ttl == "1h" and any(r[10] is None for r in choosable)
     if calls < MIN_CALLS or unknown_long:
         reason = (
@@ -220,7 +222,8 @@ def _simulate_caching(conn, feature_id: str, period: dt.date, cache_ttl: str) ->
     if Decimal(str(chosen["monthly_saving"])) >= MIN_SAVING:
         other = next(step for step in lifetimes if step["cache_ttl"] != cache_ttl)
         comparison = (
-            f", against ${other['monthly_saving']:,.2f} with the {other['label']} cache"
+            f", against ${other['monthly_saving']:,.2f} with the "
+            f"{_CACHE_ADJ[other['cache_ttl']]} cache"
             if choosable
             else ""
         )
@@ -291,7 +294,7 @@ def setting_label(lever: str, setting: dict) -> str:
         if setting["scoped_only"]:
             text += ", within a customer or cache scope only"
         return text
-    return f"a {CACHE_TTLS[setting['cache_ttl']]} prompt cache"
+    return f"a {_CACHE_ADJ[setting['cache_ttl']]} prompt cache"
 
 
 def _to_dict(row) -> dict:
@@ -573,7 +576,8 @@ def _replace_figure(o: dict, exp: dict, now: dict) -> None:
         o["fix"] = f"Cache responses for identical requests for up to {label}" + (
             ", keyed within each customer or cache scope." if exp["setting"]["scoped_only"] else "."
         )
-    o["evidence"] = f"Simulated with {exp['setting_label']}: {now['reason']}"
+    # The result sentence names the setting itself, so it is not said twice.
+    o["evidence"] = f"Simulated — {now['reason']}"
     o["priority_score"] = optimize_measured._priority(
         o["projected_monthly_savings"], o["confidence"], o["engineering_effort"]
     )

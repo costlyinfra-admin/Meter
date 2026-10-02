@@ -25,6 +25,7 @@ import { CategoryPicker } from "../components/CategoryPicker";
 import { ProductPicker } from "../components/ProductPicker";
 import { PeriodSelector } from "../components/PeriodSelector";
 import { TrendChart } from "../components/TrendChart";
+import { testDate, testStatus } from "../experimentLabels";
 import { compact, money, num } from "../format";
 
 /** Series colours — the --chart-1..6 ramp from styles.css, led by lime because
@@ -432,8 +433,10 @@ function MeasuredRow({
     }
   }
 
+  const test = opp.experiment ?? null;
+  const testState = test ? testStatus(test) : null;
   return (
-    <li className="opt-item">
+    <li className={opp.test_failed ? "opt-item opt-item-failed" : "opt-item"}>
       <div className="opt-item-main">
         <div className="opt-item-lever">
           <strong>{opp.title}</strong>
@@ -446,17 +449,40 @@ function MeasuredRow({
           {applied && (
             <span className="opt-applied-chip">✓ Applied {monthLabel(action.applied_on)}</span>
           )}
+          {test && testState && (
+            <Link
+              to={`/experiments/${test.id}`}
+              className={`test-badge ${testState.className}`}
+              title={`Tested with ${test.setting_label}`}
+            >
+              {testState.label}
+              {test.status === "completed" && ` · ${testDate(test.tested_on)}`}
+            </Link>
+          )}
         </div>
         <div className="opt-item-actions">
           <span className="opt-item-savings">
-            {ceiling && <span className="opt-ceiling">up to </span>}
+            {ceiling && !opp.test_failed && <span className="opt-ceiling">up to </span>}
             {money(opp.projected_monthly_savings)}/mo
           </span>
+          {opp.testable && !applied && (
+            <Link
+              to={`/features/${featureId}/test/${opp.lever}`}
+              className="opt-apply-btn opt-test-btn"
+            >
+              {test ? "Test again" : "Test this"}
+            </Link>
+          )}
           <button className="opt-apply-btn" onClick={toggle} disabled={busy}>
             {applied ? "Undo" : "Mark as applied"}
           </button>
         </div>
       </div>
+      {opp.test_failed && (
+        <p className="opt-item-test-note">
+          Your test says this does not hold, so it is left out of the totals. {test?.note}
+        </p>
+      )}
       <p className="opt-item-evidence">{opp.evidence}</p>
       {opp.fix && <p className="opt-item-fix muted">{opp.fix}</p>}
       <details className="opt-trail">
