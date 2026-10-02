@@ -282,7 +282,8 @@ class Meter:
     def wrap(self, client: Any, *, feature_id: Optional[str] = None,
              application: Optional[str] = None, provider: Optional[str] = None,
              prompt_id: Optional[str] = None, prompt_version: Optional[str] = None,
-             customer_id: Optional[str] = None, cache_scope: Optional[str] = None) -> Any:
+             customer_id: Optional[str] = None, cache_scope: Optional[str] = None,
+             experiment: Optional[str] = None, group: Optional[str] = None) -> Any:
         """Instrument a provider client so each call becomes its own trace.
 
         For the common case — one model call, no workflow around it — explicit
@@ -300,12 +301,44 @@ class Meter:
         stated, Meter records the repeat but will not call it safely reusable.
         `agent()` has always taken a customer; this is the wrapped-client
         equivalent. Neither ever reaches the provider's API.
+
+        `experiment` / `group` tag every call with a live test Meter is running
+        and the group this client serves: "control" (the current model) or
+        "candidate" (the one being tested). Your own feature flag decides which
+        client a request uses; Meter only compares what each group did.
         """
+        _check_experiment(experiment, group)
         return _Wrapped(client, self, provider or _detect_provider(client),
                         feature_id=feature_id or self.feature_id,
                         application=application or self.application,
                         prompt_id=prompt_id, prompt_version=prompt_version,
-                        customer_id=customer_id, cache_scope=cache_scope)
+                        customer_id=customer_id, cache_scope=cache_scope,
+                        experiment=experiment, group=group)
+
+    def score(self, experiment: str, group: str, score: float) -> None:
+        """Report a quality score for one answer in a live test's group.
+
+        Anything your own system already measures — task succeeded (1) or not
+        (0), a thumbs up, an eval score — on any scale, as long as both groups
+        use the same one. Only the number is sent, with the test and the group:
+        never the answer, never what it was about.
+        """
+        _check_experiment(experiment, group)
+        if experiment is None:
+            raise ValueError("score() needs the experiment id and group.")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or score != score:
+            raise ValueError("score must be a number.")
+        try:
+            self._send([{
+                "event_type": "experiment.score",
+                "event_id": _new_id(),
+                "experiment_id": experiment,
+                "experiment_group": group,
+                "score": float(score),
+                "occurred_at": _now_iso(),
+            }])
+        except Exception:
+            pass  # metering must never raise into the caller
 
     @contextmanager
     def agent(self, operation_name: str, *, feature_id: Optional[str] = None,
@@ -1149,6 +1182,18 @@ def _read_sample(provider: str, kwargs: dict, resp: Any) -> Optional[dict]:
     return {"template": template, "input": messages, "output": output, "parameters": params}
 
 
+EXPERIMENT_GROUPS = ("control", "candidate")
+
+
+def _check_experiment(experiment: Optional[str], group: Optional[str]) -> None:
+    """Both or neither, and a group Meter knows. A mistake here is the
+    developer's to fix now, not a test that silently collects nothing."""
+    if (experiment is None) != (group is None):
+        raise ValueError("Pass both experiment and group, or neither.")
+    if group is not None and group not in EXPERIMENT_GROUPS:
+        raise ValueError('group must be "control" or "candidate".')
+
+
 class _Wrapped:
     """A transparent proxy that records the completion call and returns the real
     response unchanged. Anything off the instrumented path is handed straight
@@ -1157,8 +1202,11 @@ class _Wrapped:
     def __init__(self, target: Any, meter: Meter, provider: str, *, path: tuple = (),
                  feature_id: Optional[str] = None, application: Optional[str] = None,
                  prompt_id: Optional[str] = None, prompt_version: Optional[str] = None,
-                 customer_id: Optional[str] = None, cache_scope: Optional[str] = None):
+                 customer_id: Optional[str] = None, cache_scope: Optional[str] = None,
+                 experiment: Optional[str] = None, group: Optional[str] = None):
         object.__setattr__(self, "_t", target)
+        object.__setattr__(self, "_experiment", experiment)
+        object.__setattr__(self, "_group", group)
         object.__setattr__(self, "_m", meter)
         object.__setattr__(self, "_p", provider)
         object.__setattr__(self, "_path", path)
@@ -1177,7 +1225,8 @@ class _Wrapped:
             return _Wrapped(attr, self._m, self._p, path=new_path,
                             feature_id=self._feature, application=self._app,
                             prompt_id=self._prompt, prompt_version=self._version,
-                            customer_id=self._customer, cache_scope=self._cache_scope)
+                            customer_id=self._customer, cache_scope=self._cache_scope,
+                            experiment=self._experiment, group=self._group)
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -1209,7 +1258,11 @@ class _Wrapped:
                     meter._event("span.failed", trace_id, span_id=span_id, span_kind="llm",
                                  operation_name=operation, latency_ms=latency,
                                  feature_id=self._feature, application=self._app,
-                                 prompt_id=self._prompt, prompt_version=self._version),
+                                 prompt_id=self._prompt, prompt_version=self._version,
+                                 # A failure counts against the group it
+                                 # happened in: that is the error guardrail.
+                                 experiment_id=self._experiment,
+                                 experiment_group=self._group),
                     meter._event("trace.failed", trace_id, operation_name=operation,
                                  application=self._app),
                 ])
@@ -1255,6 +1308,7 @@ class _Wrapped:
                              operation_name=operation, latency_ms=latency,
                              feature_id=self._feature, application=self._app,
                              prompt_id=self._prompt, prompt_version=self._version,
+                             experiment_id=self._experiment, experiment_group=self._group,
                              signal=signal, **usage),
                 meter._event("trace.completed", trace_id, operation_name=operation,
                              application=self._app),

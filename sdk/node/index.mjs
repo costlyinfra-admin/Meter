@@ -531,10 +531,18 @@ export class Meter {
    * Meter records the repeat but will not call it safely reusable. `agent()`
    * has always taken a customer; this is the wrapped-client equivalent.
    * Neither ever reaches the provider's API.
+   *
+   * `experiment` / `group` tag every call with a live test Meter is running and
+   * the group this client serves: "control" (the current model) or "candidate"
+   * (the one being tested). Your own feature flag decides which client a
+   * request uses; Meter only compares what each group did.
    */
   wrap(client, options = {}) {
+    checkExperiment(options.experiment ?? null, options.group ?? null);
     const provider = options.provider ?? detectProvider(client);
     return this._proxy(client, provider, [], {
+      experiment: options.experiment ?? null,
+      group: options.group ?? null,
       featureId: options.featureId ?? this.featureId,
       application: options.application ?? this.application,
       promptId: options.promptId ?? null,
@@ -601,6 +609,10 @@ export class Meter {
             application: ctx.application,
             prompt_id: ctx.promptId,
             prompt_version: ctx.promptVersion,
+            // A failure counts against the group it happened in: that is the
+            // error guardrail.
+            experiment_id: ctx.experiment,
+            experiment_group: ctx.group,
           }),
           this._event("trace.failed", traceId, {
             operation_name: operation,
@@ -654,6 +666,8 @@ export class Meter {
           application: ctx.application,
           prompt_id: ctx.promptId,
           prompt_version: ctx.promptVersion,
+          experiment_id: ctx.experiment,
+          experiment_group: ctx.group,
           signal,
           ...usage,
         }),
@@ -882,6 +896,33 @@ export class Meter {
       },
       callback,
     );
+  }
+
+  /**
+   * Report a quality score for one answer in a live test's group: whatever your
+   * own system measures, on any scale both groups share. Only the number is
+   * sent, with the test and the group — never the answer.
+   */
+  score(experiment, group, score) {
+    checkExperiment(experiment ?? null, group ?? null);
+    if (experiment == null) throw new Error("score() needs the experiment id and group.");
+    if (typeof score !== "number" || Number.isNaN(score)) {
+      throw new Error("score must be a number.");
+    }
+    try {
+      this._send([
+        {
+          event_type: "experiment.score",
+          event_id: newId(),
+          experiment_id: experiment,
+          experiment_group: group,
+          score,
+          occurred_at: nowIso(),
+        },
+      ]);
+    } catch {
+      /* metering must never throw into the caller */
+    }
   }
 
   _event(eventType, traceId, fields = {}) {
@@ -1185,6 +1226,19 @@ function scopeKey(scope) {
  * could have served the first. Absent scope is reported as absent, never as
  * permission.
  */
+export const EXPERIMENT_GROUPS = ["control", "candidate"];
+
+/** Both or neither, and a group Meter knows: a mistake here is the developer's
+ *  to fix now, not a test that silently collects nothing. */
+function checkExperiment(experiment, group) {
+  if ((experiment === null) !== (group === null)) {
+    throw new Error("Pass both experiment and group, or neither.");
+  }
+  if (group !== null && !EXPERIMENT_GROUPS.includes(group)) {
+    throw new Error('group must be "control" or "candidate".');
+  }
+}
+
 function scopeIsExplicit(scope) {
   return Boolean(scope?.customer_id || scope?.cache_scope);
 }
