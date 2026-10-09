@@ -428,6 +428,17 @@ describe("Dashboard (Overview)", () => {
     expect(within(screen.getByRole("table")).getByText("Unattributed")).toBeInTheDocument();
   });
 
+  it("scrolls the By Feature table inside its own box, so the page never scrolls sideways", async () => {
+    // Thirteen columns are ~1,130px wide. Without the wrapper the table set the
+    // page width, and the whole Overview slid sideways below ~1,140px.
+    renderDashboard();
+    await screen.findByText("Key insights");
+
+    expect(screen.getByRole("table").parentElement).toHaveClass("mini-table-wrap");
+    // The search box shares the tab row; that row must be allowed to wrap.
+    expect(screen.getByRole("tablist", { name: "Cost breakdown" })).toHaveClass("tabs-wrap");
+  });
+
   it("offers no product filter when nothing has a product yet", async () => {
     vi.mocked(api.dashboard).mockResolvedValue({
       ...DATA,

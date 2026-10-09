@@ -759,6 +759,14 @@ select {
   white-space: nowrap;
 }
 
+/* The Overview breakdown tabs share their row with the By Feature product
+   filter and search box. Five tabs plus those two do not fit a laptop at
+   1024px, let alone a phone, so the row wraps: the filter and search drop onto
+   a line of their own instead of pushing the whole page sideways. */
+.tabs.tabs-wrap {
+  flex-wrap: wrap;
+}
+
 .tab {
   background: none;
   border: none;
@@ -1031,6 +1039,14 @@ select {
 
   .nav-group-label {
     display: none;
+  }
+
+  /* The org name and footer take a line of their own, and may shrink to it.
+     At their desktop flex: 0 0 auto they came out 15px wider than a 375px
+     phone has room for, and pushed every page 2px sideways. */
+  .sidebar-bottom {
+    flex: 1 1 100%;
+    min-width: 0;
   }
 
   .sidebar-foot {

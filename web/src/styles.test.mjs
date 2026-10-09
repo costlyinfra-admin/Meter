@@ -3,9 +3,10 @@
  *
  * jsdom does no layout, so the only way to catch "the page slides sideways on a
  * phone" in a unit test is to assert the rules that stop it. Measured in a real
- * browser at 375px, `document.body.scrollWidth` is 377 on every page here; it
- * was 917 on /features before these rules, because a row of badges, pickers and
- * actions that cannot wrap makes the page as wide as its longest row.
+ * browser at 375px, `document.documentElement.scrollWidth` is 375 on / — it was
+ * 917 on /features and 1,147 on / before these rules, because a row of badges,
+ * pickers and actions that cannot wrap, or a wide table with no scroller of its
+ * own, makes the page as wide as its widest piece.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -24,7 +25,7 @@ function block(selector) {
   return CSS.slice(at, CSS.indexOf("}", at));
 }
 
-describe("styles.css — nothing on Features may push the page sideways", () => {
+describe("styles.css — nothing on Overview or Features may push the page sideways", () => {
   // Every flex row on /features and /features/:id that holds more than fits a
   // phone. Each one was measured overflowing 375px before it wrapped.
   it.each([
@@ -37,6 +38,19 @@ describe("styles.css — nothing on Features may push the page sideways", () => 
     ".evidence-item", // signal type, ref, actor, confidence, source
   ])("%s wraps rather than overflowing", (selector) => {
     expect(block(selector)).toContain("flex-wrap: wrap");
+  });
+
+  it(".tabs.tabs-wrap wraps rather than overflowing", () => {
+    // The Overview tab row: five tabs, the product filter and the feature
+    // search box. Measured pushing the page to 1,389px at a 1024px window.
+    expect(block(".tabs.tabs-wrap")).toContain("flex-wrap: wrap");
+  });
+
+  it("lets the sidebar footer shrink to a phone", () => {
+    // Every page: at flex: 0 0 auto the footer was 2px wider than 375px.
+    const phone = CSS.slice(CSS.indexOf("@media (max-width: 720px) {"));
+    const rule = phone.slice(phone.indexOf("  .sidebar-bottom {"));
+    expect(rule.slice(0, rule.indexOf("}"))).toContain("min-width: 0");
   });
 
   it("keeps .features-table sharing the table look with .mini-table", () => {
