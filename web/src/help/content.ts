@@ -7,7 +7,7 @@
  * claim about a number, it says where the number comes from, because that is the
  * product's whole premise.
  */
-import { code, list, note, p, steps, table, type Block } from "./blocks";
+import { code, image, list, note, p, steps, table, type Block } from "./blocks";
 import { MIN_SDK } from "../pages/installPrompt";
 
 export interface Topic {
@@ -79,6 +79,11 @@ export const CATEGORIES: Category[] = [
         summary: "What the Overview is telling you, in the order it tells you.",
         blocks: [
           p("The [Overview](/) is arranged as an argument, top to bottom."),
+          image(
+            "overview.webp",
+            "The Overview: headline figures across the top, then key insights, the spend trend, budget and forecast, provider spend and open actions.",
+            "The Overview for the demo organization.",
+          ),
           list(
             "**The summary strip** — your most expensive feature, the biggest optimization lever, the highest cost per user, and how much spend is still unattributed.",
             "**Key insights** — plain-language observations generated from your own numbers: an unusually expensive day, a spending pace, a concentration, spend on non-production keys. Each names the figure behind it.",
@@ -140,6 +145,10 @@ export const CATEGORIES: Category[] = [
         blocks: [
           p(
             "A feature is the unit everything hangs off. Build cost attributes to one, inference cost attributes to one, usage attributes to one.",
+          ),
+          image(
+            "feature-detail.webp",
+            "A feature's page: its build cost by developer and tool, then its inference cost and trend for the selected period.",
           ),
           p(
             "Features come from your merged pull requests. Meter clusters them into proposed features, and you confirm, rename, split or merge until the list matches how you actually think about your product. See [How discovery works](/help/features/discovery).",
@@ -245,6 +254,10 @@ export const CATEGORIES: Category[] = [
         blocks: [
           p(
             "On [Connect sources](/cost-sources), connect the providers you are billed by. Meter reads each provider's cost API — it never sends prompts, never makes model calls on your behalf, and never writes anything to your account.",
+          ),
+          image(
+            "connect-sources.webp",
+            "The Connect sources page: sources grouped by the kind of cost they report, each with a Connect button.",
           ),
           p(
             "Credentials are encrypted before they are stored and are never returned by any API or shown in the UI again. Every table is isolated per tenant at the database level.",
@@ -378,6 +391,10 @@ export const CATEGORIES: Category[] = [
         blocks: [
           p(
             "Meter reads your **merged pull requests** — title, branch, labels, description, author, and size. It never reads source code.",
+          ),
+          image(
+            "features.webp",
+            "The Features page: connect GitHub, choose an organization and repositories to analyze, then review the proposed features and the pull requests behind each.",
           ),
           p(
             "Those pull requests are clustered into proposed features. Each proposal carries the pull requests behind it, so you can always see why Meter thinks a feature exists.",
@@ -535,6 +552,10 @@ export const CATEGORIES: Category[] = [
           p(
             "Full copy-paste instructions with your own ingest token live on [Install SDK](/install-sdk) — including a prompt you can hand to a coding agent, which carries your real feature ids and does the wiring for you. The short version:",
           ),
+          image(
+            "install-sdk.webp",
+            "The Install SDK page: name the application, generate an ingest token, and copy the settings the SDK reads.",
+          ),
           code(`# Python
 from anthropic import Anthropic
 from costlyinfra_meter import Meter
@@ -657,6 +678,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p(
             "One row per feature, with build cost and inference cost side by side, plus active users, cost per user, request volume and confidence. Click any feature for its full drill-down and evidence trail.",
           ),
+          image(
+            "by-feature.webp",
+            "The By Feature tab: a ranked strip of the costliest features above the feature table, with a measure picker, product filter and search.",
+            "The strip ranks whatever the filter and search leave in the table.",
+          ),
           p(
             'The **Worth it?** column is deliberately directional, not a return-on-investment calculation. It compares inference cost against active users; it does not know your revenue. Treat it as "look here", not "cut this".',
           ),
@@ -669,6 +695,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "Inference and build cost live on separate sub-tabs here, because they never blend. The inference view breaks down four ways:",
+          ),
+          image(
+            "by-provider.webp",
+            "The By Provider tab: inference cost by classification over time beside the spend of each provider, broken down by model.",
+            "Click a provider to leave it out; the others' shares are recomputed over what is shown.",
           ),
           list(
             "**By provider**, each expanding into its models",
@@ -689,6 +720,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p(
             "Build cost is the only cost attributable to a person, so this view is build-only. It shows spend per developer, broken down by the tool they used.",
           ),
+          image(
+            "by-developer.webp",
+            "The By Developer tab: build cost per month stacked by developer, beside each developer's spend broken down by coding tool.",
+          ),
           p(
             "Below it, **Engineering activity** shows what each developer shipped over the same period — pull requests, features touched, commits, files, and lines added and removed — alongside their tooling spend and cost per PR.",
           ),
@@ -704,6 +739,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "The one breakdown a provider bill cannot produce: a bill records what was spent, never on whose behalf. It is populated only from SDK-metered calls tagged with `metadata.customer_id`.",
+          ),
+          image(
+            "by-customer.webp",
+            "The By Customer tab: metered AI cost, human effort and delivery cost, a monthly delivery-cost trend, and the top customers.",
           ),
           p(
             "Each customer shows spend, share, request volume, **cost per request** and change against the prior period. Cost per request is often the interesting column — a customer can make a fraction of the calls and cost several times more.",
@@ -721,6 +760,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p(
             "**Key insights** are generated deterministically from your own numbers — no model, no black box — and ranked so anomalies and cost-cutting angles come first. Each names the figure behind it. They only appear when they clear both a percentage and a dollar threshold, so a small tenant is not shown five breathless bullets about $30.",
           ),
+          image(
+            "spend-trend.webp",
+            "The spend trend: monthly bars split into build and inference, with controls for cost or tokens, the split, and a provider filter, and a clickable legend beneath.",
+            "Click a legend entry to hide that series; the axis rescales to what is left.",
+          ),
           p("Charts follow two rules worth knowing:"),
           list(
             "A **partial month is never compared to a full one**. For the current month you get a projected pace, labelled as a projection, rather than a misleading month-over-month figure.",
@@ -735,6 +779,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "One row per product, with build cost and inference cost in separate columns, the features it holds and the repositories behind it. Above the table, a stacked bar per month shows one kind of money at a time — the toggle says which, because a segment combining the two would be a blended figure this product never shows.",
+          ),
+          image(
+            "by-product.webp",
+            "The By Product tab: monthly bars stacked by product, with Unassigned and Unattributed in grey, and an Inference or Build switch.",
           ),
           p(
             "Two rows sit beneath the products and they are not the same thing. **Unassigned** is spend on features that belong to no product yet: map a repository and it moves. **Unattributed** is spend Meter cannot tie to any feature at all.",
@@ -751,6 +799,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "A monthly total answers what a feature cost. A **trace** answers why one run cost what it did: the steps it took, in order, each with its model, tokens, latency and price.",
+          ),
+          image(
+            "traces.webp",
+            "The Traces page: recent workflow runs, each with its application, feature, model calls, tokens, cost, duration and status.",
           ),
           p(
             "Traces arrive from the metering SDK or from OpenTelemetry. Each finished model step is priced with the same price book the monthly totals use, so a trace and a total are two views of one number rather than two numbers that can drift.",
@@ -784,6 +836,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p(
             "Set a monthly or annual budget in [Settings](/settings). There is no budget until you set one, and Meter never invents a default — a missing budget is a real answer the Overview will show you.",
           ),
+          image(
+            "budget-forecast.webp",
+            "The budget and forecast card: cumulative spend as a solid line, the forecast and the with-savings forecast dashed, and the budget as a flat line.",
+          ),
           p(
             "The Overview then shows where the open month is heading. A month that is over is never projected: it reports its final figure and says so. For the next three months, and for which features are driving the number, see [Forecast](/help/dashboards/forecast).",
           ),
@@ -800,6 +856,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "[Forecast](/forecast), under Analyze, projects this month and the next three. It is the same projection the Overview's budget panel shows for this month, so the two never disagree.",
+          ),
+          image(
+            "forecast.webp",
+            "The Forecast page: this month and the next three, each with inference and build against the budget, then monthly spend as billed and as projected, with an 80% range on each projection.",
           ),
           p("**This month** is projected from what has already been spent, source by source:"),
           list(
@@ -837,6 +897,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "[Optimize](/optimize) produces findings from two different kinds of evidence, and is explicit about which is which.",
+          ),
+          image(
+            "recommendations.webp",
+            "The Recommendations page: measured, tested, ceiling and verified savings totals, then the top recommendations with savings, confidence and effort.",
           ),
           list(
             "**SDK-telemetry** findings come from your own traffic: requests sent more than once, prompt prefixes resent instead of cached, a model larger than the traffic needs. These carry a number because the traffic was observed — but see the table below, because only some of them are savings rather than ceilings.",
@@ -1294,6 +1358,10 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         summary: "A metric, a scope, a condition and a window.",
         blocks: [
           p("An alert is four choices, made on [Alerts](/alerts):"),
+          image(
+            "alerts.webp",
+            "The Alerts page: how many rules are triggered, healthy, failing to deliver or disabled, then each rule with its metric, condition, status and channels.",
+          ),
           table(
             ["Choice", "Options"],
             [

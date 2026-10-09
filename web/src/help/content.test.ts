@@ -3,7 +3,7 @@
  * rot: dead in-app links, duplicate URLs, and search that stops finding things.
  */
 import { describe, expect, it } from "vitest";
-import { blockText } from "./blocks";
+import { blockText, image } from "./blocks";
 import { ALL_TOPICS, CATEGORIES, findTopic } from "./content";
 import { APP_ROUTES } from "./routes";
 import { search } from "./search";
@@ -191,5 +191,17 @@ describe("the SDK snippets", () => {
   it("asks for the version the rest of the product asks for", () => {
     const note = findTopic("sdk", "installing")!.topic.blocks.find((b) => b.kind === "note")!;
     expect(note.kind === "note" && note.text).toContain(`costlyinfra-meter>=${MIN_SDK}`);
+  });
+});
+
+describe("screenshots", () => {
+  it("are searchable by what they show, as a screen reader hears it", () => {
+    expect(blockText(image("x.webp", "The **Overview** page", "See [it](/)."))).toBe(
+      "The Overview page See it.",
+    );
+    // The file name is not something anyone searches for.
+    expect(blockText(image("overview.webp", "A chart"))).toBe("A chart");
+    const hits = search("80% range").map((h) => `${h.category.slug}/${h.topic.slug}`);
+    expect(hits).toContain("dashboards/forecast");
   });
 });

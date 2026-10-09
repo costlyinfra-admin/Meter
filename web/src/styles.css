@@ -4902,6 +4902,27 @@ select.feature-bars-pick {
   margin: 0 0 1.2rem;
 }
 
+/* Screenshots in the knowledge base: a quiet frame, never wider than the
+   column, so a picture reads as part of the article rather than a banner. */
+.kb-figure {
+  margin: 0.35rem 0 1.4rem;
+}
+
+.kb-figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-xs);
+}
+
+.kb-figure figcaption {
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 .kb-p {
   line-height: 1.65;
   margin: 0 0 0.9rem;

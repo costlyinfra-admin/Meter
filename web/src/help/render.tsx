@@ -9,7 +9,7 @@
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Snippet } from "../components/Snippet";
-import type { Block } from "./blocks";
+import { KB_IMAGE_DIR, type Block } from "./blocks";
 
 const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
 
@@ -84,6 +84,21 @@ export function Blocks({ blocks }: { blocks: Block[] }) {
               <p key={i} className="hint">
                 <Inline text={block.text} />
               </p>
+            );
+          case "image":
+            return (
+              <figure key={i} className="kb-figure">
+                {/* A wide screen in a narrow column is small; a click opens it
+                    at full size. */}
+                <a href={`${KB_IMAGE_DIR}/${block.file}`} target="_blank" rel="noreferrer">
+                  <img src={`${KB_IMAGE_DIR}/${block.file}`} alt={block.alt} loading="lazy" />
+                </a>
+                {block.caption && (
+                  <figcaption>
+                    <Inline text={block.caption} />
+                  </figcaption>
+                )}
+              </figure>
             );
           case "table":
             return (

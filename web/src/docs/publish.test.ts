@@ -5,7 +5,7 @@
  * handbook, not a fixture, wherever the real handbook is what is at risk.
  */
 import { describe, expect, it } from "vitest";
-import { code, note, p, type Block } from "../help/blocks";
+import { code, image, note, p, type Block } from "../help/blocks";
 import { CATEGORIES, type Category } from "../help/content";
 import {
   DEFAULT_SITE,
@@ -106,6 +106,16 @@ describe("rendering", () => {
     expect(html).toContain("<code>code</code>");
   });
 
+  it("shows a screenshot from beside the pages, with its words for those who cannot see it", () => {
+    const html = render([image("overview.webp", 'The "Overview" <page>', "See **this**.")]);
+    expect(html).toContain(
+      '<a href="/docs/kb/overview.webp"><img src="/docs/kb/overview.webp" alt="The &quot;Overview&quot; &lt;page&gt;" loading="lazy"></a>',
+    );
+    expect(html).toContain("<figcaption>See <strong>this</strong>.</figcaption>");
+    // No caption, no empty element.
+    expect(render([image("overview.webp", "The Overview")])).not.toContain("figcaption");
+  });
+
   it("keeps notes distinguishable from body text", () => {
     expect(render([note("careful")])).toContain('<aside class="note">careful</aside>');
   });
@@ -157,6 +167,9 @@ describe("the site", () => {
       for (const [, href] of page.body.matchAll(/href="([^"]+)"/g)) {
         if (!href.startsWith(`${SITE.base}/`)) continue;
         const rest = href.slice(SITE.base.length + 1);
+        // Screenshots are copied beside the pages, not generated with them;
+        // help/images.test.mjs holds each one against the file on disk.
+        if (rest.startsWith("kb/")) continue;
         const file = rest === "" ? "index.html" : rest.endsWith("/") ? `${rest}index.html` : rest;
         if (!paths.has(file)) missing.push(`${page.path} -> ${href}`);
       }

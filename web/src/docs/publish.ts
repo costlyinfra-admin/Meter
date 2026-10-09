@@ -147,6 +147,17 @@ export function block(b: Block, site: Site, topics: Set<string>, where: string):
       return `<pre><code>${escapeHtml(b.text)}</code></pre>`;
     case "note":
       return `<aside class="note">${md(b.text)}</aside>`;
+    case "image":
+      // Copied beside the pages by scripts/build-docs.mjs, so the same file
+      // name resolves under the docs' own base.
+      return [
+        `<figure>`,
+        `<a href="${escapeHtml(`${site.base}/kb/${b.file}`)}"><img src="${escapeHtml(`${site.base}/kb/${b.file}`)}" alt="${escapeHtml(b.alt)}" loading="lazy"></a>`,
+        b.caption ? `<figcaption>${md(b.caption)}</figcaption>` : "",
+        `</figure>`,
+      ]
+        .filter(Boolean)
+        .join("\n");
     case "table":
       return [
         `<div class="table-wrap">`,
@@ -626,6 +637,17 @@ pre code { background: none; padding: 0; font-size: 0.85rem; color: inherit; }
   color: var(--ink-soft);
   margin: 0 0 1.25rem;
 }
+
+/* Screenshots of Meter: a quiet frame, never wider than the column. */
+figure { margin: 0.25rem 0 1.5rem; }
+figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+figcaption { margin-top: 0.5rem; font-size: 0.85rem; color: var(--muted); }
 
 .table-wrap { overflow-x: auto; margin: 0 0 1.25rem; }
 /* min-width, so a narrow screen scrolls the table sideways rather than

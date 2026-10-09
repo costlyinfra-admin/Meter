@@ -15,7 +15,12 @@ export type Block =
   | { kind: "steps"; items: string[] }
   | { kind: "code"; text: string }
   | { kind: "note"; text: string }
-  | { kind: "table"; head: string[]; rows: string[][] };
+  | { kind: "table"; head: string[]; rows: string[][] }
+  /** A screenshot of Meter. `file` is a name in web/public/kb/ — served at
+   *  /kb/<file> in the app and copied beside the public docs — so content never
+   *  holds a URL that differs between the two. `alt` says what the picture
+   *  shows for someone who cannot see it; `caption` is optional prose under it. */
+  | { kind: "image"; file: string; alt: string; caption?: string };
 
 // Readable shorthands for the content file.
 export const p = (text: string): Block => ({ kind: "p", text });
@@ -24,6 +29,15 @@ export const steps = (...items: string[]): Block => ({ kind: "steps", items });
 export const code = (text: string): Block => ({ kind: "code", text });
 export const note = (text: string): Block => ({ kind: "note", text });
 export const table = (head: string[], rows: string[][]): Block => ({ kind: "table", head, rows });
+export const image = (file: string, alt: string, caption?: string): Block => ({
+  kind: "image",
+  file,
+  alt,
+  caption,
+});
+
+/** Where a knowledge-base image is served in the app. */
+export const KB_IMAGE_DIR = "/kb";
 
 /** Drop the inline syntax, leaving the prose a reader would see.
  *
@@ -49,5 +63,9 @@ export function blockText(block: Block): string {
       return block.items.map(stripInline).join(" ");
     case "table":
       return [...block.head, ...block.rows.flat()].map(stripInline).join(" ");
+    case "image":
+      // What the picture shows is searchable, the same words a screen reader
+      // hears; the file name is not.
+      return [block.alt, block.caption ?? ""].map(stripInline).join(" ").trim();
   }
 }

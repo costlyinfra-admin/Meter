@@ -11,7 +11,7 @@
  * generator reads exactly the same source the app does — one module graph, no
  * build artefact that can go stale, and no extra dependency.
  */
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -54,6 +54,10 @@ for (const page of pages) {
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, page.body, "utf8");
 }
+
+// The knowledge base's screenshots, beside the pages that show them: the
+// same files the app serves at /kb/, so a topic names an image once.
+await cp(join(root, "public", "kb"), join(out, "kb"), { recursive: true });
 
 const html = pages.filter((p) => p.path.endsWith(".html")).length;
 console.log(`✓ ${pages.length} files (${html} pages) → ${out}`);

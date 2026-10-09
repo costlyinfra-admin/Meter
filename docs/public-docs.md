@@ -76,6 +76,26 @@ account, so there is nothing to hold back. If a topic ever does need holding bac
 flag to `Topic` and skip it in `entries()` — the in-app path ignores fields it does not
 read.
 
+## Screenshots
+
+Topics can show a screenshot of Meter with an `image(file, alt, caption?)`
+block. The files live in `web/public/kb/`: the app serves them at `/kb/`, and
+the docs build copies them beside the pages, so a topic names each one once.
+
+They are taken from the **demo tenant only** — its data is made up — by a
+script rather than by hand, because a screenshot goes stale the moment its
+screen changes. After changing a screen the handbook shows:
+
+```bash
+make demo                      # in one terminal
+cd web && npm run kb:screenshots   # in another; --only overview.webp for one
+```
+
+then look at the image diff and commit it. The script drives your installed
+Chrome (set `CHROME` if it is not in the usual place) and needs nothing else.
+`web/src/help/images.test.mjs` fails if a topic names a missing file, a file
+is left unused, an image has no description, or one is over 300 KB.
+
 ## Deploying
 
 The generated directory is static files; any static host serves it. `costlyinfra.com` is

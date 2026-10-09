@@ -29,6 +29,16 @@ describe("HelpPage", () => {
     expect(screen.getByText(/Where honest gaps go/)).toBeInTheDocument();
   });
 
+  it("shows a topic's screenshot, described for those who cannot see it", () => {
+    renderHelp("/help/getting-started/first-dashboard");
+    const img = screen.getByRole("img", { name: /The Overview: headline figures/ });
+    expect(img).toHaveAttribute("src", "/kb/overview.webp");
+    expect(img).toHaveAttribute("loading", "lazy");
+    // A click opens it at full size.
+    expect(img.closest("a")).toHaveAttribute("href", "/kb/overview.webp");
+    expect(screen.getByText("The Overview for the demo organization.")).toBeInTheDocument();
+  });
+
   it("renders inline formatting as elements, not raw markup", () => {
     renderHelp("/help/concepts/build-vs-inference");
     const article = document.querySelector(".kb-article")!;
