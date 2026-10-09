@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 import psycopg
@@ -27,6 +28,19 @@ def span_event(**fields):
     }
     event.update(fields)
     return event
+
+
+# A month the ingest takes as written. Events older than
+# traces.MAX_CLOCK_SKEW_PAST (95 days) are pulled forward to that limit, so a
+# fixed date in these tests expires: June 2026 did, on 2026-10-08, and three
+# tests went red with no code change. The middle of last month is always inside
+# the window and never in the future.
+MONTH = (dt.date.today().replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m")
+
+
+def at(day: int, hour: int) -> str:
+    """A timestamp in MONTH."""
+    return f"{MONTH}-{day:02d}T{hour:02d}:00:00Z"
 
 
 PASSWORD = "correct horse battery"
@@ -90,7 +104,7 @@ def test_hook_ingest_captures_latency_and_customer(client):
             feature_id=feature["id"],
             latency_ms=latency,
             customer_id=customer,
-            occurred_at="2026-06-15T12:00:00Z",
+            occurred_at=at(15, 12),
         )
 
     resp = client.post(
@@ -101,17 +115,17 @@ def test_hook_ingest_captures_latency_and_customer(client):
     assert resp.status_code == 200
 
     # Avg latency across the 3 calls = (800 + 1200 + 400) / 3 = 800 ms.
-    detail = client.get(f"/api/features/{feature['id']}/detail?period=2026-06").json()
+    detail = client.get(f"/api/features/{feature['id']}/detail?period={MONTH}").json()
     assert detail["headline"]["avg_latency_ms"] == 800
 
     # Per-customer metered spend (anthropic $3/M input): Acme 2M -> $6, Globex 1M -> $3.
-    prov = client.get("/api/dashboard/providers?start=2026-06&end=2026-06").json()
+    prov = client.get(f"/api/dashboard/providers?start={MONTH}&end={MONTH}").json()
     by_customer = {c["customer_id"]: c["amount"] for c in prov["by_customer"]}
     assert by_customer == {"Acme": 6.0, "Globex": 3.0}
 
     # ...and the Overview's By Customer tab reads the same metered rows, with the
     # per-call unit cost the SDK makes possible (Acme: $6 over 2 calls).
-    cust = client.get("/api/dashboard/customers?start=2026-06&end=2026-06").json()
+    cust = client.get(f"/api/dashboard/customers?start={MONTH}&end={MONTH}").json()
     acme = next(c for c in cust["customers"] if c["customer_id"] == "Acme")
     assert acme["requests"] == 2
     assert acme["cost_per_request"] == 3.0
@@ -163,7 +177,7 @@ def test_opportunities_endpoint_surfaces_measured_savings(client):
                 "tokens_in": 1_000_000,
                 "tokens_out": 0,
                 "feature_id": feature["id"],
-                "occurred_at": "2026-06-15T10:00:00Z",
+                "occurred_at": at(15, 10),
                 "signal": {
                     "kind": "duplicate",
                     "fingerprint": "fp-a",
@@ -182,7 +196,7 @@ def test_opportunities_endpoint_surfaces_measured_savings(client):
         json={"events": [dup(), dup()]},
     )
 
-    resp = client.get(f"/api/features/{feature['id']}/opportunities?period=2026-06")
+    resp = client.get(f"/api/features/{feature['id']}/opportunities?period={MONTH}")
     assert resp.status_code == 200
     body = resp.json()
     dup_opp = next(o for o in body["opportunities"] if o["lever"] == "duplicate_calls")
@@ -212,7 +226,7 @@ def test_copilot_overview_aggregates_across_features(client):
             tokens_in=1_000_000,
             tokens_out=0,
             feature_id=fid,
-            occurred_at="2026-06-15T10:00:00Z",
+            occurred_at=at(15, 10),
             signal={
                 "kind": "duplicate",
                 "fingerprint": "fp-a",
@@ -224,7 +238,7 @@ def test_copilot_overview_aggregates_across_features(client):
         second = span_event(
             **{
                 **{k: v for k, v in ev.items() if k not in ("event_type", "span_id", "trace_id")},
-                "occurred_at": "2026-06-16T10:00:00Z",
+                "occurred_at": at(16, 10),
             }
         )
         client.post(
@@ -233,7 +247,7 @@ def test_copilot_overview_aggregates_across_features(client):
             json={"events": [ev, second]},
         )
 
-    body = client.get("/api/copilot/overview?period=2026-06").json()
+    body = client.get(f"/api/copilot/overview?period={MONTH}").json()
     # Three savings figures kept separate. Each feature's repeats = $6, so $12 —
     # in the CEILING total, because a repeated request is a candidate for reuse
     # rather than a saving anybody has banked.
