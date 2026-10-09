@@ -17,6 +17,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { api, type ConnectorCredential, type ConnectorStatus } from "../api";
 import { CONNECTOR_GUIDES } from "../connectorGuides";
 import { ConnectorMark } from "./ConnectorMark";
+import { toast } from "../toast";
 
 export function ConnectorRow({
   connector,
@@ -84,11 +85,19 @@ export function ConnectorRow({
         label.trim() || undefined,
         replacing ?? undefined,
       );
+      const was = connector.connected;
       setSecret("");
       setLabel("");
       setReplacing(null);
       await loadAccounts();
       onConnected();
+      toast(
+        replacing || (was && !multi)
+          ? `${connector.name} credential replaced`
+          : was
+            ? `Account added to ${connector.name}`
+            : `${connector.name} connected`,
+      );
     } finally {
       setSaving(false);
     }
@@ -99,6 +108,7 @@ export function ConnectorRow({
     if (replacing === id) setReplacing(null);
     await loadAccounts();
     onConnected();
+    toast(`Account removed from ${connector.name}`);
   }
 
   async function runSync() {

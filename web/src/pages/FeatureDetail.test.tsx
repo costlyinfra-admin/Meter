@@ -326,7 +326,7 @@ describe("FeatureDetail", () => {
     expect(screen.getByText("$500/mo")).toBeInTheDocument(); // projected
     expect(screen.getByText("$131/mo")).toBeInTheDocument(); // realized
     // Held for 2 periods AND the bill agrees -> the terminal Prove state.
-    expect(screen.getByText(/✓ Verified/)).toBeInTheDocument();
+    expect(screen.getByText("Verified", { selector: ".opt-verified" })).toBeInTheDocument();
     // The independent half, shown rather than merely consulted: what the
     // connector says a call cost then, and what it costs now.
     expect(screen.getByText(/\$0\.42/)).toBeInTheDocument();
@@ -362,7 +362,7 @@ describe("FeatureDetail", () => {
     });
     renderDetail();
     expect(await screen.findByText("Applied optimizations")).toBeInTheDocument();
-    expect(screen.queryByText(/✓ Verified/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Verified", { selector: ".opt-verified" })).not.toBeInTheDocument();
     expect(screen.getByText(/not confirmed by the bill/)).toHaveAttribute(
       "title",
       expect.stringContaining("cost per unit of work did not fall"),
@@ -394,7 +394,7 @@ describe("FeatureDetail", () => {
     // A dash, not a zero: nothing was measured, which is not a cost of nothing.
     const row = document.querySelector(".opt-applied tbody tr") as HTMLElement;
     expect(row.querySelectorAll("td")[4]?.textContent).toBe("—");
-    expect(screen.queryByText(/✓ Verified/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Verified", { selector: ".opt-verified" })).not.toBeInTheDocument();
   });
 
   it("marks a directional estimate superseded by a measured finding", async () => {

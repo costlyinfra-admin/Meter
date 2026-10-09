@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, type GitHubAppInstallation } from "../api";
 import { GITHUB_RETURN_KEY } from "../components/GitHubAppOption";
+import { toast } from "../toast";
 
 type State =
   | { kind: "checking" }
@@ -88,6 +89,7 @@ export function GitHubCallbackPage() {
     try {
       await api.githubAppConnect(installation.claim);
       navigate(returnPath(), { replace: true });
+      toast(`GitHub connected: ${installation.account}`);
     } catch (err) {
       setConnecting(null);
       setState({

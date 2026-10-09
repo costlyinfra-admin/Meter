@@ -16,6 +16,7 @@ import { AskMeterBubble } from "./AskMeter";
 import { Assistant } from "./Assistant";
 import { BrandMark } from "./BrandMark";
 import { LineIcon, type IconName } from "./LineIcon";
+import { Toaster } from "./Toaster";
 
 interface NavItem {
   to: string;
@@ -91,6 +92,10 @@ export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const [alertBadge, setAlertBadge] = useState(0);
+  // Bumped when the unread count goes UP, which re-mounts the badge so it
+  // pulses once. Not on first load: arriving to two old alerts is not news.
+  const [badgePulse, setBadgePulse] = useState(0);
+  const lastBadge = useRef<number | null>(null);
   // Reconciliation is an opt-in module. This is the only thing the shell knows
   // about it: whether to offer it. The request is independent and its failure
   // is swallowed, so the module can never delay or break the navigation.
@@ -117,7 +122,12 @@ export function AppShell() {
   const refreshBadge = useCallback(() => {
     api
       .alertsSummary()
-      .then((s) => setAlertBadge(s.unread))
+      .then((s) => {
+        const before = lastBadge.current;
+        lastBadge.current = s.unread;
+        if (before !== null && s.unread > before) setBadgePulse((n) => n + 1);
+        setAlertBadge(s.unread);
+      })
       .catch(() => setAlertBadge(0));
   }, []);
 
@@ -203,7 +213,11 @@ export function AppShell() {
                     {item.label}
                   </span>
                   {item.to === "/alerts" && alertBadge > 0 && (
-                    <span className="nav-badge" aria-label={`${alertBadge} unread alerts`}>
+                    <span
+                      key={badgePulse}
+                      className={badgePulse ? "nav-badge pulse" : "nav-badge"}
+                      aria-label={`${alertBadge} unread alerts`}
+                    >
                       {alertBadge > 99 ? "99+" : alertBadge}
                     </span>
                   )}
@@ -252,6 +266,7 @@ export function AppShell() {
       {/* Sits above the assistant's launcher and points at it. Renders nothing
           once the chat has been found. */}
       <AskMeterBubble />
+      <Toaster />
     </div>
   );
 }

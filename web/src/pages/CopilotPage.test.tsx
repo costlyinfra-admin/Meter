@@ -124,7 +124,7 @@ describe("CopilotPage", () => {
     expect(screen.getByText("By lever")).toBeInTheDocument();
     expect(screen.getByText("Cheaper provider")).toBeInTheDocument();
     // The verified rollup.
-    expect(screen.getByText(/✓ Verified/)).toBeInTheDocument();
+    expect(screen.getByText("Verified", { selector: ".opt-verified" })).toBeInTheDocument();
   });
 
   it("holds Meter's frozen predictions against the bill, beside the Prove loop", async () => {

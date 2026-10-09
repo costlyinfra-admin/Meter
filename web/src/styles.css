@@ -351,7 +351,7 @@ button:hover {
 }
 
 button:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.985);
 }
 
 button:disabled {
@@ -8511,6 +8511,12 @@ td.num:has(> .opt-ceiling) {
   animation: fade-in var(--motion-fast) ease-out both;
 }
 
+/* Headline figures fade in when they change (each is keyed by its value). */
+.kpi-value,
+.budget-headline strong {
+  animation: fade-in var(--motion-med) ease-out both;
+}
+
 /* Bar lists fill from the left, and re-share smoothly when a row is left out
    (the width transition lives with .provider-bar-fill). */
 .provider-bar-fill,
@@ -8552,6 +8558,117 @@ td.num:has(> .opt-ceiling) {
 
 .tab-panel {
   animation: fade-in var(--motion-med) ease-out both;
+}
+
+/* Things you can click that look like cards lift a hair towards the pointer,
+   so it is clear before the click that they will do something. */
+.action-item,
+.kb-result {
+  transition:
+    transform var(--motion-fast) ease-out,
+    box-shadow var(--motion-fast) ease-out,
+    background var(--motion-fast) ease-out;
+}
+
+.action-item:hover,
+.kb-result:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Buttons press in slightly as they are clicked (the base rule, near the top,
+   adds the scale). Not the buttons that are whole rows — a list row or a card
+   header shrinking under the pointer reads as a glitch, not a press. */
+button.provider-bar-toggle:active,
+button.provider-row:active,
+button.connector-info-toggle:active {
+  transform: none;
+}
+
+/* A one-time call for attention: a ring that spreads and fades, once. For
+   news only — a new alert, a period over budget — and never on a loop. */
+@keyframes attention {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--pulse, currentColor) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 9px transparent;
+  }
+}
+
+.nav-badge.pulse {
+  /* The badge's text is white; the ring takes the badge's own colour. */
+  --pulse: var(--error);
+  animation: attention 1.1s ease-out both;
+}
+
+.budget-status.over {
+  animation: attention 1.1s ease-out 0.6s both;
+}
+
+/* The Verified tick draws itself once, after the label has arrived. */
+.opt-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.verified-tick path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  animation: draw-line 500ms var(--ease-out) 150ms both;
+}
+
+/* Confirmations (toast()): small dark pills, top right — the bottom right is
+   Ask Meter's — sliding down into place and fading as they leave. */
+.toaster {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: min(22rem, calc(100vw - 2rem));
+  margin: 0;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 550;
+  color: var(--bg);
+  background: var(--ink);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--pop-shadow, var(--shadow-md));
+  animation: rise-in var(--motion-med) var(--ease-out) both;
+  transition:
+    opacity var(--motion-med) ease,
+    transform var(--motion-med) ease;
+}
+
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.toast-mark {
+  flex-shrink: 0;
+  fill: none;
+  /* The text's colour, so it reads on the dark pill and the light one. */
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* Panels that open under a row slide down into place instead of popping. */

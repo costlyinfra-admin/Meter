@@ -21,6 +21,7 @@ import {
   ruleQuantity,
 } from "../alertLabels";
 import { Skeleton } from "../components/Skeleton";
+import { toast } from "../toast";
 
 interface Detail extends AlertRule {
   history: {
@@ -139,6 +140,7 @@ export function AlertDetailPage() {
                 act(async () => {
                   await api.deleteAlert(rule.id);
                   navigate("/alerts");
+                  toast(`Alert "${rule.name}" deleted`);
                 }, "Deleted.");
             }}
           >

@@ -98,6 +98,9 @@ export interface SavingsSummary {
   realizedAnnual: number;
 }
 
+/** Each headline figure is keyed by its value, so a figure that changes — a
+ *  new period, a refresh — arrives as a new element and fades in (see
+ *  .kpi-value). It never counts up: the numbers in between were never true. */
 export function KpiRow({
   data,
   savings,
@@ -123,7 +126,9 @@ export function KpiRow({
       <article className="kpi-card">
         <h2 className="kpi-label">Total AI spend</h2>
         <div className="kpi-main">
-          <span className="kpi-value">{money(totalSpend)}</span>
+          <span className="kpi-value" key={money(totalSpend)}>
+            {money(totalSpend)}
+          </span>
           <Sparkline months={data.trend} />
         </div>
         <Delta current={totalSpend} prev={prevSpend} label={deltaLabel} />
@@ -161,7 +166,7 @@ export function KpiRow({
         {savings ? (
           <>
             <div className="kpi-main">
-              <span className="kpi-value">
+              <span className="kpi-value" key={money(savings.potentialMonthly)}>
                 {money(savings.potentialMonthly)}
                 <span className="kpi-unit"> / mo</span>
               </span>
@@ -183,7 +188,7 @@ export function KpiRow({
         {savings ? (
           <>
             <div className="kpi-main">
-              <span className="kpi-value">
+              <span className="kpi-value" key={money(savings.realizedMonthly)}>
                 {money(savings.realizedMonthly)}
                 <span className="kpi-unit"> / mo</span>
               </span>
@@ -203,7 +208,7 @@ export function KpiRow({
       <article className="kpi-card">
         <h2 className="kpi-label">Total tokens</h2>
         <div className="kpi-main">
-          <span className="kpi-value">
+          <span className="kpi-value" key={data.totals.tokens_in + data.totals.tokens_out}>
             {compact(data.totals.tokens_in + data.totals.tokens_out)}
           </span>
         </div>
@@ -215,7 +220,9 @@ export function KpiRow({
       <article className="kpi-card">
         <h2 className="kpi-label">Attribution coverage</h2>
         <div className="kpi-main">
-          <span className="kpi-value">{totalSpend > 0 ? `${coverage.toFixed(1)}%` : "—"}</span>
+          <span className="kpi-value" key={coverage.toFixed(1)}>
+            {totalSpend > 0 ? `${coverage.toFixed(1)}%` : "—"}
+          </span>
         </div>
         <span className="kpi-bar" aria-hidden>
           <span style={{ width: `${Math.max(0, Math.min(100, coverage))}%` }} />
@@ -1078,7 +1085,9 @@ export function BudgetForecastPanel({
     >
       <p className="budget-headline">
         {closed ? "Final spend: " : "Forecast: "}
-        <strong>{compactMoney(closed ? forecast.actual : forecast.forecast)}</strong>
+        <strong key={closed ? forecast.actual : forecast.forecast}>
+          {compactMoney(closed ? forecast.actual : forecast.forecast)}
+        </strong>
       </p>
 
       {shape && <BudgetChart shape={shape} forecast={forecast} trend={trend} />}

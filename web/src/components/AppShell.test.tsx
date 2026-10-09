@@ -7,12 +7,13 @@
  * are. And the grouping: Reconciliation is inserted at runtime into a section
  * found BY NAME, so renaming a section silently drops it out of the nav.
  */
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { AuthProvider } from "../auth/AuthContext";
 import { AppShell } from "./AppShell";
+import { REFRESH_ALERTS_EVENT } from "../pages/Dashboard";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
@@ -161,5 +162,38 @@ describe("Sidebar nav", () => {
     const prompts = await screen.findByRole("link", { name: "Prompts" });
     expect(prompts.className).toContain("active");
     expect(screen.getByRole("link", { name: "Recommendations" }).className).not.toContain("active");
+  });
+});
+
+describe("Alerts badge", () => {
+  const summary = (unread: number) => ({
+    triggered: 0,
+    healthy: 0,
+    delivery_errors: 0,
+    disabled: 0,
+    unread,
+  });
+
+  it("pulses once when an alert arrives, not for the ones already there", async () => {
+    vi.mocked(api.alertsSummary).mockResolvedValue(summary(2));
+    renderAt("/optimize");
+    const first = await screen.findByLabelText("2 unread alerts");
+    // Arriving to two old alerts is not news.
+    expect(first).not.toHaveClass("pulse");
+
+    vi.mocked(api.alertsSummary).mockResolvedValue(summary(3));
+    act(() => {
+      window.dispatchEvent(new Event(REFRESH_ALERTS_EVENT));
+    });
+    expect(await screen.findByLabelText("3 unread alerts")).toHaveClass("pulse");
+
+    // Fewer unread (some were read) is not news either: no new pulse.
+    vi.mocked(api.alertsSummary).mockResolvedValue(summary(1));
+    const pulsed = screen.getByLabelText("3 unread alerts");
+    act(() => {
+      window.dispatchEvent(new Event(REFRESH_ALERTS_EVENT));
+    });
+    const after = await screen.findByLabelText("1 unread alerts");
+    expect(after).toBe(pulsed); // the same element: it was not re-mounted to pulse again
   });
 });

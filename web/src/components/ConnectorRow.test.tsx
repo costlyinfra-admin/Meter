@@ -3,6 +3,7 @@ import { type ReactNode, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type ConnectorStatus } from "../api";
 import { ConnectorRow } from "./ConnectorRow";
+import { TOAST_EVENT } from "../toast";
 
 vi.mock("../api", async (importActual) => {
   const actual = await importActual<typeof import("../api")>();
@@ -83,6 +84,24 @@ describe("ConnectorRow", () => {
         undefined,
       ),
     );
+  });
+
+  it("confirms a connection in a toast, once it has saved", async () => {
+    vi.mocked(api.saveCredential).mockResolvedValue(undefined);
+    const heard: string[] = [];
+    const listen = (e: Event) => heard.push((e as CustomEvent<string>).detail);
+    window.addEventListener(TOAST_EVENT, listen);
+    try {
+      render(row());
+      fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+      fireEvent.change(screen.getByLabelText("Anthropic token"), {
+        target: { value: "sk-ant-admin-xyz" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(heard).toEqual(["Anthropic connected"]));
+    } finally {
+      window.removeEventListener(TOAST_EVENT, listen);
+    }
   });
 
   it("uses a JSON textarea for Bedrock", () => {

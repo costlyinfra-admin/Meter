@@ -25,6 +25,7 @@ import {
   WINDOW_LABELS,
 } from "../alertLabels";
 import { useAuth } from "../auth/AuthContext";
+import { toast } from "../toast";
 
 const EMPTY: AlertInput = {
   name: "",
@@ -202,6 +203,7 @@ export function AlertFormPage() {
       };
       const saved = editing ? await api.updateAlert(id!, body) : await api.createAlert(body);
       navigate(`/alerts/${saved.id}`);
+      toast(editing ? "Alert saved" : "Alert created");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save alert.");
     } finally {

@@ -29,6 +29,7 @@ import { TrendChart } from "../components/TrendChart";
 import { testDate, testStatus } from "../experimentLabels";
 import { compact, money, num, unitMoney } from "../format";
 import { Skeleton } from "../components/Skeleton";
+import { VerifiedMark } from "../components/VerifiedMark";
 
 /** Series colours — the --chart-1..6 ramp from styles.css, led by lime because
  *  lime is the data colour on costlyinfra.com. Kept in sync by hand: these are
@@ -599,7 +600,7 @@ function AppliedActions({ actions }: { actions: OptimizationAction[] }) {
                   ) : (
                     <>
                       <strong className="opt-realized">{money(a.realized_monthly ?? 0)}/mo</strong>
-                      {a.status === "verified" && <span className="opt-verified">✓ Verified</span>}
+                      {a.status === "verified" && <VerifiedMark />}
                       {a.status === "unverifiable" && (
                         <span
                           className="muted"

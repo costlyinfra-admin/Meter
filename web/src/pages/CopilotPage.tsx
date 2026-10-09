@@ -10,6 +10,7 @@ import { ConfidenceBadge } from "../components/badges";
 import { CalibrationSummary, PredictionCell } from "../components/PredictionCheck";
 import { money } from "../format";
 import { Skeleton } from "../components/Skeleton";
+import { VerifiedMark } from "../components/VerifiedMark";
 
 /** Plain labels for billing-only findings — never the word "savings". */
 const BILLING_LABELS: Record<string, string> = {
@@ -337,9 +338,7 @@ export function CopilotPage() {
                               <strong className="opt-realized">
                                 {money(a.realized_monthly ?? 0)}/mo
                               </strong>
-                              {a.status === "verified" && (
-                                <span className="opt-verified">✓ Verified</span>
-                              )}
+                              {a.status === "verified" && <VerifiedMark />}
                             </>
                           )}
                         </td>

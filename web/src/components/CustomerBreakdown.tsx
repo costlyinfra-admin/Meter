@@ -246,14 +246,16 @@ function Summary({ data }: { data: CustomerSpend }) {
       <article className="kpi-card">
         <h3 className="kpi-label">Metered AI cost</h3>
         <div className="kpi-main">
-          <span className="kpi-value">{money(data.total)}</span>
+          <span className="kpi-value" key={data.total}>
+            {money(data.total)}
+          </span>
         </div>
         <span className="muted kpi-note">from calls tagged with a customer</span>
       </article>
       <article className="kpi-card">
         <h3 className="kpi-label">Human effort</h3>
         <div className="kpi-main">
-          <span className="kpi-value">
+          <span className="kpi-value" key={String(data.human_hours)}>
             {data.human_hours === null ? <NotProvided /> : `${num(Math.round(data.human_hours))}`}
             {data.human_hours !== null && <span className="kpi-unit"> hrs</span>}
           </span>
@@ -265,7 +267,7 @@ function Summary({ data }: { data: CustomerSpend }) {
       <article className="kpi-card">
         <h3 className="kpi-label">Human cost</h3>
         <div className="kpi-main">
-          <span className="kpi-value">
+          <span className="kpi-value" key={String(data.human_cost)}>
             {data.human_cost === null ? <NotProvided /> : money(data.human_cost)}
           </span>
         </div>
@@ -274,7 +276,9 @@ function Summary({ data }: { data: CustomerSpend }) {
       <article className="kpi-card">
         <h3 className="kpi-label">Customer-attributed delivery cost</h3>
         <div className="kpi-main">
-          <span className="kpi-value">{money(data.total_delivery_cost)}</span>
+          <span className="kpi-value" key={data.total_delivery_cost}>
+            {money(data.total_delivery_cost)}
+          </span>
         </div>
         <span
           className="muted kpi-note"
