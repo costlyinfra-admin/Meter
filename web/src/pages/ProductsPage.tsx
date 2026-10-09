@@ -21,6 +21,7 @@ import {
   type ReassignResult,
   type SpanningFeature,
 } from "../api";
+import { Skeleton } from "../components/Skeleton";
 
 export function ProductsPage() {
   const [products, setProducts] = useState<Product[] | null>(null);
@@ -130,7 +131,7 @@ export function ProductsPage() {
         </form>
 
         {products === null ? (
-          <p className="muted">Loading…</p>
+          <Skeleton />
         ) : products.length === 0 ? (
           <p className="muted">
             No products yet. Add one above, or accept a suggestion below — then every feature built

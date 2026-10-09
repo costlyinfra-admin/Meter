@@ -18,6 +18,7 @@ import { Link } from "react-router-dom";
 import { api, type ProductSpend, type ReviewRange } from "../api";
 import { money, num } from "../format";
 import { ProductTrend } from "./ProductTrend";
+import { Skeleton } from "./Skeleton";
 
 export function ProductBreakdown({
   range,
@@ -57,7 +58,7 @@ export function ProductBreakdown({
       {failed ? (
         <p className="muted">Couldn't load product spend.</p>
       ) : data === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton variant="chart" />
       ) : data.products.length === 0 ? (
         <NoProducts />
       ) : (

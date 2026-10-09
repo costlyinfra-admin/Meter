@@ -13,6 +13,7 @@ import { api, ApiError, type Feature, type Product } from "../../api";
 import { CategoryBadge, ProductBadge } from "../../components/badges";
 import { CategoryPicker } from "../../components/CategoryPicker";
 import { ProductPicker } from "../../components/ProductPicker";
+import { Skeleton } from "../../components/Skeleton";
 
 const NEEDS_REVIEW = "Needs review";
 
@@ -207,7 +208,7 @@ export function ReviewStep() {
       <DiscoverySchedule />
 
       {features === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : features.length === 0 ? (
         <div className="empty-state">
           <p className="empty-title">No features discovered yet</p>

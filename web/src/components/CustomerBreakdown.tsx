@@ -29,6 +29,7 @@ import { compact, money, num, unitMoney } from "../format";
 import { DeliveryCostTrend } from "./DeliveryCostTrend";
 import { HumanEffortImport } from "./HumanEffortImport";
 import { SpendBars } from "./SpendBars";
+import { Skeleton } from "./Skeleton";
 
 /** Top slice shown as bars; the rest stay in the table below. */
 const TOP_N = 8;
@@ -108,7 +109,7 @@ export function CustomerBreakdown({
       {failed ? (
         <p className="muted">Couldn't load customer spend.</p>
       ) : data === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton variant="chart" />
       ) : data.customers.length === 0 ? (
         <NoCustomerData />
       ) : (

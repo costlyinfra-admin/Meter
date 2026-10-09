@@ -235,7 +235,7 @@ function BarTrend({
       >
         <defs>
           {bars.map((b) => (
-            <clipPath key={b.t.period} id={`${clipId}-${b.i}`}>
+            <clipPath key={b.t.period} id={`${clipId}-${b.i}`} className="bar-clip">
               {/* Rounded top, square feet — the segments are clipped to it. */}
               <path
                 d={`M${b.x} ${PLOT_BOTTOM} V${b.top + 4} a4 4 0 0 1 4 -4 h${barW - 8} a4 4 0 0 1 4 4 V${PLOT_BOTTOM} Z`}
@@ -255,7 +255,11 @@ function BarTrend({
                 hover === null || hover === b.i ? "trend-bar-group" : "trend-bar-group dim"
               }
             >
-              <g clipPath={`url(#${clipId}-${b.i})`}>
+              <g
+                clipPath={`url(#${clipId}-${b.i})`}
+                className="bar-grow"
+                style={{ animationDelay: `${Math.min(b.i, 24) * 25}ms` }}
+              >
                 {BUCKETS.map((bucket) => {
                   const value = b.t[bucket.key];
                   if (hidden.has(bucket.key) || value <= 0 || b.total <= 0) return null;
@@ -376,7 +380,8 @@ function LineTrend({
         <AxisFrame ceil={ceil} y={y} />
 
         <path className="trend-line-area" d={area} />
-        <path className="trend-line-path" d={line} fill="none" />
+        {/* Draws itself left to right on first render (see .line-draw). */}
+        <path className="trend-line-path line-draw" d={line} fill="none" pathLength={1} />
 
         {/* Vertical guide while hovering + a dot on the highlighted point. */}
         {hover !== null && (

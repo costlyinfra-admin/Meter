@@ -20,6 +20,7 @@ import {
   WINDOW_LABELS,
   ruleQuantity,
 } from "../alertLabels";
+import { Skeleton } from "../components/Skeleton";
 
 interface Detail extends AlertRule {
   history: {
@@ -88,7 +89,7 @@ export function AlertDetailPage() {
   if (!rule)
     return (
       <div className="content">
-        <p className="muted">Loading…</p>
+        <Skeleton />
       </div>
     );
 

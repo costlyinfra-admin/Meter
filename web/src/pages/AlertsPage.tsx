@@ -18,6 +18,7 @@ import {
   WINDOW_LABELS,
   ruleQuantity,
 } from "../alertLabels";
+import { Skeleton } from "../components/Skeleton";
 
 type Tab = "rules" | "activity";
 
@@ -212,7 +213,7 @@ function RulesTab({
   onAct: ActFn;
   navigate: (to: string) => void;
 }) {
-  if (rules === null) return <p className="muted">Loading…</p>;
+  if (rules === null) return <Skeleton />;
 
   if (rules.length === 0) {
     return (
@@ -414,7 +415,7 @@ function ActivityTab({
   onMarkAll: () => void;
   onMarkRead: (id: string) => void;
 }) {
-  if (activity === null) return <p className="muted">Loading…</p>;
+  if (activity === null) return <Skeleton />;
   if (activity.length === 0)
     return (
       <div className="empty-state">

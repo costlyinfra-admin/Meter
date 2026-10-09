@@ -30,6 +30,7 @@ import {
   type BillingProvider,
   type BillingStatus,
 } from "../api";
+import { Skeleton } from "./Skeleton";
 
 const STATUS_LABEL: Record<BillingStatus, string> = {
   matched: "Matched",
@@ -87,7 +88,7 @@ export function BillingComparison() {
         {error}
       </p>
     );
-  if (!data) return <p className="muted">Loading…</p>;
+  if (!data) return <Skeleton />;
 
   if (data.providers.length === 0) {
     return (
@@ -255,7 +256,7 @@ function Breakdown({
   }, [provider, period]);
 
   if (error) return <p className="error">{error}</p>;
-  if (!data) return <p className="muted">Loading…</p>;
+  if (!data) return <Skeleton />;
 
   return (
     <div className="recon-breakdown">

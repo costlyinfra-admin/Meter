@@ -11,6 +11,7 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import { api, ApiError, type Experiment, type ExperimentResult } from "../api";
 import { LEVER_TITLES, testDate, testStatus } from "../experimentLabels";
 import { money, num } from "../format";
+import { Skeleton } from "../components/Skeleton";
 
 const SAVINGS_TYPE: Record<string, string> = {
   measured: "a measured saving",
@@ -626,7 +627,7 @@ export function ExperimentPage() {
   if (!exp)
     return (
       <div className="content">
-        <p className="muted">Loading…</p>
+        <Skeleton />
       </div>
     );
 

@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { api, type AdminSyncRow } from "../../api";
 import { shortDate } from "../../format";
+import { Skeleton } from "../../components/Skeleton";
 
 export function AdminSyncHistory() {
   const [rows, setRows] = useState<AdminSyncRow[] | null>(null);
@@ -19,7 +20,7 @@ export function AdminSyncHistory() {
         <h1>Sync history</h1>
       </div>
       {rows === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : rows.length === 0 ? (
         <p className="muted">No syncs run yet.</p>
       ) : (

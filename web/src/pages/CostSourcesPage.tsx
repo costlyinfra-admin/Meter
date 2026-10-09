@@ -99,70 +99,72 @@ export function CostSourcesPage() {
         ))}
       </div>
 
-      {tab === "inference" && (
-        <section className="source-section" role="tabpanel">
-          <p className="muted">
-            What your features cost to run. Connect each provider's cost API — the authoritative
-            bill — and spend attributes to features by API key or project; anything unmapped lands
-            in Unattributed. Once connected, costs refresh automatically each night, or hit Sync now
-            to pull immediately. Each row has setup instructions.
-          </p>
-          {connectors && inference.length > 0 && (
-            <ul className="connector-list">
-              {inference.map((c) => (
-                <ConnectorRow
-                  key={c.type}
-                  connector={c}
-                  onConnected={refreshConnectors}
-                  expanded={openType === c.type}
-                  onToggle={() => setOpenType((t) => (t === c.type ? null : c.type))}
-                  detail={<SourceDetail provider={c.type} refreshKey={detailVersion} />}
-                  onSync={async () => {
-                    // Backfill the last 12 months of history, not just this month.
-                    const r = await api.ingestInference(c.type, undefined, 12);
-                    await refreshFeatures();
-                    setDetailVersion((v) => v + 1);
-                    const est = r.estimated ?? 0;
-                    const estNote =
-                      est > 0 ? ` (incl. ~${money(est)} estimated, not yet billed)` : "";
-                    const base = `Pulled ${money(r.total)} of ${c.name} spend across the last 12 months${estNote}.`;
-                    // Surface per-month failures instead of silently importing nothing.
-                    const errs = r.errors ?? [];
-                    if (errs.length === 0) return base;
-                    const detail = errs
-                      .map((e) => `${e.period.slice(0, 7)}: ${e.error}`)
-                      .join("; ");
-                    return `${base} ⚠ ${errs.length} month${errs.length === 1 ? "" : "s"} failed — ${detail}`;
-                  }}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
+      <div className="tab-panel" key={tab}>
+        {tab === "inference" && (
+          <section className="source-section" role="tabpanel">
+            <p className="muted">
+              What your features cost to run. Connect each provider's cost API — the authoritative
+              bill — and spend attributes to features by API key or project; anything unmapped lands
+              in Unattributed. Once connected, costs refresh automatically each night, or hit Sync
+              now to pull immediately. Each row has setup instructions.
+            </p>
+            {connectors && inference.length > 0 && (
+              <ul className="connector-list">
+                {inference.map((c) => (
+                  <ConnectorRow
+                    key={c.type}
+                    connector={c}
+                    onConnected={refreshConnectors}
+                    expanded={openType === c.type}
+                    onToggle={() => setOpenType((t) => (t === c.type ? null : c.type))}
+                    detail={<SourceDetail provider={c.type} refreshKey={detailVersion} />}
+                    onSync={async () => {
+                      // Backfill the last 12 months of history, not just this month.
+                      const r = await api.ingestInference(c.type, undefined, 12);
+                      await refreshFeatures();
+                      setDetailVersion((v) => v + 1);
+                      const est = r.estimated ?? 0;
+                      const estNote =
+                        est > 0 ? ` (incl. ~${money(est)} estimated, not yet billed)` : "";
+                      const base = `Pulled ${money(r.total)} of ${c.name} spend across the last 12 months${estNote}.`;
+                      // Surface per-month failures instead of silently importing nothing.
+                      const errs = r.errors ?? [];
+                      if (errs.length === 0) return base;
+                      const detail = errs
+                        .map((e) => `${e.period.slice(0, 7)}: ${e.error}`)
+                        .join("; ");
+                      return `${base} ⚠ ${errs.length} month${errs.length === 1 ? "" : "s"} failed — ${detail}`;
+                    }}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
 
-      {tab === "self-hosted" && (
-        <section className="source-section" role="tabpanel">
-          <div className="data-actions">
-            <SelfHostedPools onChanged={refreshFeatures} />
-          </div>
-        </section>
-      )}
+        {tab === "self-hosted" && (
+          <section className="source-section" role="tabpanel">
+            <div className="data-actions">
+              <SelfHostedPools onChanged={refreshFeatures} />
+            </div>
+          </section>
+        )}
 
-      {tab === "infrastructure" && <InfrastructureSources />}
+        {tab === "infrastructure" && <InfrastructureSources />}
 
-      {tab === "build" && (
-        <section className="source-section" role="tabpanel">
-          <p className="muted">
-            What your features cost to build — per-developer AI coding-tool spend, allocated to
-            features by who authored which PRs. Pick whichever methods match your tools; each is
-            self-contained, and anything you skip simply lands in Unattributed.
-          </p>
-          <div className="data-actions">
-            <BuildCostActions features={features} onChanged={refreshFeatures} />
-          </div>
-        </section>
-      )}
+        {tab === "build" && (
+          <section className="source-section" role="tabpanel">
+            <p className="muted">
+              What your features cost to build — per-developer AI coding-tool spend, allocated to
+              features by who authored which PRs. Pick whichever methods match your tools; each is
+              self-contained, and anything you skip simply lands in Unattributed.
+            </p>
+            <div className="data-actions">
+              <BuildCostActions features={features} onChanged={refreshFeatures} />
+            </div>
+          </section>
+        )}
+      </div>
     </div>
   );
 }

@@ -28,6 +28,7 @@ import { PredictionCell } from "../components/PredictionCheck";
 import { TrendChart } from "../components/TrendChart";
 import { testDate, testStatus } from "../experimentLabels";
 import { compact, money, num, unitMoney } from "../format";
+import { Skeleton } from "../components/Skeleton";
 
 /** Series colours — the --chart-1..6 ramp from styles.css, led by lime because
  *  lime is the data colour on costlyinfra.com. Kept in sync by hand: these are
@@ -124,7 +125,7 @@ export function FeatureDetail() {
         </p>
       )}
       {detail === null && !error ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : detail ? (
         <div>
           <h1>{detail.name}</h1>
@@ -311,7 +312,7 @@ function OptimizationSection({ featureId, range }: { featureId: string; range: R
       {failed ? (
         <p className="muted">Could not load optimization opportunities.</p>
       ) : data === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : (
         <>
           <MeasuredGroup
@@ -723,7 +724,7 @@ function InferenceSection({
       </div>
 
       {data === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : (
         <div className="inference-body">
           <div className="inference-col">

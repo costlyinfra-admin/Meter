@@ -289,32 +289,34 @@ function ForecastChart({ f }: { f: Forecast }) {
             >
               {/* Inference on top of build: two segments, never one (invariant 2).
                   Same order, colours and corner as the Overview's spend trend. */}
-              <rect
-                className="trend-bar-run"
-                x={bx}
-                y={totalTop}
-                width={barW}
-                height={Math.max(buildTop - totalTop, 0)}
-                rx={2}
-              />
-              <rect
-                className="trend-bar-build"
-                x={bx}
-                y={buildTop}
-                width={barW}
-                height={Math.max(BOTTOM - buildTop, 0)}
-              />
-              {/* The open month: solid to where spend has reached today, lighter
-                  above it for the part that is still a projection. */}
-              {soFarTop !== null && (
+              <g className="bar-grow" style={{ animationDelay: `${Math.min(i, 24) * 25}ms` }}>
                 <rect
-                  className="trend-bar-run forecast-seg-sofar"
+                  className="trend-bar-run"
                   x={bx}
-                  y={soFarTop}
+                  y={totalTop}
                   width={barW}
-                  height={Math.max(buildTop - soFarTop, 0)}
+                  height={Math.max(buildTop - totalTop, 0)}
+                  rx={2}
                 />
-              )}
+                <rect
+                  className="trend-bar-build"
+                  x={bx}
+                  y={buildTop}
+                  width={barW}
+                  height={Math.max(BOTTOM - buildTop, 0)}
+                />
+                {/* The open month: solid to where spend has reached today, lighter
+                  above it for the part that is still a projection. */}
+                {soFarTop !== null && (
+                  <rect
+                    className="trend-bar-run forecast-seg-sofar"
+                    x={bx}
+                    y={soFarTop}
+                    width={barW}
+                    height={Math.max(buildTop - soFarTop, 0)}
+                  />
+                )}
+              </g>
               {d.high !== null && d.low !== null && d.high !== d.low && (
                 <g className="forecast-range-whisker">
                   <line x1={centre(i)} x2={centre(i)} y1={y(d.high)} y2={y(d.low)} />

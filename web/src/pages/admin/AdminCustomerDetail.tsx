@@ -14,6 +14,7 @@ import {
 } from "../../api";
 import { useAuth } from "../../auth/AuthContext";
 import { money, shortDate } from "../../format";
+import { Skeleton } from "../../components/Skeleton";
 
 // Connector types an admin can add from the portal (the brief's initial set).
 const ADDABLE = [
@@ -84,7 +85,7 @@ export function AdminCustomerDetail() {
   if (!detail)
     return (
       <div className="content">
-        <p className="muted">Loading…</p>
+        <Skeleton />
       </div>
     );
 

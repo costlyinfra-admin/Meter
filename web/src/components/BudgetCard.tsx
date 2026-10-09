@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type Budget } from "../api";
 import { money } from "../format";
+import { Skeleton } from "./Skeleton";
 
 const CADENCES: { value: Budget["cadence"]; label: string }[] = [
   { value: "monthly", label: "Per month" },
@@ -105,7 +106,7 @@ export function BudgetCard({ currency }: { currency: string }) {
       )}
 
       {!loaded ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : (
         <>
           <div className="settings-field">

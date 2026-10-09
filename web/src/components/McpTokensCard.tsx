@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, type McpActivity, type McpToken } from "../api";
 import { Snippet } from "./Snippet";
+import { Skeleton } from "./Skeleton";
 
 /** Tool calls listed under "Recent activity". Enough to see a session's shape. */
 const SHOWN_ACTIVITY = 15;
@@ -160,7 +161,7 @@ export function McpTokensCard({ appOrigin }: { appOrigin?: string }) {
       )}
 
       {tokens === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : tokens.length === 0 ? (
         <p className="muted">No tokens yet.</p>
       ) : (

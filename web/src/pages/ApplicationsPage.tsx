@@ -20,6 +20,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api, ApiError, type AiApplication } from "../api";
 import { compact, money, num } from "../format";
 import { TRACE_WINDOWS, daysFromParams } from "./traceWindow";
+import { Skeleton } from "../components/Skeleton";
 
 /** A change against the previous comparable window. `null` means there was
  *  nothing to compare against, which is not the same as "no change". */
@@ -272,7 +273,7 @@ export function ApplicationDetail() {
         </p>
       )}
       {app === null && !error ? (
-        <p className="muted">Loading…</p>
+        <Skeleton variant="chart" />
       ) : app ? (
         <div>
           <h1>{app.name}</h1>

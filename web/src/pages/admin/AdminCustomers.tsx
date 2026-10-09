@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type AdminCustomer } from "../../api";
 import { money, shortDate } from "../../format";
+import { Skeleton } from "../../components/Skeleton";
 
 export function AdminCustomers() {
   const [rows, setRows] = useState<AdminCustomer[] | null>(null);
@@ -26,7 +27,7 @@ export function AdminCustomers() {
           Could not load customers.
         </p>
       ) : rows === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : rows.length === 0 ? (
         <p className="muted">No customers yet.</p>
       ) : (

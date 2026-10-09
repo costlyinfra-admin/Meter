@@ -22,6 +22,7 @@ import {
 } from "../api";
 import { money } from "../format";
 import { BillingComparison } from "../components/BillingComparison";
+import { Skeleton } from "../components/Skeleton";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "Calculating",
@@ -232,7 +233,7 @@ function Summary() {
   }, []);
 
   if (error) return <p className="error">{error}</p>;
-  if (!runs) return <p className="muted">Loading…</p>;
+  if (!runs) return <Skeleton />;
   if (runs.length === 0) {
     return (
       <div className="source-section recon-empty">
@@ -553,7 +554,7 @@ function RunDetail({ runId }: { runId: string }) {
   );
 
   if (error) return <p className="error">{error}</p>;
-  if (!run) return <p className="muted">Loading…</p>;
+  if (!run) return <Skeleton />;
 
   async function recalculate() {
     if (!run?.import_id) return;
@@ -724,7 +725,7 @@ function ImportHistory() {
   }
 
   if (error) return <p className="error">{error}</p>;
-  if (!rows) return <p className="muted">Loading…</p>;
+  if (!rows) return <Skeleton />;
   if (rows.length === 0) return <p className="muted">No statement has been imported yet.</p>;
 
   return (

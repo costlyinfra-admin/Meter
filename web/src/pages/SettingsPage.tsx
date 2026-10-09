@@ -19,6 +19,7 @@ import { BudgetCard } from "../components/BudgetCard";
 import { DiscoveryLlmCard } from "../components/DiscoveryLlmCard";
 import { McpTokensCard } from "../components/McpTokensCard";
 import { PromptOptimizationCard } from "../components/PromptOptimizationCard";
+import { Skeleton } from "../components/Skeleton";
 
 /** Tab ids double as URL fragments, so /settings#budgets opens the right one —
  *  the Alerts form links straight here when a rule needs a budget. */
@@ -159,7 +160,7 @@ export function SettingsPage() {
         <div className="dash-head">
           <h1>Settings</h1>
         </div>
-        <p className="muted">Loading…</p>
+        <Skeleton />
       </div>
     );
   }

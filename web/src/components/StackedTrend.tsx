@@ -102,7 +102,7 @@ export function StackedTrend({
           >
             <defs>
               {bars.map((b) => (
-                <clipPath key={b.period} id={`${clipId}-${b.i}`}>
+                <clipPath key={b.period} id={`${clipId}-${b.i}`} className="bar-clip">
                   {/* Rounded top, square feet — the segments are clipped to it. */}
                   <path
                     d={`M${b.x} ${PLOT_BOTTOM} V${b.top + 4} a4 4 0 0 1 4 -4 h${barW - 8} a4 4 0 0 1 4 4 V${PLOT_BOTTOM} Z`}
@@ -140,7 +140,13 @@ export function StackedTrend({
                     hover === null || hover === b.i ? "trend-bar-group" : "trend-bar-group dim"
                   }
                 >
-                  <g clipPath={`url(#${clipId}-${b.i})`}>
+                  {/* Rises from the baseline on first draw, one bar after
+                      another (see .bar-grow). */}
+                  <g
+                    clipPath={`url(#${clipId}-${b.i})`}
+                    className="bar-grow"
+                    style={{ animationDelay: `${Math.min(b.i, 24) * 25}ms` }}
+                  >
                     {series.map((s) => {
                       const value = s.values[b.i];
                       if (hidden.has(s.key) || value <= 0 || totals[b.i] <= 0) return null;

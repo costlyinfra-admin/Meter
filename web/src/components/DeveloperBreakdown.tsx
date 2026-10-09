@@ -11,6 +11,7 @@ import { api, ApiError, type DiscoveryScope, type ProviderSpend, type ReviewRang
 import { compact, money, num, prettyTool, unitMoney } from "../format";
 import { BuildTrend } from "./BuildTrend";
 import { SpendBars } from "./SpendBars";
+import { Skeleton } from "./Skeleton";
 
 export function DeveloperBreakdown({
   range,
@@ -51,7 +52,7 @@ export function DeveloperBreakdown({
       </div>
 
       {data === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton variant="chart" />
       ) : data.build_by_developer.length === 0 ? (
         <div className="empty-state">
           <p className="empty-title">No build cost yet</p>

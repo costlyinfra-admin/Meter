@@ -16,6 +16,7 @@ import {
   type SourceDetail as Detail,
 } from "../api";
 import { money } from "../format";
+import { Skeleton } from "./Skeleton";
 
 export function SourceDetail({ provider, refreshKey }: { provider: string; refreshKey: number }) {
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -59,7 +60,7 @@ export function SourceDetail({ provider, refreshKey }: { provider: string; refre
       </p>
     );
   }
-  if (!detail) return <p className="muted">Loading…</p>;
+  if (!detail) return <Skeleton />;
 
   if (!detail.classifiable) {
     return <p className="muted source-detail-empty">{detail.message}</p>;

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type AdminSyncRow } from "../../api";
 import { shortDate } from "../../format";
+import { Skeleton } from "../../components/Skeleton";
 
 export function AdminErrors() {
   const [rows, setRows] = useState<AdminSyncRow[] | null>(null);
@@ -21,7 +22,7 @@ export function AdminErrors() {
       </div>
       <p className="muted">Connector, authentication and rate-limit failures.</p>
       {rows === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : rows.length === 0 ? (
         <p className="muted">No errors recorded. 🎉</p>
       ) : (

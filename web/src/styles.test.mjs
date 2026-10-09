@@ -68,3 +68,35 @@ describe("styles.css — nothing on Overview or Features may push the page sidew
     expect(block(".price-table-wrap")).toContain("overflow-x: auto");
   });
 });
+
+describe("styles.css — motion", () => {
+  it("switches every animation and transition off for reduced motion, in one place", () => {
+    const at = CSS.lastIndexOf("@media (prefers-reduced-motion: reduce) {\n  *,");
+    expect(at, "no global reduced-motion rule").toBeGreaterThan(-1);
+    const rule = CSS.slice(at, CSS.indexOf("}\n}", at));
+    for (const decl of [
+      "animation-duration: 1ms !important",
+      "animation-iteration-count: 1 !important",
+      "transition-duration: 1ms !important",
+      "animation-delay: 0s !important",
+    ]) {
+      expect(rule).toContain(decl);
+    }
+    // Last in the file, so nothing after it can quietly switch motion back on.
+    const end = CSS.indexOf("\n  }\n}", at) + "\n  }\n}".length;
+    expect(CSS.slice(end).trim()).toBe("");
+  });
+
+  it("names only animations that exist", () => {
+    const defined = new Set([...CSS.matchAll(/@keyframes ([\w-]+)/g)].map((m) => m[1]));
+    const used = [...CSS.matchAll(/animation:\s*([\w-]+)/g)].map((m) => m[1]);
+    // "none" switches one off; anything else must be a real @keyframes.
+    for (const name of used.filter((n) => n !== "none")) expect(defined, name).toContain(name);
+  });
+
+  it("moves at one shared pace", () => {
+    for (const token of ["--motion-fast", "--motion-med", "--motion-slow", "--ease-out"]) {
+      expect(CSS).toMatch(new RegExp(`${token}: [^;]+;`));
+    }
+  });
+});

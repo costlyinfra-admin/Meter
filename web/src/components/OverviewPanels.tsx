@@ -28,6 +28,7 @@ import type { SpendSource } from "./ProviderBreakdown";
 import { forecastShape, type ForecastPoint, type ForecastShape } from "../budget";
 import { compact, compactMoney, money, wholeMoney } from "../format";
 import { AskAction } from "./AskMeter";
+import { Skeleton } from "./Skeleton";
 import { ChartLegend, type LegendItem } from "./ChartLegend";
 import {
   buildTrendView,
@@ -562,24 +563,26 @@ export function SpendTrend({
                     hover === null || hover === i ? "trend-bar-group" : "trend-bar-group dim"
                   }
                 >
-                  {shown.map(({ s, value }, j) => {
-                    const h = Math.max((value / ceiling) * (PLOT_BOTTOM - PLOT_TOP), 1);
-                    const top = j === shown.length - 1;
-                    const rect = (
-                      <rect
-                        key={s.key}
-                        className={`trend-bar-${s.key}`}
-                        style={{ fill: s.color }}
-                        x={x}
-                        y={y(base + value)}
-                        width={barW}
-                        height={h}
-                        rx={top ? 2 : 0}
-                      />
-                    );
-                    base += value;
-                    return rect;
-                  })}
+                  <g className="bar-grow" style={{ animationDelay: `${Math.min(i, 24) * 25}ms` }}>
+                    {shown.map(({ s, value }, j) => {
+                      const h = Math.max((value / ceiling) * (PLOT_BOTTOM - PLOT_TOP), 1);
+                      const top = j === shown.length - 1;
+                      const rect = (
+                        <rect
+                          key={s.key}
+                          className={`trend-bar-${s.key}`}
+                          style={{ fill: s.color }}
+                          x={x}
+                          y={y(base + value)}
+                          width={barW}
+                          height={h}
+                          rx={top ? 2 : 0}
+                        />
+                      );
+                      base += value;
+                      return rect;
+                    })}
+                  </g>
                   <text
                     className="trend-axis-label"
                     x={centre(i)}
@@ -806,7 +809,9 @@ function BudgetChart({
             </g>
           )}
 
-          {shows("actual") && <path className="budget-actual" d={path(shape.actual)} />}
+          {shows("actual") && (
+            <path className="budget-actual line-draw" d={path(shape.actual)} pathLength={1} />
+          )}
 
           {shape.optimizedTail && optimizedEnd && shows("optimized") && (
             <>
@@ -1018,9 +1023,7 @@ export function BudgetForecastPanel({
   if (!forecast) {
     return (
       <BudgetShell>
-        <p className="muted budget-empty" aria-live="polite">
-          Calculating…
-        </p>
+        <Skeleton variant="chart" label="Calculating…" />
       </BudgetShell>
     );
   }

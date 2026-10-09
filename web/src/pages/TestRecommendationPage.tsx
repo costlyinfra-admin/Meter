@@ -19,6 +19,7 @@ import {
 } from "../api";
 import { CACHE_CHOICES, FRESHNESS_CHOICES, LEVER_TITLES } from "../experimentLabels";
 import { money } from "../format";
+import { Skeleton } from "../components/Skeleton";
 
 /** Why Meter cannot run the test itself, and what would change that. */
 const HOSTED_BLOCKS: Record<HostedBlock, string> = {
@@ -93,7 +94,7 @@ function RightSizingForm({ featureId, opp }: { featureId: string; opp: Opportuni
         Could not load the models this feature can test.
       </p>
     );
-  if (!options) return <p className="muted">Loading…</p>;
+  if (!options) return <Skeleton />;
   if (options.controls.length === 0)
     return (
       <div className="settings-card">
@@ -483,7 +484,7 @@ export function TestRecommendationPage() {
           Could not load this recommendation.
         </p>
       ) : opp === undefined ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : opp === null || !opp.testable ? (
         <div className="settings-card">
           <p>This recommendation cannot be tested yet.</p>

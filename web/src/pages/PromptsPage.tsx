@@ -30,6 +30,7 @@ import {
   type PromptSummary,
 } from "../api";
 import { money, num } from "../format";
+import { Skeleton } from "../components/Skeleton";
 
 /** Plain labels for the kinds of change a rewrite may claim. */
 const CHANGE_LABELS: Record<string, string> = {
@@ -90,7 +91,7 @@ export function PromptsPage() {
       )}
 
       {data === null && !error ? (
-        <p className="muted">Loading…</p>
+        <Skeleton />
       ) : data && data.prompts.length === 0 ? (
         <div className="empty-state">
           <p className="empty-title">No prompts collected yet</p>
@@ -252,7 +253,7 @@ export function PromptDetail() {
         <Link to="/optimize/prompts" className="link breadcrumb">
           ← All prompts
         </Link>
-        <p className="muted">Loading…</p>
+        <Skeleton />
       </div>
     );
   }

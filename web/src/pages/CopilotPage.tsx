@@ -9,6 +9,7 @@ import { api, ApiError, type CopilotOverview } from "../api";
 import { ConfidenceBadge } from "../components/badges";
 import { CalibrationSummary, PredictionCell } from "../components/PredictionCheck";
 import { money } from "../format";
+import { Skeleton } from "../components/Skeleton";
 
 /** Plain labels for billing-only findings — never the word "savings". */
 const BILLING_LABELS: Record<string, string> = {
@@ -59,7 +60,7 @@ export function CopilotPage() {
         </p>
       )}
       {data === null && !error ? (
-        <p className="muted">Loading…</p>
+        <Skeleton variant="page" />
       ) : data ? (
         <>
           {/* Three distinct savings figures — never one blended number. */}

@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { api, type AdminOverview } from "../../api";
 import { compact, money } from "../../format";
+import { Skeleton } from "../../components/Skeleton";
 
 export function AdminDashboard() {
   const [data, setData] = useState<AdminOverview | null>(null);
@@ -26,7 +27,7 @@ export function AdminDashboard() {
           Could not load the dashboard.
         </p>
       ) : data === null ? (
-        <p className="muted">Loading…</p>
+        <Skeleton variant="page" />
       ) : (
         <div className="copilot-kpis admin-kpis">
           <Stat label="Total customers" value={compact(data.total_customers)} />

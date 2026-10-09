@@ -23,6 +23,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, type AiApplication, type AiTrace, type AiTracePage } from "../api";
 import { compact, duration, money, num, sinceNow } from "../format";
 import { DEFAULT_WINDOW_DAYS, TRACE_WINDOWS, daysFromParams } from "./traceWindow";
+import { Skeleton } from "../components/Skeleton";
 
 const TABS = [
   { id: "all", label: "All traces" },
@@ -533,7 +534,7 @@ export function TracesPage() {
             is marked stale — it has not failed, and may still finish.
           </p>
           {loading && !page ? (
-            <p className="muted">Loading…</p>
+            <Skeleton />
           ) : traces.length === 0 ? (
             <p className="muted trace-empty-inline">No agent runs are active.</p>
           ) : (
@@ -545,7 +546,7 @@ export function TracesPage() {
       {tab === "explore" && (
         <section className="source-section" role="tabpanel">
           {loading && !page ? (
-            <p className="muted">Loading…</p>
+            <Skeleton />
           ) : traces.length === 0 ? (
             <EmptyTraces filtered={filtered} />
           ) : (
