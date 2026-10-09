@@ -591,6 +591,29 @@ describe("Dashboard (Overview)", () => {
     expect(names()).toEqual(["AI threat triage"]);
   });
 
+  it("lights up the same month in the spend trend and the budget chart", async () => {
+    renderDashboard();
+    const trend = await screen.findByRole("region", { name: "Spend trend" });
+    const budget = (await screen.findByText("Budget & forecast")).closest("section")!;
+    await within(budget).findByRole("group", { name: "Budget chart lines" });
+
+    // Pointing at April in the spend trend draws the budget chart's guide…
+    fireEvent.mouseEnter(
+      within(trend).getByRole("img").querySelectorAll('rect[fill="transparent"]')[0],
+    );
+    expect(budget.querySelector(".trend-line-guide")).toBeInTheDocument();
+    // …but the card opens only under the pointer, not in the other chart.
+    expect(budget.querySelector(".trend-hover-card")).toBeNull();
+
+    // And the other way: pointing at the budget chart dims the trend's others.
+    fireEvent.mouseLeave(within(trend).getByRole("img").parentElement!);
+    expect(budget.querySelector(".trend-line-guide")).toBeNull();
+    const bands = budget.querySelectorAll('svg rect[fill="transparent"]');
+    fireEvent.mouseEnter(bands[1]);
+    expect(trend.querySelectorAll(".trend-bar-group.dim")).toHaveLength(1);
+    expect(trend.querySelector(".trend-hover-card")).toBeNull();
+  });
+
   it("leaves a tool out of the build trend when it is left out of the list", async () => {
     const month = (period: string, cursor: number, copilot: number) => ({
       period,
@@ -619,6 +642,17 @@ describe("Dashboard (Overview)", () => {
       "aria-pressed",
       "true",
     );
+
+    // Pointing at a tool in the list lights up its part of the trend: the
+    // other tool's segments fade, its own stay.
+    fireEvent.mouseEnter(screen.getByTitle("Leave Copilot out"));
+    const segs = (tool: string) => [
+      ...document.querySelectorAll(`.stacked-seg[data-series="${tool}"]`),
+    ];
+    expect(segs("cursor").every((seg) => seg.classList.contains("seg-dim"))).toBe(true);
+    expect(segs("copilot").some((seg) => seg.classList.contains("seg-dim"))).toBe(false);
+    fireEvent.mouseLeave(screen.getByTitle("Leave Copilot out"));
+    expect(document.querySelectorAll(".seg-dim")).toHaveLength(0);
 
     fireEvent.click(screen.getByTitle("Leave Cursor out"));
     expect(within(legend).getByRole("button", { name: /^Cursor/ })).toHaveAttribute(

@@ -103,6 +103,9 @@ export function Dashboard() {
   // The vendor the spend trend is narrowed to. Lifted here because two cards
   // set it: the trend's own filter, and a click on the provider list beside it.
   const [trendProvider, setTrendProvider] = useState<string | null>(null);
+  // The month under the pointer in either chart of the middle column, so the
+  // spend trend and the budget line light up the same month together.
+  const [hoverMonth, setHoverMonth] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -386,8 +389,16 @@ export function Dashboard() {
               trend={data.trend}
               provider={trendProvider}
               onProviderChange={setTrendProvider}
+              linkedMonth={hoverMonth}
+              onHoverMonth={setHoverMonth}
             />
-            <BudgetForecastPanel trend={data.trend} forecast={forecast} failed={forecastFailed} />
+            <BudgetForecastPanel
+              trend={data.trend}
+              forecast={forecast}
+              failed={forecastFailed}
+              linkedMonth={hoverMonth}
+              onHoverMonth={setHoverMonth}
+            />
           </div>
           <div className="overview-side">
             <ProviderSpendPanel

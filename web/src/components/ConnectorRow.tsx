@@ -13,7 +13,7 @@
  * only invites someone to try. The one thing shown about the existing
  * credential is when it was set, which is what makes rotation checkable.
  */
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { api, type ConnectorCredential, type ConnectorStatus } from "../api";
 import { CONNECTOR_GUIDES } from "../connectorGuides";
 import { ConnectorMark } from "./ConnectorMark";
@@ -51,6 +51,16 @@ export function ConnectorRow({
   const [accounts, setAccounts] = useState<ConnectorCredential[] | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
+
+  // Set when this row goes from not connected to connected while on screen:
+  // the logo settles and the badge pops in — the moment Meter starts working
+  // for this source. Not for rows that were connected when the page opened.
+  const wasConnected = useRef(connector.connected);
+  const [justConnected, setJustConnected] = useState(false);
+  useEffect(() => {
+    if (connector.connected && !wasConnected.current) setJustConnected(true);
+    wasConnected.current = connector.connected;
+  }, [connector.connected]);
 
   const guide = CONNECTOR_GUIDES[connector.type];
   // Most connectors take a token; the multiline ones take a service-account
@@ -125,7 +135,7 @@ export function ConnectorRow({
   }
 
   return (
-    <li className="connector-row">
+    <li className={justConnected ? "connector-row just-connected" : "connector-row"}>
       <div className="connector-head">
         <button
           type="button"

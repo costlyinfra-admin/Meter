@@ -6,7 +6,8 @@
  * would be a control for the behaviour you get by not touching anything. The
  * title says what will happen, not what is currently true.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
+import { flushSync } from "react-dom";
 import { apply, resolved, choose, watchSystem, type Theme } from "../theme";
 
 function SunIcon() {
@@ -58,15 +59,55 @@ export function ThemeToggle() {
   useEffect(() => watchSystem(setTheme), []);
 
   const next: Theme = theme === "dark" ? "light" : "dark";
+  // Whether the icon has swapped since the page opened: it turns as it swaps,
+  // but not on first paint.
+  const [switched, setSwitched] = useState(false);
+
+  /**
+   * The new theme grows in a circle from the toggle (the browser's View
+   * Transitions). Where that is unsupported, or the viewer asked for reduced
+   * motion, it switches at once — exactly as it did before.
+   */
+  function toggle(event: MouseEvent<HTMLButtonElement>) {
+    const swap = () => {
+      setSwitched(true);
+      setTheme(choose(next));
+    };
+    const doc = document as Document & { startViewTransition?: (update: () => void) => unknown };
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (!doc.startViewTransition || reduce) {
+      swap();
+      return;
+    }
+    // The circle's centre is the toggle, and its radius reaches the farthest
+    // corner of the window, so it ends covering everything.
+    const box = event.currentTarget.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const radius = Math.hypot(
+      Math.max(x, window.innerWidth - x),
+      Math.max(y, window.innerHeight - y),
+    );
+    const root = document.documentElement.style;
+    root.setProperty("--reveal-x", `${x}px`);
+    root.setProperty("--reveal-y", `${y}px`);
+    root.setProperty("--reveal-r", `${radius}px`);
+    // flushSync: the browser snapshots the page after this callback returns,
+    // so the new theme has to be in the DOM by then.
+    doc.startViewTransition(() => flushSync(swap));
+  }
+
   return (
     <button
       type="button"
-      className="theme-toggle"
-      onClick={() => setTheme(choose(next))}
+      className={switched ? "theme-toggle switched" : "theme-toggle"}
+      onClick={toggle}
       title={`Switch to ${next} mode`}
       aria-label={`Switch to ${next} mode`}
     >
-      {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+      <span key={theme} className="theme-icon">
+        {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+      </span>
     </button>
   );
 }

@@ -41,6 +41,8 @@ export function StackedTrend({
   emptyText = "No data yet.",
   hidden: controlledHidden,
   onHiddenChange,
+  preview: controlledPreview,
+  onPreviewChange,
 }: {
   /** "YYYY-MM-01", one per bar. */
   periods: string[];
@@ -56,11 +58,19 @@ export function StackedTrend({
    *  list beside the chart); omit both and the chart keeps its own. */
   hidden?: ReadonlySet<string>;
   onHiddenChange?: (hidden: Set<string>) => void;
+  /** The series being pointed at, here or in the list beside the chart; the
+   *  rest fade so it stands out. Pass both to share it. */
+  preview?: string | null;
+  onPreviewChange?: (key: string | null) => void;
 }) {
   const [ownHidden, setOwnHidden] = useState<ReadonlySet<string>>(NONE);
   const [hover, setHover] = useState<number | null>(null);
   const clipId = useId();
   const hidden = controlledHidden ?? ownHidden;
+  const [ownPreview, setOwnPreview] = useState<string | null>(null);
+  const preview = controlledPreview !== undefined ? controlledPreview : ownPreview;
+  const setPreview = (key: string | null) =>
+    onPreviewChange ? onPreviewChange(key) : setOwnPreview(key);
   const setHidden = (next: Set<string>) =>
     onHiddenChange ? onHiddenChange(next) : setOwnHidden(next);
 
@@ -156,7 +166,11 @@ export function StackedTrend({
                       return (
                         <rect
                           key={s.key}
-                          className="stacked-seg"
+                          className={
+                            preview !== null && preview !== s.key
+                              ? "stacked-seg seg-dim"
+                              : "stacked-seg"
+                          }
                           data-series={s.key}
                           style={{ fill: s.color }}
                           x={b.x}
@@ -233,6 +247,7 @@ export function StackedTrend({
         hidden={hidden}
         onToggle={(key) => setHidden(toggled(hidden, key))}
         onShowAll={() => setHidden(new Set())}
+        onPreview={setPreview}
       />
     </div>
   );

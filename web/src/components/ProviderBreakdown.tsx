@@ -66,6 +66,8 @@ export function ProviderBreakdown({
   const [data, setData] = useState<ProviderSpend | null>(null);
   // Tools left out, shared by the build trend and the list beside it.
   const [toolsHidden, setToolsHidden] = useState<ReadonlySet<string>>(new Set());
+  // The tool being pointed at, in the list or the legend: both light it up.
+  const [toolPreview, setToolPreview] = useState<string | null>(null);
   const sourceTab = source;
   const setSourceTab = onSourceChange;
 
@@ -252,6 +254,8 @@ export function ProviderBreakdown({
                     by="tool"
                     hidden={toolsHidden}
                     onHiddenChange={setToolsHidden}
+                    preview={toolPreview}
+                    onPreviewChange={setToolPreview}
                   />
                 </div>
                 <div className="inference-col">
@@ -265,6 +269,8 @@ export function ProviderBreakdown({
                     }))}
                     hidden={toolsHidden}
                     onHiddenChange={setToolsHidden}
+                    preview={toolPreview}
+                    onPreviewChange={setToolPreview}
                   />
                 </div>
               </div>

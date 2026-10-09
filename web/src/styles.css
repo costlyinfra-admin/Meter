@@ -8499,7 +8499,18 @@ td.num:has(> .opt-ceiling) {
   transition:
     y var(--motion-med) var(--ease-out),
     height var(--motion-med) var(--ease-out),
-    d var(--motion-med) var(--ease-out);
+    d var(--motion-med) var(--ease-out),
+    opacity var(--motion-fast) ease-out;
+}
+
+/* Pointing at a legend entry, or at a row in the list beside a chart, fades
+   everything else, so you see what a click would isolate before you click. */
+.seg-dim {
+  opacity: 0.22;
+}
+
+.provider-bar-row.previewed-out {
+  opacity: 0.5;
 }
 
 .trend-line-path,
@@ -8614,12 +8625,6 @@ button.connector-info-toggle:active {
 }
 
 .verified-tick path {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 1;
   animation: draw-line 500ms var(--ease-out) 150ms both;
 }
 
@@ -8669,6 +8674,125 @@ button.connector-info-toggle:active {
   stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* The logo's three bars drop into place, one after another, the first time a
+   visit shows the mark (BrandMark adds .settle once per session). */
+@keyframes bar-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-7px);
+  }
+}
+
+.settle .brand-bar {
+  animation: bar-drop var(--motion-slow) var(--ease-out) both;
+}
+
+/* Copied: the copy icon gives way to a tick that draws itself. */
+.copied-tick path,
+.verified-tick path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+}
+
+.copied-tick path {
+  animation: draw-line 350ms var(--ease-out) both;
+}
+
+/* A source that has just connected: its logo settles into place and the
+   Connected badge pops in. Once, on the change, never for rows that were
+   already connected. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+@keyframes settle-in {
+  0% {
+    transform: translateY(-3px) scale(1.06);
+  }
+  60% {
+    transform: translateY(1px) scale(0.98);
+  }
+}
+
+.just-connected .badge.connected {
+  animation: pop-in var(--motion-med) var(--ease-out) both;
+}
+
+.just-connected .connector-mark {
+  animation: settle-in var(--motion-slow) var(--ease-out) both;
+}
+
+/* Milestones (once per viewer, see once.ts): a single soft sheen passes along
+   a bar the first time it is full, and its note fades in after. */
+@keyframes sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.kpi-bar.sheen {
+  position: relative;
+}
+
+.kpi-bar.sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.75), transparent);
+  animation: sheen 1.1s ease-out 0.5s both;
+}
+
+.milestone-note {
+  animation: fade-in var(--motion-slow) ease-out 1.2s both;
+}
+
+/* Switching theme: the new one grows in a circle from the toggle (ThemeToggle
+   sets the centre and radius), and the sun/moon turns as it swaps. Browsers
+   without View Transitions switch at once. */
+@keyframes theme-reveal {
+  from {
+    clip-path: circle(0 at var(--reveal-x, 50%) var(--reveal-y, 50%));
+  }
+  to {
+    clip-path: circle(var(--reveal-r, 150%) at var(--reveal-x, 50%) var(--reveal-y, 50%));
+  }
+}
+
+@keyframes turn-in {
+  from {
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.6);
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(root) {
+  animation: theme-reveal 480ms var(--ease-out);
+}
+
+.theme-icon {
+  display: inline-flex;
+}
+
+.theme-toggle.switched .theme-icon {
+  animation: turn-in var(--motion-slow) var(--ease-out) both;
 }
 
 /* Panels that open under a row slide down into place instead of popping. */

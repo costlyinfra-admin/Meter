@@ -45,6 +45,25 @@ describe("StackedTrend", () => {
     expect(document.querySelectorAll('[data-series="b"]')).toHaveLength(1);
   });
 
+  it("previews a series from its legend: the others fade until the pointer leaves", () => {
+    render(
+      <StackedTrend periods={PERIODS} series={SERIES} ariaLabel="Spend" legendLabel="Legend" />,
+    );
+    const beta = screen.getByRole("button", { name: /^Beta/ });
+    fireEvent.mouseEnter(beta);
+    for (const seg of document.querySelectorAll('[data-series="a"]')) {
+      expect(seg).toHaveClass("seg-dim");
+    }
+    expect(document.querySelector('[data-series="b"]')).not.toHaveClass("seg-dim");
+    fireEvent.mouseLeave(beta);
+    expect(document.querySelectorAll(".seg-dim")).toHaveLength(0);
+
+    // A hidden series has nothing to preview.
+    fireEvent.click(beta);
+    fireEvent.mouseEnter(beta);
+    expect(document.querySelectorAll(".seg-dim")).toHaveLength(0);
+  });
+
   it("says so when there is nothing to draw", () => {
     render(
       <StackedTrend
@@ -101,6 +120,26 @@ describe("SpendBars", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show all" }));
     expect(screen.getByText("$300 · 20%")).toBeInTheDocument();
     expect(screen.queryByText(/left out/)).toBeNull();
+  });
+
+  it("fades the other rows while one is pointed at, and can share that with a chart", () => {
+    const onPreviewChange = vi.fn();
+    const { rerender } = render(<SpendBars rows={ROWS} />);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /openai/ }));
+    expect(screen.getByRole("button", { name: /anthropic/ }).closest("li")).toHaveClass(
+      "previewed-out",
+    );
+    expect(screen.getByRole("button", { name: /openai/ }).closest("li")).not.toHaveClass(
+      "previewed-out",
+    );
+    fireEvent.mouseLeave(screen.getByRole("button", { name: /openai/ }));
+    expect(document.querySelectorAll(".previewed-out")).toHaveLength(0);
+
+    // Shared: the chart beside it says which row to light up, and hears back.
+    rerender(<SpendBars rows={ROWS} preview="groq" onPreviewChange={onPreviewChange} />);
+    expect(document.querySelectorAll(".previewed-out")).toHaveLength(2);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /anthropic/ }));
+    expect(onPreviewChange).toHaveBeenCalledWith("anthropic");
   });
 
   it("hides sub-rows with their row", () => {

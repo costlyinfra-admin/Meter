@@ -37,6 +37,8 @@ export function SpendBars({
   onHiddenChange,
   showShare = true,
   dense = false,
+  preview: controlledPreview,
+  onPreviewChange,
 }: {
   rows: Bar[];
   /** Labels are identifiers the customer chose (a customer id, not a provider
@@ -53,9 +55,17 @@ export function SpendBars({
   showShare?: boolean;
   /** Tighter rows, for a strip that sits above a table rather than a panel. */
   dense?: boolean;
+  /** The row being pointed at, shared with a chart beside the list (pass both
+   *  props) so pointing at a tool lights up its part of the trend. */
+  preview?: string | null;
+  onPreviewChange?: (key: string | null) => void;
 }) {
   const [ownHidden, setOwnHidden] = useState<ReadonlySet<string>>(NONE);
   const hidden = controlledHidden ?? ownHidden;
+  const [ownPreview, setOwnPreview] = useState<string | null>(null);
+  const preview = controlledPreview !== undefined ? controlledPreview : ownPreview;
+  const setPreview = (key: string | null) =>
+    onPreviewChange ? onPreviewChange(key) : setOwnPreview(key);
   const setHidden = (next: Set<string>) =>
     onHiddenChange ? onHiddenChange(next) : setOwnHidden(next);
 
@@ -74,13 +84,26 @@ export function SpendBars({
           const isOff = hidden.has(keyOf(r));
           const pct = share(r);
           return (
-            <li key={keyOf(r)} className={isOff ? "provider-bar-row off" : "provider-bar-row"}>
+            <li
+              key={keyOf(r)}
+              className={
+                isOff
+                  ? "provider-bar-row off"
+                  : preview !== null && preview !== keyOf(r)
+                    ? "provider-bar-row previewed-out"
+                    : "provider-bar-row"
+              }
+            >
               <button
                 type="button"
                 className="provider-bar-toggle"
                 aria-pressed={!isOff}
                 title={isOff ? `Show ${r.label}` : `Leave ${r.label} out`}
                 onClick={() => setHidden(toggled(hidden, keyOf(r)))}
+                onMouseEnter={() => setPreview(isOff ? null : keyOf(r))}
+                onMouseLeave={() => setPreview(null)}
+                onFocus={() => setPreview(isOff ? null : keyOf(r))}
+                onBlur={() => setPreview(null)}
               >
                 <span className="provider-bar-head">
                   <span className={verbatim ? "provider-bar-name verbatim" : "provider-bar-name"}>

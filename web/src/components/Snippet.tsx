@@ -14,6 +14,15 @@ import { useEffect, useRef, useState } from "react";
 
 type State = "idle" | "copied" | "failed";
 
+/** The tick that draws itself in the copy icon's place once a copy lands. */
+function CopiedTick() {
+  return (
+    <svg viewBox="0 0 20 20" width="13" height="13" aria-hidden className="copied-tick">
+      <path d="m4.5 10.5 3.5 3.5 7.5-8" pathLength={1} />
+    </svg>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg
@@ -88,6 +97,7 @@ export function Snippet({
         }
       >
         {state === "idle" && <CopyIcon />}
+        {state === "copied" && <CopiedTick />}
         {state === "copied" ? "Copied" : state === "failed" ? "Select and copy" : copyLabel}
       </button>
     </div>

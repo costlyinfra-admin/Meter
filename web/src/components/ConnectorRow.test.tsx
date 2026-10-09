@@ -104,6 +104,16 @@ describe("ConnectorRow", () => {
     }
   });
 
+  it("marks the moment a source connects, but not one that was already connected", () => {
+    const { container, rerender } = render(row());
+    expect(container.querySelector(".just-connected")).toBeNull();
+    rerender(row({ connected: true }));
+    expect(container.querySelector("li")).toHaveClass("just-connected");
+
+    const already = render(row({ connected: true })).container;
+    expect(already.querySelector(".just-connected")).toBeNull();
+  });
+
   it("uses a JSON textarea for Bedrock", () => {
     render(row({ type: "bedrock", name: "Amazon Bedrock (AWS cost)" }));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));

@@ -11,7 +11,11 @@
  * sidebar's and the larger one on the auth cards — exactly as the CSS mark it
  * replaces did.
  */
-import { useId } from "react";
+import { useEffect, useId, useState } from "react";
+import { markSeen, seen } from "../once";
+
+/** The bars settle once per visit — on the first screen that shows the mark. */
+const SETTLED = "meter.motion.brand";
 
 export function BrandMark({ className }: { className?: string }) {
   // Gradient ids must be unique per instance: two marks on one page (shell +
@@ -19,11 +23,17 @@ export function BrandMark({ className }: { className?: string }) {
   const id = useId();
   const tile = `brand-tile-${id}`;
   const gloss = `brand-gloss-${id}`;
+  // Decided on first render, recorded after: the three bars drop into place
+  // (the falling-cost motif, literally) the first time a visit shows the mark.
+  const [settle] = useState(() => !seen(SETTLED, "session"));
+  useEffect(() => {
+    if (settle) markSeen(SETTLED, "session");
+  }, [settle]);
 
   return (
     <svg
       viewBox="0 0 48 48"
-      className={className ?? "brand-mark"}
+      className={`${className ?? "brand-mark"}${settle ? " settle" : ""}`}
       role="img"
       aria-hidden="true"
       focusable="false"
@@ -58,8 +68,19 @@ export function BrandMark({ className }: { className?: string }) {
         strokeWidth="4.4"
         strokeLinecap="round"
       />
-      <rect x="26.5" y="20" width="3.4" height="9" rx="1.7" fill="var(--lime)" />
       <rect
+        className="brand-bar"
+        style={{ animationDelay: "120ms" }}
+        x="26.5"
+        y="20"
+        width="3.4"
+        height="9"
+        rx="1.7"
+        fill="var(--lime)"
+      />
+      <rect
+        className="brand-bar"
+        style={{ animationDelay: "220ms" }}
         x="31.5"
         y="23.5"
         width="3.4"
@@ -69,6 +90,8 @@ export function BrandMark({ className }: { className?: string }) {
         fillOpacity="0.8"
       />
       <rect
+        className="brand-bar"
+        style={{ animationDelay: "320ms" }}
         x="36.5"
         y="26.5"
         width="3.4"

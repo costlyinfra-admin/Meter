@@ -74,6 +74,8 @@ export function ClassificationTrendChart({
 }) {
   const [mode, setMode] = useState<"bar" | "line">("bar");
   const [hidden, setHidden] = useState<Hidden>(NONE);
+  // The classification a legend entry is pointing at; the bars fade the rest.
+  const [preview, setPreview] = useState<string | null>(null);
   if (trend.length === 0) return <p className="muted">No data yet.</p>;
   const max = Math.max(...trend.map((t) => shown(t, hidden)), 0);
 
@@ -103,7 +105,13 @@ export function ClassificationTrendChart({
           Every classification is hidden. Click one in the legend below to bring it back.
         </p>
       ) : mode === "bar" ? (
-        <BarTrend trend={trend} max={Math.max(max, 1)} granularity={granularity} hidden={hidden} />
+        <BarTrend
+          trend={trend}
+          max={Math.max(max, 1)}
+          granularity={granularity}
+          hidden={hidden}
+          preview={preview}
+        />
       ) : (
         <LineTrend trend={trend} max={Math.max(max, 1)} granularity={granularity} hidden={hidden} />
       )}
@@ -121,6 +129,7 @@ export function ClassificationTrendChart({
         hidden={hidden}
         onToggle={(key) => setHidden(toggled(hidden, key))}
         onShowAll={() => setHidden(NONE)}
+        onPreview={setPreview}
       />
     </div>
   );
@@ -195,11 +204,13 @@ function BarTrend({
   max,
   granularity,
   hidden,
+  preview,
 }: {
   trend: ClassificationTrendPoint[];
   max: number;
   granularity: Granularity;
   hidden: Hidden;
+  preview: string | null;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const clipId = useId();
@@ -269,7 +280,11 @@ function BarTrend({
                   return (
                     <rect
                       key={bucket.key}
-                      className={`trend-seg-fill trend-seg-${bucket.key}`}
+                      className={
+                        preview !== null && preview !== bucket.key
+                          ? `trend-seg-fill trend-seg-${bucket.key} seg-dim`
+                          : `trend-seg-fill trend-seg-${bucket.key}`
+                      }
                       x={b.x}
                       y={rectY}
                       width={barW}

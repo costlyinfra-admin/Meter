@@ -25,6 +25,7 @@ export function ChartLegend({
   onToggle,
   onShowAll,
   label,
+  onPreview,
 }: {
   items: LegendItem[];
   hidden: ReadonlySet<string>;
@@ -32,6 +33,9 @@ export function ChartLegend({
   onShowAll: () => void;
   /** What the legend controls, for assistive tech: "Spend trend series". */
   label: string;
+  /** Pointing at an entry (or tabbing to it) previews it: the chart fades the
+   *  rest, so you see what a click would isolate. Null when it leaves. */
+  onPreview?: (key: string | null) => void;
 }) {
   const anyHidden = items.some((item) => hidden.has(item.key));
   return (
@@ -49,6 +53,10 @@ export function ChartLegend({
             aria-pressed={!off}
             title={off ? `Show ${item.label}` : `Hide ${item.label}`}
             onClick={() => onToggle(item.key)}
+            onMouseEnter={() => onPreview?.(off ? null : item.key)}
+            onMouseLeave={() => onPreview?.(null)}
+            onFocus={() => onPreview?.(off ? null : item.key)}
+            onBlur={() => onPreview?.(null)}
           >
             <span
               className={`chart-legend-swatch ${item.swatchClass ?? "fill"}`}

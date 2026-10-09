@@ -11,7 +11,7 @@
  * data does not support: a card with no history shows no sparkline rather than
  * a flat line implying one.
  */
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type {
   BudgetForecast,
@@ -29,6 +29,10 @@ import { forecastShape, type ForecastPoint, type ForecastShape } from "../budget
 import { compact, compactMoney, money, wholeMoney } from "../format";
 import { AskAction } from "./AskMeter";
 import { Skeleton } from "./Skeleton";
+import { markSeen, seen } from "../once";
+
+/** Remembered per viewer: the first time every dollar is attributed. */
+const FULL_COVERAGE = "meter.milestone.full-coverage";
 import { ChartLegend, type LegendItem } from "./ChartLegend";
 import {
   buildTrendView,
@@ -120,6 +124,17 @@ export function KpiRow({
   const prevSpend = data.totals.prev_build_cost + data.totals.prev_inference_cost;
   const unattributed = data.unattributed.build_cost + data.unattributed.inference_cost;
   const coverage = totalSpend > 0 ? ((totalSpend - unattributed) / totalSpend) * 100 : 0;
+  // A milestone, marked once: the first time this viewer sees every dollar tied
+  // to a feature, a single sheen passes along the coverage bar. After that it
+  // is just a full bar — a moment, not a habit.
+  const full = totalSpend > 0 && unattributed <= 0;
+  const [milestone, setMilestone] = useState(false);
+  useEffect(() => {
+    if (full && !seen(FULL_COVERAGE)) {
+      markSeen(FULL_COVERAGE);
+      setMilestone(true);
+    }
+  }, [full]);
 
   return (
     <section className="kpi-row" aria-label="Headline figures">
@@ -224,10 +239,10 @@ export function KpiRow({
             {totalSpend > 0 ? `${coverage.toFixed(1)}%` : "—"}
           </span>
         </div>
-        <span className="kpi-bar" aria-hidden>
+        <span className={milestone ? "kpi-bar sheen" : "kpi-bar"} aria-hidden>
           <span style={{ width: `${Math.max(0, Math.min(100, coverage))}%` }} />
         </span>
-        <span className="muted kpi-note">
+        <span className={milestone ? "muted kpi-note milestone-note" : "muted kpi-note"}>
           {unattributed > 0
             ? `${money(unattributed)} unattributed (${share(unattributed, totalSpend)})`
             : "Every dollar is tied to a feature"}
@@ -420,16 +435,31 @@ export function SpendTrend({
   trend,
   provider = null,
   onProviderChange,
+  linkedMonth = null,
+  onHoverMonth,
 }: {
   trend: TrendMonth[];
   /** One vendor to narrow the chart to, or null for everything. Owned by the
    *  page, because the provider list beside the chart sets it too. */
   provider?: string | null;
   onProviderChange?: (provider: string | null) => void;
+  /** The month the pointer is over in the budget chart beside this one, so
+   *  hovering either chart lights up the same month in both. */
+  linkedMonth?: number | null;
+  onHoverMonth?: (month: number | null) => void;
 }) {
   // Which month the pointer is over. Null is "not hovering", which is why the
   // dimming and the card both key off it rather than off a separate flag.
-  const [hover, setHover] = useState<number | null>(null);
+  const [hover, setLocalHover] = useState<number | null>(null);
+  const setHover = (month: number | null) => {
+    setLocalHover(month);
+    onHoverMonth?.(month);
+  };
+  // What the bars dim around: this chart's own pointer, else the linked one.
+  // The card opens only under the pointer, never for the other chart.
+  const focus = hover ?? linkedMonth;
+  // The series a legend entry is pointing at: the others fade until it leaves.
+  const [preview, setPreview] = useState<string | null>(null);
   const [measure, setMeasure] = useState<TrendMeasure>("cost");
   const [split, setSplit] = useState<TrendSplit>("kind");
   // Hidden series belong to the view they were hidden in: a different measure,
@@ -567,7 +597,7 @@ export function SpendTrend({
                 <g
                   key={month.period}
                   className={
-                    hover === null || hover === i ? "trend-bar-group" : "trend-bar-group dim"
+                    focus === null || focus === i ? "trend-bar-group" : "trend-bar-group dim"
                   }
                 >
                   <g className="bar-grow" style={{ animationDelay: `${Math.min(i, 24) * 25}ms` }}>
@@ -577,7 +607,11 @@ export function SpendTrend({
                       const rect = (
                         <rect
                           key={s.key}
-                          className={`trend-bar-${s.key}`}
+                          className={
+                            preview !== null && preview !== s.key
+                              ? `trend-bar-${s.key} seg-dim`
+                              : `trend-bar-${s.key}`
+                          }
                           style={{ fill: s.color }}
                           x={x}
                           y={y(base + value)}
@@ -656,6 +690,7 @@ export function SpendTrend({
           hidden={hidden}
           onToggle={(key) => setHidden(toggled(hidden, key))}
           onShowAll={() => setHidden(new Set())}
+          onPreview={setPreview}
         />
       )}
     </section>
@@ -715,13 +750,24 @@ function BudgetChart({
   shape,
   forecast,
   trend,
+  linkedMonth = null,
+  onHoverMonth,
 }: {
   shape: ForecastShape;
   forecast: BudgetForecast;
   /** The same months the line is drawn from, for the hover card's per-month split. */
   trend: TrendMonth[];
+  /** The month hovered in the spend trend; see SpendTrend. */
+  linkedMonth?: number | null;
+  onHoverMonth?: (month: number | null) => void;
 }) {
-  const [hover, setHover] = useState<number | null>(null);
+  const [hover, setLocalHover] = useState<number | null>(null);
+  const setHover = (month: number | null) => {
+    setLocalHover(month);
+    onHoverMonth?.(month);
+  };
+  // The guide follows either chart's pointer; the card only this one's.
+  const focus = hover ?? (linkedMonth !== null && linkedMonth < shape.months ? linkedMonth : null);
   // Lines switched off from the legend. The axis scales to what is still shown,
   // so hiding a far-off budget lets the spend line use the whole height.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(EMPTY_SET);
@@ -858,20 +904,20 @@ function BudgetChart({
           )}
 
           {/* A guide down to the hovered month, so the card and the line agree. */}
-          {hover !== null && (
+          {focus !== null && (
             <line
               className="trend-line-guide"
-              x1={px(pointAt(hover).x)}
+              x1={px(pointAt(focus).x)}
               y1={BF_PLOT_TOP - 4}
-              x2={px(pointAt(hover).x)}
+              x2={px(pointAt(focus).x)}
               y2={BF_PLOT_BOTTOM}
             />
           )}
-          {hover !== null && (
+          {focus !== null && (
             <circle
               className="budget-dot actual"
-              cx={px(pointAt(hover).x)}
-              cy={py(pointAt(hover).y)}
+              cx={px(pointAt(focus).x)}
+              cy={py(pointAt(focus).y)}
               r={4}
             />
           )}
@@ -1011,11 +1057,16 @@ export function BudgetForecastPanel({
   trend,
   forecast,
   failed,
+  linkedMonth = null,
+  onHoverMonth,
 }: {
   trend: TrendMonth[];
   /** Null while the forecast request is in flight. */
   forecast: BudgetForecast | null;
   failed: boolean;
+  /** The month hovered in the spend trend, lit here too. */
+  linkedMonth?: number | null;
+  onHoverMonth?: (month: number | null) => void;
 }) {
   if (failed) {
     return (
@@ -1090,7 +1141,15 @@ export function BudgetForecastPanel({
         </strong>
       </p>
 
-      {shape && <BudgetChart shape={shape} forecast={forecast} trend={trend} />}
+      {shape && (
+        <BudgetChart
+          shape={shape}
+          forecast={forecast}
+          trend={trend}
+          linkedMonth={linkedMonth}
+          onHoverMonth={onHoverMonth}
+        />
+      )}
 
       <dl className="budget-stats">
         <div>

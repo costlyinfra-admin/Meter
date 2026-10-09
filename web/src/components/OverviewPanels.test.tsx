@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Dashboard } from "../api";
 import { KpiRow } from "./OverviewPanels";
 
@@ -47,5 +47,44 @@ describe("KpiRow figures", () => {
     const second = screen.getByText("$2,000");
     expect(second).not.toBe(first);
     expect(second).toHaveClass("kpi-value");
+  });
+});
+
+describe("the full-coverage milestone", () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => vi.unstubAllGlobals());
+
+  const bar = (container: HTMLElement) => container.querySelector(".kpi-bar")!;
+
+  it("marks the first time every dollar is attributed, once per viewer", () => {
+    const first = render(kpis(DATA)).container; // nothing unattributed
+    expect(bar(first)).toHaveClass("sheen");
+    first.remove();
+
+    // The next time, it is just a full bar.
+    const again = render(kpis(DATA)).container;
+    expect(bar(again)).not.toHaveClass("sheen");
+  });
+
+  it("waits for coverage to be complete", () => {
+    const partial = render(
+      kpis({ ...DATA, unattributed: { build_cost: 0, inference_cost: 50 } } as Dashboard),
+    ).container;
+    expect(bar(partial)).not.toHaveClass("sheen");
+    expect(localStorage.length).toBe(0);
+  });
+
+  it("skips the moment, not the bar, where the browser keeps nothing", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    });
+    const blocked = render(kpis(DATA)).container;
+    expect(bar(blocked)).not.toHaveClass("sheen");
+    expect(screen.getByText("Every dollar is tied to a feature")).toBeInTheDocument();
   });
 });

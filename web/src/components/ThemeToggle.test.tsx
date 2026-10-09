@@ -37,4 +37,38 @@ describe("ThemeToggle", () => {
     expect(screen.getByRole("button", { name: /switch to light mode/i })).toBeInTheDocument();
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
+
+  it("reveals the new theme in a circle from the toggle, where the browser can", () => {
+    const startViewTransition = vi.fn((update: () => void) => update());
+    Object.assign(document, { startViewTransition });
+    try {
+      render(<ThemeToggle />);
+      fireEvent.click(screen.getByRole("button", { name: /switch to dark mode/i }));
+      expect(startViewTransition).toHaveBeenCalledTimes(1);
+      // The theme still changes, inside the transition.
+      expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+      // And the circle knows where the toggle is.
+      expect(document.documentElement.style.getPropertyValue("--reveal-r")).toMatch(/px$/);
+    } finally {
+      delete (document as { startViewTransition?: unknown }).startViewTransition;
+    }
+  });
+
+  it("switches at once for anyone who asked for reduced motion", () => {
+    const startViewTransition = vi.fn((update: () => void) => update());
+    Object.assign(document, { startViewTransition });
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("reduced-motion"),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    try {
+      render(<ThemeToggle />);
+      fireEvent.click(screen.getByRole("button", { name: /switch to dark mode/i }));
+      expect(startViewTransition).not.toHaveBeenCalled();
+      expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    } finally {
+      delete (document as { startViewTransition?: unknown }).startViewTransition;
+    }
+  });
 });

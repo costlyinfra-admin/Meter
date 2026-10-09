@@ -17,11 +17,16 @@ export function BuildTrend({
   by,
   hidden,
   onHiddenChange,
+  preview,
+  onPreviewChange,
 }: {
   trend: ProviderSpend["build_trend"];
   by: "tool" | "developer";
   hidden: ReadonlySet<string>;
   onHiddenChange: (hidden: Set<string>) => void;
+  /** The tool or developer pointed at in the list beside the trend. */
+  preview?: string | null;
+  onPreviewChange?: (key: string | null) => void;
 }) {
   const split = trend.some((t) => (by === "tool" ? t.by_tool : t.by_developer) !== undefined);
   if (!split) return <TrendChart trend={trend} />;
@@ -52,6 +57,8 @@ export function BuildTrend({
       legendLabel={`Build cost by ${by}`}
       hidden={hidden}
       onHiddenChange={onHiddenChange}
+      preview={preview}
+      onPreviewChange={onPreviewChange}
     />
   );
 }

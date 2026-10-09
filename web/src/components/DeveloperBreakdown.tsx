@@ -27,6 +27,8 @@ export function DeveloperBreakdown({
   const [reload, setReload] = useState(0);
   // Developers left out, shared by the trend and the list beside it.
   const [devsHidden, setDevsHidden] = useState<ReadonlySet<string>>(new Set());
+  // The developer being pointed at, in the list or the legend: both light it up.
+  const [devPreview, setDevPreview] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -71,6 +73,8 @@ export function DeveloperBreakdown({
                 by="developer"
                 hidden={devsHidden}
                 onHiddenChange={setDevsHidden}
+                preview={devPreview}
+                onPreviewChange={setDevPreview}
               />
             </div>
             <div className="inference-col">
@@ -89,6 +93,8 @@ export function DeveloperBreakdown({
                 }))}
                 hidden={devsHidden}
                 onHiddenChange={setDevsHidden}
+                preview={devPreview}
+                onPreviewChange={setDevPreview}
               />
             </div>
           </div>

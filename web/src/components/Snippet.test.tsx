@@ -28,6 +28,20 @@ describe("Snippet", () => {
     expect(await screen.findByRole("button", { name: "Copied" })).toHaveTextContent("Copied");
   });
 
+  it("swaps the copy icon for a tick that draws itself, only when the copy landed", async () => {
+    const { container } = render(<Snippet>{"x"}</Snippet>);
+    expect(container.querySelector(".copied-tick")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await screen.findByText("Copied");
+    expect(container.querySelector(".copied-tick")).not.toBeNull();
+
+    writeText.mockRejectedValue(new Error("denied"));
+    const failed = render(<Snippet>{"y"}</Snippet>).container;
+    fireEvent.click(failed.querySelector("button")!);
+    await waitFor(() => expect(failed.textContent).toContain("Select and copy"));
+    expect(failed.querySelector(".copied-tick")).toBeNull();
+  });
+
   it("names what it copies when a page has several blocks", async () => {
     render(<Snippet copyLabel="Copy prompt">{"a prompt"}</Snippet>);
     fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
