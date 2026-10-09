@@ -122,6 +122,24 @@ const DATA = {
       cached_tokens_in: 50_000,
       tokens_out: 120_000,
       cache_rate: 10,
+      by_provider: [
+        {
+          provider: "anthropic",
+          build_cost: 0,
+          inference_cost: 2000,
+          tokens_in: 500_000,
+          cached_tokens_in: 50_000,
+          tokens_out: 120_000,
+        },
+        {
+          provider: "copilot",
+          build_cost: 100,
+          inference_cost: 0,
+          tokens_in: 0,
+          cached_tokens_in: 0,
+          tokens_out: 0,
+        },
+      ],
     },
     {
       period: "2026-05-01",
@@ -131,6 +149,24 @@ const DATA = {
       cached_tokens_in: 180_000,
       tokens_out: 300_000,
       cache_rate: 15,
+      by_provider: [
+        {
+          provider: "anthropic",
+          build_cost: 0,
+          inference_cost: 4960,
+          tokens_in: 1_200_000,
+          cached_tokens_in: 180_000,
+          tokens_out: 300_000,
+        },
+        {
+          provider: "copilot",
+          build_cost: 211,
+          inference_cost: 0,
+          tokens_in: 0,
+          cached_tokens_in: 0,
+          tokens_out: 0,
+        },
+      ],
     },
   ],
   providers: [
@@ -560,6 +596,152 @@ describe("Dashboard (Overview)", () => {
     expect(document.querySelector(".trend-hover-card")).toBeNull();
   });
 
+  it("hides and shows a spend-trend series from its legend", async () => {
+    renderDashboard();
+    const panel = await screen.findByRole("region", { name: "Spend trend" });
+    const legend = within(panel).getByRole("group", { name: "Spend trend series" });
+    const inference = within(legend).getByRole("button", { name: /^Inference/ });
+    expect(inference).toHaveAttribute("aria-pressed", "true");
+    // Each entry carries its total for the range: $2,000 + $4,960.
+    expect(inference.textContent).toContain("$6,960");
+
+    fireEvent.click(inference);
+    expect(inference).toHaveAttribute("aria-pressed", "false");
+    const chart = within(panel).getByRole("img");
+    expect(chart.querySelectorAll(".trend-bar-run")).toHaveLength(0);
+    expect(chart.querySelectorAll(".trend-bar-build")).toHaveLength(2);
+    // The axis rescales to what is still shown: build peaks at $211.
+    const labels = [...chart.querySelectorAll(".trend-axis-label")].map((e) => e.textContent);
+    expect(labels[4]).toBe("$250");
+
+    // Hiding everything says so, rather than drawing an empty frame.
+    fireEvent.click(within(legend).getByRole("button", { name: /^Build/ }));
+    expect(within(panel).queryByRole("img")).toBeNull();
+    expect(within(panel).getByText(/Every series is hidden/)).toBeInTheDocument();
+
+    fireEvent.click(within(legend).getByRole("button", { name: "Show all" }));
+    expect(within(panel).getByRole("img").querySelectorAll(".trend-bar-run")).toHaveLength(2);
+    expect(within(legend).queryByRole("button", { name: "Show all" })).toBeNull();
+  });
+
+  it("switches the spend trend to tokens, cached input kept apart", async () => {
+    renderDashboard();
+    const panel = await screen.findByRole("region", { name: "Spend trend" });
+    fireEvent.click(
+      within(within(panel).getByRole("group", { name: "Measure" })).getByRole("button", {
+        name: "Tokens",
+      }),
+    );
+    expect(
+      within(panel).getByRole("img", { name: "Tokens per month by type" }),
+    ).toBeInTheDocument();
+    const legend = within(panel).getByRole("group", { name: "Spend trend series" });
+    expect(
+      within(legend)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual([
+      // 1.7M input, of which 230K cached; 420K out.
+      "Uncached input1.5M",
+      "Cached input230K",
+      "Output420K",
+    ]);
+  });
+
+  it("splits the spend trend by provider and keeps each one's build and run apart", async () => {
+    renderDashboard();
+    const panel = await screen.findByRole("region", { name: "Spend trend" });
+    fireEvent.click(
+      within(within(panel).getByRole("group", { name: "Split by" })).getByRole("button", {
+        name: "Provider",
+      }),
+    );
+    const chart = within(panel).getByRole("img", { name: "Cost per month by provider" });
+    expect(chart.querySelectorAll(".trend-bar-anthropic")).toHaveLength(2);
+    expect(chart.querySelectorAll(".trend-bar-copilot")).toHaveLength(2);
+
+    fireEvent.mouseEnter(chart.querySelectorAll('rect[fill="transparent"]')[1]);
+    const card = document.querySelector(".trend-hover-card")!;
+    expect(card.textContent).toContain("Anthropic$4,960");
+    expect(card.textContent).toContain("Copilot$211");
+    // A vendor stack still says how much of the month was build and how much run.
+    expect(card.textContent).toContain("of which build$211");
+    expect(card.textContent).toContain("of which inference$4,960");
+  });
+
+  it("narrows the spend trend to a provider clicked in the provider list", async () => {
+    renderDashboard();
+    const trend = await screen.findByRole("region", { name: "Spend trend" });
+    const providers = screen.getByRole("region", { name: "Provider spend" });
+    const anthropic = within(providers).getByRole("button", { name: /Anthropic/ });
+    expect(anthropic).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(anthropic);
+    expect(anthropic).toHaveAttribute("aria-pressed", "true");
+    const chart = within(trend).getByRole("img", {
+      name: "Build and inference cost per month, Anthropic only",
+    });
+    // Anthropic is inference only: no build bars once narrowed to it.
+    expect(chart.querySelectorAll(".trend-bar-build")).toHaveLength(0);
+    expect(chart.querySelectorAll(".trend-bar-run")).toHaveLength(2);
+    expect(within(trend).getByRole("combobox", { name: "Provider filter" })).toHaveValue(
+      "anthropic",
+    );
+
+    // The trend's own filter moves the highlight in the list, and clearing it
+    // widens both back out.
+    fireEvent.change(within(trend).getByRole("combobox", { name: "Provider filter" }), {
+      target: { value: "copilot" },
+    });
+    expect(within(providers).getByRole("button", { name: /Copilot/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(anthropic).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(within(providers).getByRole("button", { name: /Copilot/ }));
+    expect(
+      within(trend).getByRole("img", { name: "Build and inference cost per month" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers no provider controls when the server sent no per-provider split", async () => {
+    vi.mocked(api.dashboard).mockResolvedValue({
+      ...DATA,
+      trend: DATA.trend.map((m) => ({ ...m, by_provider: undefined })),
+    });
+    renderDashboard();
+    const trend = await screen.findByRole("region", { name: "Spend trend" });
+    expect(within(trend).queryByRole("group", { name: "Split by" })).toBeNull();
+    expect(within(trend).queryByRole("combobox", { name: "Provider filter" })).toBeNull();
+    // The list is not a control that would do nothing.
+    const providers = screen.getByRole("region", { name: "Provider spend" });
+    expect(within(providers).queryByRole("button", { name: /Anthropic/ })).toBeNull();
+    // The legend still works without it.
+    expect(within(trend).getByRole("group", { name: "Spend trend series" })).toBeInTheDocument();
+  });
+
+  it("hides and shows a budget-chart line from its legend", async () => {
+    renderDashboard();
+    const panel = (await screen.findByText("Budget & forecast")).closest("section")!;
+    const legend = await within(panel).findByRole("group", { name: "Budget chart lines" });
+    expect(
+      within(legend)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Spent", "Forecast", "With savings", "Budget"]);
+    fireEvent.click(within(legend).getByRole("button", { name: "Budget" }));
+    expect(panel.querySelector(".budget-line")).toBeNull();
+    expect(panel.querySelector(".budget-projected")).toBeInTheDocument();
+    fireEvent.click(within(legend).getByRole("button", { name: "Forecast" }));
+    expect(panel.querySelector(".budget-projected")).toBeNull();
+    // The figures beneath the chart are not the chart: they stay.
+    expect(within(panel).getByText(compactMoney(12000))).toBeInTheDocument();
+
+    fireEvent.click(within(legend).getByRole("button", { name: "Show all" }));
+    expect(panel.querySelector(".budget-line")).toBeInTheDocument();
+    expect(panel.querySelector(".budget-projected")).toBeInTheDocument();
+  });
+
   it("breaks the budget line down by month, and carries the forecast on the last one", async () => {
     renderDashboard();
     await screen.findByText("Budget & forecast");
@@ -704,8 +886,11 @@ describe("Dashboard (Overview)", () => {
   it("offers no disclosure when there is nothing folded away", async () => {
     renderDashboard();
     const panel = (await screen.findByText("Provider spend")).closest("section")!;
-    // The fixture has two providers, which is fewer than the three shown.
-    expect(within(panel).queryByRole("button")).not.toBeInTheDocument();
+    // The fixture has two providers, which is fewer than the three shown. (The
+    // rows themselves are buttons — they narrow the spend trend — so the check
+    // is for the disclosure, not for any button at all.)
+    expect(panel.querySelector(".provider-toggle")).not.toBeInTheDocument();
+    expect(within(panel).getAllByRole("button")).toHaveLength(2);
   });
 
   it("shows one period-over-period delta on total spend", async () => {

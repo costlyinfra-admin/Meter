@@ -6066,6 +6066,129 @@ button.kpi-note-link:active {
   fill: var(--chart-4);
 }
 
+/* What the trend shows: measure, split and vendor filter, on one wrapping row.
+   The pills borrow .trend-toggle's look; the row lays them out. */
+.trend-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.trend-controls .trend-toggle {
+  margin: 0;
+  justify-content: flex-start;
+}
+
+select.trend-filter {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-pill);
+  max-width: 11rem;
+}
+
+.trend-empty {
+  margin: 1.5rem 0;
+  font-size: 0.86rem;
+}
+
+/* ---- clickable chart legend ---- */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.4rem;
+  margin-top: 0.6rem;
+}
+
+/* Typed as button.* to outweigh the global button, which is a filled pill. */
+button.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  box-shadow: none;
+}
+
+button.chart-legend-item:hover {
+  background: var(--surface-alt);
+}
+
+button.chart-legend-item:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* Switched off: still in its place, so the reader sees what is missing. */
+button.chart-legend-item.off {
+  color: var(--muted);
+}
+
+button.chart-legend-item.off .chart-legend-label {
+  text-decoration: line-through;
+}
+
+.chart-legend-value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-legend-swatch {
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.chart-legend-swatch.fill {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--swatch);
+  border: 1.5px solid var(--swatch);
+}
+
+.chart-legend-item.off .chart-legend-swatch.fill {
+  background: transparent;
+}
+
+/* Line swatches for the budget chart, drawn as its lines are drawn. */
+.chart-legend-swatch.line {
+  width: 14px;
+  border-top: 2px solid var(--chart-1);
+}
+
+.chart-legend-swatch.line.dashed {
+  border-top-style: dashed;
+}
+
+.chart-legend-swatch.line.over {
+  border-top-color: var(--warn);
+}
+
+.chart-legend-swatch.line.optimized {
+  border-top-color: var(--good);
+}
+
+.chart-legend-swatch.line.budget {
+  border-top: 1.25px solid var(--ink-soft);
+}
+
+.chart-legend-item.off .chart-legend-swatch.line {
+  opacity: 0.35;
+}
+
+button.chart-legend-reset {
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
+}
+
 /* ---- budget & forecast ---- */
 .panel-note {
   font-size: 0.72rem;
@@ -6619,6 +6742,47 @@ button.pm-option:active {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.86rem;
+}
+
+/* A vendor row that narrows the spend trend. The button takes over the row's
+   grid so the layout is identical to the plain row it replaces. */
+.provider-list li:has(> .provider-row) {
+  display: block;
+}
+
+button.provider-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin: -0.25rem -0.4rem;
+  padding: 0.25rem 0.4rem;
+  box-sizing: content-box;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+button.provider-row:hover {
+  background: var(--surface-alt);
+}
+
+button.provider-row:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+button.provider-row.selected {
+  background: var(--surface-alt);
+  border-color: var(--line-strong);
 }
 
 .provider-name {

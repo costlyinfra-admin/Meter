@@ -38,6 +38,7 @@ interface SavingsState extends SavingsSummary {
 import { ProviderBreakdown, type SpendSource } from "../components/ProviderBreakdown";
 import { AskSuggestion, publishOverviewContext } from "../askMeter";
 import { compact, money, num } from "../format";
+import { hasProviderSplit } from "../spendTrend";
 
 type OverviewTab = "products" | "features" | "providers" | "developers" | "customers";
 
@@ -97,6 +98,9 @@ export function Dashboard() {
   const [query, setQuery] = useState("");
   // "" is every product; UNASSIGNED is its own answer, not the absence of one.
   const [product, setProduct] = useState("");
+  // The vendor the spend trend is narrowed to. Lifted here because two cards
+  // set it: the trend's own filter, and a click on the provider list beside it.
+  const [trendProvider, setTrendProvider] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -376,11 +380,20 @@ export function Dashboard() {
           <KeyInsights insights={data.insights} />
           {/* The middle column: what it cost, then where that is heading. */}
           <div className="overview-middle">
-            <SpendTrend trend={data.trend} />
+            <SpendTrend
+              trend={data.trend}
+              provider={trendProvider}
+              onProviderChange={setTrendProvider}
+            />
             <BudgetForecastPanel trend={data.trend} forecast={forecast} failed={forecastFailed} />
           </div>
           <div className="overview-side">
-            <ProviderSpendPanel providers={data.providers} />
+            <ProviderSpendPanel
+              providers={data.providers}
+              selected={trendProvider}
+              // Only where the trend can actually be narrowed to one vendor.
+              onSelect={hasProviderSplit(data.trend) ? setTrendProvider : undefined}
+            />
             <OpenActions actions={data.actions} />
           </div>
         </div>

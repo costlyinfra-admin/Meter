@@ -957,6 +957,20 @@ export interface TrendMonth {
   tokens_out: number;
   /** cached_tokens_in as a percentage of tokens_in; 0 when there is no input. */
   cache_rate: number;
+  /** The month per vendor, largest first, so the trend can be split or filtered
+   *  by one. Each row keeps its own build/inference split. Optional because an
+   *  older server does not send it; the chart then offers no vendor controls. */
+  by_provider?: TrendProvider[];
+}
+
+/** One vendor's share of one trend month. Build tools carry no tokens. */
+export interface TrendProvider {
+  provider: string;
+  build_cost: number;
+  inference_cost: number;
+  tokens_in: number;
+  cached_tokens_in: number;
+  tokens_out: number;
 }
 
 /** Total spend per vendor over the period, with each one's own split.

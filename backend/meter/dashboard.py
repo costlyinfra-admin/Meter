@@ -787,6 +787,7 @@ def _monthly_trend(conn, start: dt.date, end: dt.date) -> list[dict]:
             (start, end, _connector_providers(conn, start, end)),
         ).fetchall()
     }
+    by_provider = _monthly_provider_split(conn, start, end)
     out, month = [], start
     while month <= end:
         row = inference.get(month)
@@ -803,10 +804,69 @@ def _monthly_trend(conn, start: dt.date, end: dt.date) -> list[dict]:
                 "cached_tokens_in": cached,
                 "tokens_out": int(row[4]) if row else 0,
                 "cache_rate": (cached / tokens_in * 100) if tokens_in else 0.0,
+                "by_provider": by_provider.get(month, []),
             }
         )
         month = dt.date(month.year + (month.month // 12), (month.month % 12) + 1, 1)
     return out
+
+
+def _monthly_provider_split(conn, start: dt.date, end: dt.date) -> dict:
+    """Each month's spend per vendor, so the Overview trend can be split by one.
+
+    The same vendors and the same reading as `_provider_spend` — inference by
+    provider, build by tool — so a month's rows add up to that month's bar and
+    a vendor's months add up to its line in the provider list. Each row keeps
+    its own build/inference split, and its tokens, which only inference has.
+    """
+    months: dict = {}
+
+    def entry(period: dt.date, name: str) -> dict:
+        rows = months.setdefault(period, {})
+        return rows.setdefault(
+            name,
+            {
+                "provider": name,
+                "build_cost": 0.0,
+                "inference_cost": 0.0,
+                "tokens_in": 0,
+                "cached_tokens_in": 0,
+                "tokens_out": 0,
+            },
+        )
+
+    for period, provider, amount, tokens_in, cached, tokens_out in conn.execute(
+        "SELECT period, provider, COALESCE(SUM(amount), 0), COALESCE(SUM(tokens_in), 0), "
+        "COALESCE(SUM(cached_tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
+        f"FROM inference_cost WHERE period BETWEEN %s AND %s AND {_ACTIVE_ENV} "  # noqa: S608
+        f"{_NOT_DOUBLE_COUNTED} GROUP BY period, provider",
+        (start, end, _connector_providers(conn, start, end)),
+    ).fetchall():
+        row = entry(period, provider or "unknown")
+        row["inference_cost"] += float(amount)
+        row["tokens_in"] += int(tokens_in)
+        row["cached_tokens_in"] += int(cached)
+        row["tokens_out"] += int(tokens_out)
+
+    for period, tool, amount in conn.execute(
+        "SELECT period, tool, COALESCE(SUM(amount), 0) FROM build_cost "
+        "WHERE period BETWEEN %s AND %s GROUP BY period, tool",
+        (start, end),
+    ).fetchall():
+        entry(period, str(tool))["build_cost"] += float(amount)
+
+    return {
+        period: sorted(
+            (
+                r
+                for r in rows.values()
+                if r["build_cost"] or r["inference_cost"] or r["tokens_in"] or r["tokens_out"]
+            ),
+            key=lambda r: r["build_cost"] + r["inference_cost"],
+            reverse=True,
+        )
+        for period, rows in months.items()
+    }
 
 
 def _provider_spend(conn, start: dt.date, end: dt.date) -> list[dict]:

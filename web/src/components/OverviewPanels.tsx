@@ -28,18 +28,24 @@ import type { SpendSource } from "./ProviderBreakdown";
 import { forecastShape, type ForecastPoint, type ForecastShape } from "../budget";
 import { compact, compactMoney, money, wholeMoney } from "../format";
 import { AskAction } from "./AskMeter";
+import { ChartLegend, type LegendItem } from "./ChartLegend";
+import {
+  buildTrendView,
+  hasProviderSplit,
+  OTHER_KEY,
+  providerLabel,
+  providerOptions,
+  toggled,
+  visibleTotal,
+  type TrendMeasure,
+  type TrendSplit,
+  type TrendView,
+} from "../spendTrend";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function monthLabel(period: string): string {
   return MONTHS[Number(period.slice(5, 7)) - 1];
-}
-
-/** "self_hosted" -> "Self hosted". These are identifiers in the database, and
- *  a vendor list is somewhere a person reads, not somewhere a key belongs. */
-function providerLabel(name: string): string {
-  const words = name.replace(/[_-]+/g, " ").trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** A percentage, or an em dash when the base makes one meaningless. */
@@ -352,14 +358,97 @@ const AXIS_W = 40; // room for the dollar labels
 const PLOT_TOP = 8;
 const PLOT_BOTTOM = 150; // baseline; month labels sit below it
 
-export function SpendTrend({ trend }: { trend: TrendMonth[] }) {
+/** A row of pill buttons, one of which is chosen. */
+function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="trend-toggle chart-seg" role="group" aria-label={label}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={option.value === value ? "active" : undefined}
+          aria-pressed={option.value === value}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function trendChartLabel(
+  measure: TrendMeasure,
+  split: TrendSplit,
+  provider: string | null,
+): string {
+  const what =
+    measure === "cost"
+      ? split === "kind"
+        ? "Build and inference cost per month"
+        : "Cost per month by provider"
+      : split === "kind"
+        ? "Tokens per month by type"
+        : "Tokens per month by provider";
+  return provider === null ? what : `${what}, ${providerLabel(provider)} only`;
+}
+
+function emptyTrendText(measure: TrendMeasure, provider: string | null): string {
+  if (provider !== null) return `Nothing from ${providerLabel(provider)} in this period.`;
+  return measure === "cost" ? "No spend in this period." : "No tokens recorded in this period.";
+}
+
+export function SpendTrend({
+  trend,
+  provider = null,
+  onProviderChange,
+}: {
+  trend: TrendMonth[];
+  /** One vendor to narrow the chart to, or null for everything. Owned by the
+   *  page, because the provider list beside the chart sets it too. */
+  provider?: string | null;
+  onProviderChange?: (provider: string | null) => void;
+}) {
   // Which month the pointer is over. Null is "not hovering", which is why the
   // dimming and the card both key off it rather than off a separate flag.
   const [hover, setHover] = useState<number | null>(null);
+  const [measure, setMeasure] = useState<TrendMeasure>("cost");
+  const [split, setSplit] = useState<TrendSplit>("kind");
+  // Hidden series belong to the view they were hidden in: a different measure,
+  // split or filter has different series, and carrying "anthropic is hidden"
+  // over into the build/inference view would hide nothing and confuse.
+  const viewKey = `${measure}|${split}|${provider ?? ""}`;
+  const [hiddenIn, setHiddenIn] = useState<{ view: string; keys: Set<string> }>({
+    view: viewKey,
+    keys: new Set(),
+  });
+  const hidden = hiddenIn.view === viewKey ? hiddenIn.keys : EMPTY_SET;
+  const setHidden = (keys: Set<string>) => setHiddenIn({ view: viewKey, keys });
 
-  const max = Math.max(...trend.map((m) => m.build_cost + m.inference_cost), 0);
+  const canSlice = hasProviderSplit(trend);
+  const options = canSlice ? providerOptions(trend) : [];
+  // A vendor the window no longer contains (the range changed under it) is
+  // dropped rather than left filtering the chart down to nothing.
+  const filter = provider !== null && options.includes(provider) ? provider : null;
+
+  const view = buildTrendView(trend, measure, canSlice ? split : "kind", filter);
+  const totals = view.values.map((row) => visibleTotal(row, view.series, hidden));
+  const rawMax = Math.max(...view.values.map((row) => row.reduce((a, b) => a + b, 0)), 0);
+  const max = Math.max(...totals, 0);
   const ceiling = niceCeil(max);
   const y = (value: number) => PLOT_BOTTOM - (value / ceiling) * (PLOT_BOTTOM - PLOT_TOP);
+  const fmt = measure === "cost" ? money : compact;
+  const axisFmt = measure === "cost" ? wholeMoney : compact;
 
   const plotW = VB_W - AXIS_W - 6;
   const slot = plotW / Math.max(trend.length, 1);
@@ -367,6 +456,12 @@ export function SpendTrend({ trend }: { trend: TrendMonth[] }) {
   const centre = (i: number) => AXIS_W + i * slot + slot / 2;
 
   const hovered = hover === null ? null : trend[hover];
+  const legend: LegendItem[] = view.series.map((s, i) => ({
+    key: s.key,
+    label: s.label,
+    color: s.color,
+    value: fmt(view.values.reduce((sum, row) => sum + row[i], 0)),
+  }));
 
   return (
     <section className="panel trend-panel" aria-label="Spend trend">
@@ -376,24 +471,61 @@ export function SpendTrend({ trend }: { trend: TrendMonth[] }) {
           source="trend"
           question="What is driving the shape of my spend trend over these months — build, inference, or both?"
         />
-        <span className="trend-key">
-          <span className="trend-key-item">
-            <span className="trend-key-swatch build" aria-hidden /> Build
-          </span>
-          <span className="trend-key-item">
-            <span className="trend-key-swatch run" aria-hidden /> Inference
-          </span>
-        </span>
       </div>
-      {max <= 0 ? (
-        <p className="muted">No spend in this period.</p>
+
+      <div className="trend-controls">
+        <Segmented
+          label="Measure"
+          value={measure}
+          options={[
+            { value: "cost", label: "Cost" },
+            { value: "tokens", label: "Tokens" },
+          ]}
+          onChange={setMeasure}
+        />
+        {canSlice && (
+          <Segmented
+            label="Split by"
+            value={split}
+            options={[
+              { value: "kind", label: measure === "cost" ? "Build & inference" : "Token type" },
+              { value: "provider", label: "Provider" },
+            ]}
+            onChange={setSplit}
+          />
+        )}
+        {canSlice && options.length > 1 && (
+          <select
+            className="trend-filter"
+            aria-label="Provider filter"
+            value={filter ?? ""}
+            onChange={(e) => onProviderChange?.(e.target.value || null)}
+          >
+            <option value="">All providers</option>
+            {options.map((name) => (
+              <option key={name} value={name}>
+                {providerLabel(name)}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {rawMax <= 0 ? (
+        <p className="muted trend-empty">{emptyTrendText(measure, filter)}</p>
+      ) : max <= 0 ? (
+        // Something to draw, but every series is switched off. Saying so beats
+        // an empty frame that reads as "nothing was spent".
+        <p className="muted trend-empty">
+          Every series is hidden. Click one in the legend below to bring it back.
+        </p>
       ) : (
         <div className="trend-line-wrap" onMouseLeave={() => setHover(null)}>
           <svg
             className="trend-svg"
             viewBox={`0 0 ${VB_W} ${VB_H}`}
             role="img"
-            aria-label="Build and inference cost per month"
+            aria-label={trendChartLabel(measure, canSlice ? split : "kind", filter)}
           >
             {GRID_LEVELS.map((level) => (
               <g key={level}>
@@ -410,18 +542,19 @@ export function SpendTrend({ trend }: { trend: TrendMonth[] }) {
                   y={y(level * ceiling) + 3}
                   textAnchor="end"
                 >
-                  {wholeMoney(level * ceiling)}
+                  {axisFmt(level * ceiling)}
                 </text>
               </g>
             ))}
 
             {trend.map((month, i) => {
-              const total = month.build_cost + month.inference_cost;
               const x = centre(i) - barW / 2;
-              // Inference sits on top of build, so the two are read as parts of
-              // the month rather than as one blended number.
-              const buildH = (month.build_cost / ceiling) * (PLOT_BOTTOM - PLOT_TOP);
-              const runH = (month.inference_cost / ceiling) * (PLOT_BOTTOM - PLOT_TOP);
+              // Each visible series stacked on the last, first series at the
+              // bottom — parts of the month, never one blended number.
+              const shown = view.series
+                .map((s, j) => ({ s, value: view.values[i][j] }))
+                .filter(({ s, value }) => !hidden.has(s.key) && value > 0);
+              let base = 0;
               return (
                 <g
                   key={month.period}
@@ -429,25 +562,24 @@ export function SpendTrend({ trend }: { trend: TrendMonth[] }) {
                     hover === null || hover === i ? "trend-bar-group" : "trend-bar-group dim"
                   }
                 >
-                  {total > 0 && (
-                    <>
+                  {shown.map(({ s, value }, j) => {
+                    const h = Math.max((value / ceiling) * (PLOT_BOTTOM - PLOT_TOP), 1);
+                    const top = j === shown.length - 1;
+                    const rect = (
                       <rect
-                        className="trend-bar-run"
+                        key={s.key}
+                        className={`trend-bar-${s.key}`}
+                        style={{ fill: s.color }}
                         x={x}
-                        y={y(total)}
+                        y={y(base + value)}
                         width={barW}
-                        height={Math.max(runH, month.inference_cost > 0 ? 1 : 0)}
-                        rx={2}
+                        height={h}
+                        rx={top ? 2 : 0}
                       />
-                      <rect
-                        className="trend-bar-build"
-                        x={x}
-                        y={PLOT_BOTTOM - buildH}
-                        width={barW}
-                        height={Math.max(buildH, month.build_cost > 0 ? 1 : 0)}
-                      />
-                    </>
-                  )}
+                    );
+                    base += value;
+                    return rect;
+                  })}
                   <text
                     className="trend-axis-label"
                     x={centre(i)}
@@ -478,26 +610,78 @@ export function SpendTrend({ trend }: { trend: TrendMonth[] }) {
           {hovered && (
             <ChartHoverCard
               pct={(centre(hover!) / VB_W) * 100}
-              title={monthLabel(hovered.period)}
-              total={money(hovered.build_cost + hovered.inference_cost)}
+              title={
+                filter === null
+                  ? monthLabel(hovered.period)
+                  : `${monthLabel(hovered.period)} · ${providerLabel(filter)}`
+              }
+              total={fmt(totals[hover!])}
             >
               <ul className="trend-hover-list">
-                <HoverRow
-                  swatch="trend-key-swatch build"
-                  label="Build"
-                  value={money(hovered.build_cost)}
-                />
-                <HoverRow
-                  swatch="trend-key-swatch run"
-                  label="Inference"
-                  value={money(hovered.inference_cost)}
-                />
+                {view.series.map((s, j) =>
+                  hidden.has(s.key) ? null : (
+                    <HoverRow
+                      key={s.key}
+                      swatchStyle={{ background: s.color }}
+                      label={s.label}
+                      value={fmt(view.values[hover!][j])}
+                    />
+                  ),
+                )}
+                {/* Split by vendor adds a vendor's build and run together, as
+                    the provider list does. The month's own split is still here. */}
+                {measure === "cost" && split === "provider" && canSlice && (
+                  <VendorKindRows month={hovered} filter={filter} view={view} hidden={hidden} />
+                )}
               </ul>
             </ChartHoverCard>
           )}
         </div>
       )}
+
+      {rawMax > 0 && (
+        <ChartLegend
+          label="Spend trend series"
+          items={legend}
+          hidden={hidden}
+          onToggle={(key) => setHidden(toggled(hidden, key))}
+          onShowAll={() => setHidden(new Set())}
+        />
+      )}
     </section>
+  );
+}
+
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
+/** The build and inference behind the visible vendors in one month. */
+function VendorKindRows({
+  month,
+  filter,
+  view,
+  hidden,
+}: {
+  month: TrendMonth;
+  filter: string | null;
+  view: TrendView;
+  hidden: ReadonlySet<string>;
+}) {
+  const named = new Set(view.series.map((s) => s.key));
+  const otherHidden = hidden.has(OTHER_KEY);
+  let build = 0;
+  let run = 0;
+  for (const row of month.by_provider ?? []) {
+    if (filter !== null && row.provider !== filter) continue;
+    const key = named.has(row.provider) ? row.provider : OTHER_KEY;
+    if (key === OTHER_KEY ? otherHidden : hidden.has(key)) continue;
+    build += row.build_cost;
+    run += row.inference_cost;
+  }
+  return (
+    <>
+      <HoverRow label="of which build" value={money(build)} muted />
+      <HoverRow label="of which inference" value={money(run)} muted />
+    </>
   );
 }
 
@@ -528,15 +712,45 @@ function BudgetChart({
   trend: TrendMonth[];
 }) {
   const [hover, setHover] = useState<number | null>(null);
+  // Lines switched off from the legend. The axis scales to what is still shown,
+  // so hiding a far-off budget lets the spend line use the whole height.
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(EMPTY_SET);
+  const shows = (key: string) => !hidden.has(key);
 
-  const top = Math.max(forecast.forecast ?? 0, forecast.actual, forecast.budget ?? 0);
+  const over = forecast.variance !== null && forecast.variance > 0;
+  const legend: LegendItem[] = [
+    { key: "actual", label: "Spent", swatchClass: "line actual" },
+    ...(shape.projected
+      ? [
+          {
+            key: "forecast",
+            label: "Forecast",
+            swatchClass: `line dashed ${over ? "over" : "under"}`,
+          },
+        ]
+      : []),
+    ...(shape.optimizedTail
+      ? [{ key: "optimized", label: "With savings", swatchClass: "line dashed optimized" }]
+      : []),
+    ...(forecast.budget !== null
+      ? [{ key: "budget", label: "Budget", swatchClass: "line budget" }]
+      : []),
+  ];
+
+  // What was spent always counts towards the scale, hidden or not: the hover
+  // marker sits on it, and must never land above the top of the chart.
+  const top = Math.max(
+    forecast.actual,
+    shows("forecast") ? (forecast.forecast ?? 0) : 0,
+    shows("optimized") ? (forecast.forecast_optimized ?? 0) : 0,
+    shows("budget") ? (forecast.budget ?? 0) : 0,
+  );
   const ceiling = niceCeil(top, FINE_STEPS);
   const px = (x: number) => BF_AXIS_W + (x / shape.months) * (BF_VB_W - BF_AXIS_W - 8);
   const py = (y: number) => BF_PLOT_BOTTOM - (y / ceiling) * (BF_PLOT_BOTTOM - BF_PLOT_TOP);
   const path = (points: ForecastPoint[]) =>
     points.map((p, i) => `${i === 0 ? "M" : "L"}${px(p.x)} ${py(p.y)}`).join(" ");
 
-  const over = forecast.variance !== null && forecast.variance > 0;
   const lastActual = shape.actual[shape.actual.length - 1];
   const end = shape.projected?.[1] ?? null;
   const optimizedEnd = shape.optimizedTail?.[1] ?? null;
@@ -547,160 +761,176 @@ function BudgetChart({
   const isFinal = (i: number) => i === shape.months - 1;
 
   return (
-    <div className="trend-line-wrap" onMouseLeave={() => setHover(null)}>
-      <svg
-        className="trend-svg budget-svg"
-        viewBox={`0 0 ${BF_VB_W} ${BF_VB_H}`}
-        role="img"
-        aria-label={budgetChartLabel(forecast)}
-      >
-        {BF_GRID_LEVELS.map((level) => (
-          <g key={level}>
-            <line
-              className="trend-grid-line"
-              x1={BF_AXIS_W}
-              y1={py(level * ceiling)}
-              x2={BF_VB_W - 8}
-              y2={py(level * ceiling)}
+    <>
+      <div className="trend-line-wrap" onMouseLeave={() => setHover(null)}>
+        <svg
+          className="trend-svg budget-svg"
+          viewBox={`0 0 ${BF_VB_W} ${BF_VB_H}`}
+          role="img"
+          aria-label={budgetChartLabel(forecast)}
+        >
+          {BF_GRID_LEVELS.map((level) => (
+            <g key={level}>
+              <line
+                className="trend-grid-line"
+                x1={BF_AXIS_W}
+                y1={py(level * ceiling)}
+                x2={BF_VB_W - 8}
+                y2={py(level * ceiling)}
+              />
+              <text
+                className="trend-axis-label"
+                x={BF_AXIS_W - 6}
+                y={py(level * ceiling) + 3}
+                textAnchor="end"
+              >
+                {wholeMoney(level * ceiling)}
+              </text>
+            </g>
+          ))}
+
+          {/* The budget, drawn across the whole plot so it reads as a ceiling
+            rather than as another series. Absent when there is no budget. */}
+          {forecast.budget !== null && shows("budget") && (
+            <g>
+              <line
+                className="budget-line"
+                x1={BF_AXIS_W}
+                y1={py(forecast.budget)}
+                x2={BF_VB_W - 8}
+                y2={py(forecast.budget)}
+              />
+              <text className="budget-line-label" x={BF_AXIS_W + 4} y={py(forecast.budget) - 5}>
+                Budget {compactMoney(forecast.budget)}
+              </text>
+            </g>
+          )}
+
+          {shows("actual") && <path className="budget-actual" d={path(shape.actual)} />}
+
+          {shape.optimizedTail && optimizedEnd && shows("optimized") && (
+            <>
+              <path className="budget-optimized" d={path(shape.optimizedTail)} />
+              <circle
+                className="budget-dot optimized"
+                cx={px(optimizedEnd.x)}
+                cy={py(optimizedEnd.y)}
+                r={3}
+              />
+            </>
+          )}
+
+          {shape.projected && end && shows("forecast") && (
+            <>
+              <path
+                className={`budget-projected ${over ? "over" : "under"}`}
+                d={path(shape.projected)}
+              />
+              <circle
+                className={`budget-dot ${over ? "over" : "under"}`}
+                cx={px(end.x)}
+                cy={py(end.y)}
+                r={3}
+              />
+            </>
+          )}
+
+          {/* Where the actuals stop and the projection starts. */}
+          {shows("actual") && (
+            <circle
+              className="budget-dot actual"
+              cx={px(lastActual.x)}
+              cy={py(lastActual.y)}
+              r={3}
             />
+          )}
+
+          {/* A guide down to the hovered month, so the card and the line agree. */}
+          {hover !== null && (
+            <line
+              className="trend-line-guide"
+              x1={px(pointAt(hover).x)}
+              y1={BF_PLOT_TOP - 4}
+              x2={px(pointAt(hover).x)}
+              y2={BF_PLOT_BOTTOM}
+            />
+          )}
+          {hover !== null && (
+            <circle
+              className="budget-dot actual"
+              cx={px(pointAt(hover).x)}
+              cy={py(pointAt(hover).y)}
+              r={4}
+            />
+          )}
+
+          {shape.labels.map((label, i) => (
             <text
               className="trend-axis-label"
-              x={BF_AXIS_W - 6}
-              y={py(level * ceiling) + 3}
-              textAnchor="end"
+              key={`${label}-${i}`}
+              x={BF_AXIS_W + (i + 0.5) * slot}
+              y={BF_PLOT_BOTTOM + 13}
+              textAnchor="middle"
             >
-              {wholeMoney(level * ceiling)}
+              {label}
             </text>
-          </g>
-        ))}
+          ))}
 
-        {/* The budget, drawn across the whole plot so it reads as a ceiling
-            rather than as another series. Absent when there is no budget. */}
-        {forecast.budget !== null && (
-          <g>
-            <line
-              className="budget-line"
-              x1={BF_AXIS_W}
-              y1={py(forecast.budget)}
-              x2={BF_VB_W - 8}
-              y2={py(forecast.budget)}
-            />
-            <text className="budget-line-label" x={BF_AXIS_W + 4} y={py(forecast.budget) - 5}>
-              Budget {compactMoney(forecast.budget)}
-            </text>
-          </g>
-        )}
-
-        <path className="budget-actual" d={path(shape.actual)} />
-
-        {shape.optimizedTail && optimizedEnd && (
-          <>
-            <path className="budget-optimized" d={path(shape.optimizedTail)} />
-            <circle
-              className="budget-dot optimized"
-              cx={px(optimizedEnd.x)}
-              cy={py(optimizedEnd.y)}
-              r={3}
-            />
-          </>
-        )}
-
-        {shape.projected && end && (
-          <>
-            <path
-              className={`budget-projected ${over ? "over" : "under"}`}
-              d={path(shape.projected)}
-            />
-            <circle
-              className={`budget-dot ${over ? "over" : "under"}`}
-              cx={px(end.x)}
-              cy={py(end.y)}
-              r={3}
-            />
-          </>
-        )}
-
-        {/* Where the actuals stop and the projection starts. */}
-        <circle className="budget-dot actual" cx={px(lastActual.x)} cy={py(lastActual.y)} r={3} />
-
-        {/* A guide down to the hovered month, so the card and the line agree. */}
-        {hover !== null && (
-          <line
-            className="trend-line-guide"
-            x1={px(pointAt(hover).x)}
-            y1={BF_PLOT_TOP - 4}
-            x2={px(pointAt(hover).x)}
-            y2={BF_PLOT_BOTTOM}
-          />
-        )}
-        {hover !== null && (
-          <circle
-            className="budget-dot actual"
-            cx={px(pointAt(hover).x)}
-            cy={py(pointAt(hover).y)}
-            r={4}
-          />
-        )}
-
-        {shape.labels.map((label, i) => (
-          <text
-            className="trend-axis-label"
-            key={`${label}-${i}`}
-            x={BF_AXIS_W + (i + 0.5) * slot}
-            y={BF_PLOT_BOTTOM + 13}
-            textAnchor="middle"
-          >
-            {label}
-          </text>
-        ))}
-
-        {/* Contiguous invisible bands: one month each, the full height of the
+          {/* Contiguous invisible bands: one month each, the full height of the
             plot, so the card opens the moment the pointer enters a month. */}
-        {shape.labels.map((label, i) => (
-          <rect
-            key={`hit-${label}-${i}`}
-            x={BF_AXIS_W + i * slot}
-            y={0}
-            width={slot}
-            height={BF_PLOT_BOTTOM}
-            fill="transparent"
-            onMouseEnter={() => setHover(i)}
-          />
-        ))}
-      </svg>
+          {shape.labels.map((label, i) => (
+            <rect
+              key={`hit-${label}-${i}`}
+              x={BF_AXIS_W + i * slot}
+              y={0}
+              width={slot}
+              height={BF_PLOT_BOTTOM}
+              fill="transparent"
+              onMouseEnter={() => setHover(i)}
+            />
+          ))}
+        </svg>
 
-      {hover !== null && (
-        <ChartHoverCard
-          pct={(px(pointAt(hover).x) / BF_VB_W) * 100}
-          title={`${shape.labels[hover]} · cumulative`}
-          total={money(pointAt(hover).y)}
-        >
-          <ul className="trend-hover-list">
-            <HoverRow
-              swatch="trend-key-swatch build"
-              label="Build this month"
-              value={money(trend[hover]?.build_cost ?? 0)}
-            />
-            <HoverRow
-              swatch="trend-key-swatch run"
-              label="Inference this month"
-              value={money(trend[hover]?.inference_cost ?? 0)}
-            />
-            {/* The final month is where the projection lives, so its card is the
+        {hover !== null && (
+          <ChartHoverCard
+            pct={(px(pointAt(hover).x) / BF_VB_W) * 100}
+            title={`${shape.labels[hover]} · cumulative`}
+            total={money(pointAt(hover).y)}
+          >
+            <ul className="trend-hover-list">
+              <HoverRow
+                swatch="trend-key-swatch build"
+                label="Build this month"
+                value={money(trend[hover]?.build_cost ?? 0)}
+              />
+              <HoverRow
+                swatch="trend-key-swatch run"
+                label="Inference this month"
+                value={money(trend[hover]?.inference_cost ?? 0)}
+              />
+              {/* The final month is where the projection lives, so its card is the
                 one that carries the forecast and the budget it is measured on. */}
-            {isFinal(hover) && forecast.forecast !== null && forecast.status !== "closed" && (
-              <HoverRow label="Forecast at month end" value={money(forecast.forecast)} />
-            )}
-            {isFinal(hover) && forecast.forecast_optimized !== null && (
-              <HoverRow label="With savings" value={money(forecast.forecast_optimized)} />
-            )}
-            {isFinal(hover) && forecast.budget !== null && (
-              <HoverRow label="Budget" value={money(forecast.budget)} muted />
-            )}
-          </ul>
-        </ChartHoverCard>
-      )}
-    </div>
+              {isFinal(hover) && forecast.forecast !== null && forecast.status !== "closed" && (
+                <HoverRow label="Forecast at month end" value={money(forecast.forecast)} />
+              )}
+              {isFinal(hover) && forecast.forecast_optimized !== null && (
+                <HoverRow label="With savings" value={money(forecast.forecast_optimized)} />
+              )}
+              {isFinal(hover) && forecast.budget !== null && (
+                <HoverRow label="Budget" value={money(forecast.budget)} muted />
+              )}
+            </ul>
+          </ChartHoverCard>
+        )}
+      </div>
+      <ChartLegend
+        label="Budget chart lines"
+        items={legend}
+        hidden={hidden}
+        onToggle={(key) => setHidden(toggled(hidden, key))}
+        onShowAll={() => setHidden(EMPTY_SET)}
+      />
+    </>
   );
 }
 
@@ -914,9 +1144,17 @@ function budgetFootnote(f: BudgetForecast): string {
  *  "who are we mostly paying"; the rest is a follow-up question. */
 const PROVIDERS_SHOWN = 3;
 
-function ProviderRow({ provider }: { provider: ProviderTotal }) {
-  return (
-    <li>
+function ProviderRow({
+  provider,
+  selected,
+  onSelect,
+}: {
+  provider: ProviderTotal;
+  selected: boolean;
+  onSelect?: (provider: string | null) => void;
+}) {
+  const body = (
+    <>
       <ConnectorMark type={provider.provider} name={provider.provider} />
       <span className="provider-name">{providerLabel(provider.provider)}</span>
       <span className="provider-amount">{money(provider.amount)}</span>
@@ -924,11 +1162,40 @@ function ProviderRow({ provider }: { provider: ProviderTotal }) {
       <span className="provider-bar" aria-hidden>
         <span style={{ width: `${provider.share}%` }} />
       </span>
+    </>
+  );
+  if (!onSelect) return <li>{body}</li>;
+  // Clicking a vendor narrows the spend trend to it; clicking it again widens
+  // the trend back out. The row is the control, so it is a button.
+  return (
+    <li>
+      <button
+        type="button"
+        className={`provider-row${selected ? " selected" : ""}`}
+        aria-pressed={selected}
+        title={
+          selected
+            ? "Show every provider in the spend trend"
+            : `Show only ${providerLabel(provider.provider)} in the spend trend`
+        }
+        onClick={() => onSelect(selected ? null : provider.provider)}
+      >
+        {body}
+      </button>
     </li>
   );
 }
 
-export function ProviderSpendPanel({ providers }: { providers: ProviderTotal[] }) {
+export function ProviderSpendPanel({
+  providers,
+  selected = null,
+  onSelect,
+}: {
+  providers: ProviderTotal[];
+  /** The vendor the spend trend is narrowed to, if any. */
+  selected?: string | null;
+  onSelect?: (provider: string | null) => void;
+}) {
   const [open, setOpen] = useState(false);
   const shown = providers.slice(0, PROVIDERS_SHOWN);
   const rest = providers.slice(PROVIDERS_SHOWN);
@@ -949,7 +1216,12 @@ export function ProviderSpendPanel({ providers }: { providers: ProviderTotal[] }
         <>
           <ul className="provider-list">
             {shown.map((provider) => (
-              <ProviderRow key={provider.provider} provider={provider} />
+              <ProviderRow
+                key={provider.provider}
+                provider={provider}
+                selected={provider.provider === selected}
+                onSelect={onSelect}
+              />
             ))}
           </ul>
           {rest.length > 0 && (
@@ -959,7 +1231,12 @@ export function ProviderSpendPanel({ providers }: { providers: ProviderTotal[] }
               <div className={`provider-more ${open ? "open" : ""}`}>
                 <ul className="provider-list">
                   {rest.map((provider) => (
-                    <ProviderRow key={provider.provider} provider={provider} />
+                    <ProviderRow
+                      key={provider.provider}
+                      provider={provider}
+                      selected={provider.provider === selected}
+                      onSelect={onSelect}
+                    />
                   ))}
                 </ul>
               </div>

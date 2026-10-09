@@ -1169,6 +1169,75 @@ def test_the_trend_carries_tokens_alongside_cost(app_env, tenant_id):
     assert month["cache_rate"] == 25.0
 
 
+def test_each_trend_month_splits_by_vendor_and_adds_up(app_env, tenant_id):
+    may, apr = dt.date(2026, 5, 1), dt.date(2026, 4, 1)
+    app_env.execute(
+        """
+        INSERT INTO inference_cost (tenant_id, provider, model, amount, period, source,
+                                    confidence, tokens_in, cached_tokens_in, tokens_out)
+        VALUES (%s, 'anthropic', 'c', 70, %s, 'cost_api', 'high', 1000, 250, 400),
+               (%s, 'openai', 'gpt', 20, %s, 'cost_api', 'high', 300, 0, 100),
+               (%s, 'anthropic', 'c', 40, %s, 'cost_api', 'high', 500, 0, 200)
+        """,
+        (tenant_id, may, tenant_id, may, tenant_id, apr),
+    )
+    app_env.execute(
+        "INSERT INTO build_cost (tenant_id, tool, amount, period, confidence) "
+        "VALUES (%s, 'cursor', 10, %s, 'high')",
+        (tenant_id, may),
+    )
+    app_env.commit()
+
+    data = dashboard.dashboard(tenant_id, range_token="last_3_months")
+    trend = {t["period"]: t for t in data["trend"]}
+    may_split = trend["2026-05-01"]["by_provider"]
+    # Largest first, each vendor keeping its own build/inference split.
+    assert [p["provider"] for p in may_split] == ["anthropic", "openai", "cursor"]
+    assert may_split[0] == {
+        "provider": "anthropic",
+        "build_cost": 0.0,
+        "inference_cost": 70.0,
+        "tokens_in": 1000,
+        "cached_tokens_in": 250,
+        "tokens_out": 400,
+    }
+    assert may_split[2]["build_cost"] == 10.0 and may_split[2]["inference_cost"] == 0.0
+    # A month's vendors add up to that month's bar, each kind on its own…
+    for month in data["trend"]:
+        split = month["by_provider"]
+        assert sum(p["build_cost"] for p in split) == pytest.approx(month["build_cost"])
+        assert sum(p["inference_cost"] for p in split) == pytest.approx(month["inference_cost"])
+        assert sum(p["tokens_in"] for p in split) == month["tokens_in"]
+    # …and a vendor's months add up to its line in the provider list.
+    for vendor in data["providers"]:
+        name = vendor["provider"]
+        months = [p for m in data["trend"] for p in m["by_provider"] if p["provider"] == name]
+        assert sum(p["build_cost"] + p["inference_cost"] for p in months) == pytest.approx(
+            vendor["amount"]
+        )
+    # A month with nothing in it has nothing to split, rather than a missing key.
+    assert trend["2026-03-01"]["by_provider"] == []
+
+
+def test_the_vendor_split_counts_one_dollar_once(app_env, tenant_id):
+    # A provider with both a connector and the SDK describes the same spend
+    # twice; the split reads it the way the bar beside it does.
+    may = dt.date(2026, 5, 1)
+    app_env.execute(
+        """
+        INSERT INTO inference_cost (tenant_id, provider, model, amount, period, source,
+                                    confidence)
+        VALUES (%s, 'anthropic', 'c', 70, %s, 'cost_api', 'high'),
+               (%s, 'anthropic', 'c', 65, %s, 'hook', 'high')
+        """,
+        (tenant_id, may, tenant_id, may),
+    )
+    app_env.commit()
+    [month] = dashboard.dashboard(tenant_id)["trend"]
+    assert month["inference_cost"] == 70.0
+    assert [p["inference_cost"] for p in month["by_provider"]] == [70.0]
+
+
 def test_a_month_with_no_tokens_reports_no_cache_rate_rather_than_dividing_by_zero(
     app_env, tenant_id
 ):
