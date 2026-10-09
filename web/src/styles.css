@@ -4904,6 +4904,34 @@ select.feature-bars-pick {
 
 /* Screenshots in the knowledge base: a quiet frame, never wider than the
    column, so a picture reads as part of the article rather than a banner. */
+/* A heading with its category's icon in front, in a quiet chip. */
+.kb-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.kb-mark {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  color: var(--ink-soft);
+}
+
+.kb-mark.md {
+  width: 30px;
+  height: 30px;
+}
+
+.kb-mark.sm {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
+
 .kb-figure {
   margin: 0.35rem 0 1.4rem;
 }

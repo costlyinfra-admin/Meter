@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { blockText, image } from "./blocks";
 import { ALL_TOPICS, CATEGORIES, findTopic } from "./content";
+import { CATEGORY_ICON } from "./icons";
 import { APP_ROUTES } from "./routes";
 import { search } from "./search";
 import { MIN_SDK } from "../pages/installPrompt";
@@ -203,5 +204,14 @@ describe("screenshots", () => {
     expect(blockText(image("overview.webp", "A chart"))).toBe("A chart");
     const hits = search("80% range").map((h) => `${h.category.slug}/${h.topic.slug}`);
     expect(hits).toContain("dashboards/forecast");
+  });
+});
+
+describe("category icons", () => {
+  it("gives every category its own icon, so a new one is not left with a generic mark", () => {
+    for (const category of CATEGORIES)
+      expect(CATEGORY_ICON, category.slug).toHaveProperty(category.slug);
+    const used = CATEGORIES.map((c) => CATEGORY_ICON[c.slug]);
+    expect(new Set(used).size).toBe(used.length);
   });
 });

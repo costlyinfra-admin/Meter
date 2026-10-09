@@ -39,6 +39,18 @@ describe("HelpPage", () => {
     expect(screen.getByText("The Overview for the demo organization.")).toBeInTheDocument();
   });
 
+  it("marks each heading with its category's icon, which screen readers skip", () => {
+    renderHelp("/help/alerts/creating");
+    const heading = screen.getByRole("heading", { name: "Creating an alert" });
+    const mark = heading.querySelector(".kb-mark")!;
+    expect(mark).toHaveAttribute("aria-hidden");
+    expect(mark.querySelector("svg")).not.toBeNull();
+    // The contents carry the same marks before each category.
+    renderHelp();
+    const toc = document.querySelectorAll(".kb-toc-cat h3 .kb-mark");
+    expect(toc.length).toBeGreaterThan(10);
+  });
+
   it("renders inline formatting as elements, not raw markup", () => {
     renderHelp("/help/concepts/build-vs-inference");
     const article = document.querySelector(".kb-article")!;

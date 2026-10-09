@@ -13,6 +13,18 @@ import { Link, useParams } from "react-router-dom";
 import { Blocks } from "../help/render";
 import { ALL_TOPICS, CATEGORIES, findTopic } from "../help/content";
 import { search } from "../help/search";
+import { LineIcon } from "../components/LineIcon";
+import { CATEGORY_ICON } from "../help/icons";
+
+/** A category's icon in its soft chip. Decorative: the heading beside it says
+ *  everything, so screen readers skip it. */
+function CategoryMark({ slug, size = "md" }: { slug: string; size?: "md" | "sm" }) {
+  return (
+    <span className={`kb-mark ${size}`} aria-hidden>
+      <LineIcon name={CATEGORY_ICON[slug] ?? "help"} size={size === "md" ? 17 : 14} />
+    </span>
+  );
+}
 
 export function HelpPage() {
   const { category: categorySlug, topic: topicSlug } = useParams();
@@ -94,7 +106,10 @@ export function HelpPage() {
           {current ? (
             <>
               <p className="kb-crumb muted">{current.category.title}</p>
-              <h2>{current.topic.title}</h2>
+              <h2 className="kb-heading">
+                <CategoryMark slug={current.category.slug} />
+                {current.topic.title}
+              </h2>
               <p className="kb-summary">{current.topic.summary}</p>
               <Blocks blocks={current.topic.blocks} />
 
@@ -123,7 +138,10 @@ export function HelpPage() {
               <div className="kb-toc">
                 {CATEGORIES.map((category) => (
                   <section key={category.slug} className="kb-toc-cat">
-                    <h3>{category.title}</h3>
+                    <h3 className="kb-heading">
+                      <CategoryMark slug={category.slug} size="sm" />
+                      {category.title}
+                    </h3>
                     <p className="muted">{category.blurb}</p>
                     <ul className="kb-list">
                       {category.topics.map((topic) => (
