@@ -60,7 +60,7 @@ export const CATEGORIES: Category[] = [
             "You need two connections to see something meaningful. Everything else is optional and can be added later.",
           ),
           steps(
-            "**Connect GitHub** on [Features](/features). Meter reads your merged pull requests to work out what features exist. Read-only, and a token is optional for public organisations.",
+            "**Connect GitHub** on [Features](/features). Either choose **Connect with GitHub**, sign in on GitHub and pick the organisation and repositories Meter may read, or paste a personal access token. Meter reads your merged pull requests to work out what features exist. Read-only either way, and a token is optional for public organisations.",
             "**Discover features.** Pick the repositories to analyse and run discovery. You get a list of proposed features, each with the pull requests behind it as evidence. Rename, split, merge or delete them until the list looks like your product.",
             "**Connect a provider** on [Connect sources](/cost-sources) — Anthropic, OpenAI, or whichever you use. Meter reads its cost API. Read-only, using your own admin credentials, stored encrypted.",
             "**Sync.** The first sync backfills twelve months so you have history immediately, not in a year.",

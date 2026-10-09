@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type ConnectorStatus } from "../../api";
 import { ConnectorRow } from "../../components/ConnectorRow";
+import { GitHubAppOption } from "../../components/GitHubAppOption";
 import { ReviewStep } from "./ReviewStep";
 import { UsageImport } from "../../components/UsageImport";
 
@@ -34,8 +35,8 @@ export function FeaturesStep() {
       <h2>Identify features</h2>
       <p className="muted">
         Meter reads your merged pull requests to propose the features you've shipped — the spine
-        that every cost attributes to. A token is optional for public organizations and required for
-        private repos. Read-only, stored encrypted.
+        that every cost attributes to. Connect by signing in with GitHub, or paste a token —
+        optional for public organizations, required for private repos. Read-only, stored encrypted.
       </p>
       {error && (
         <p className="error" role="alert">
@@ -52,6 +53,7 @@ export function FeaturesStep() {
               hint="feature discovery · optional for public orgs"
               expanded={openType === c.type}
               onToggle={() => setOpenType((t) => (t === c.type ? null : c.type))}
+              lead={c.type === "github" ? <GitHubAppOption connected={c.connected} /> : undefined}
             />
           ))}
         </ul>

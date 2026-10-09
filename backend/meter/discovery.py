@@ -22,7 +22,7 @@ from typing import Callable, Optional
 
 import httpx
 
-from . import build, credentials, discovery_llm, products
+from . import build, discovery_llm, github_app, products
 from .db import admin_dsn, app_dsn, connect, tenant_tx
 from .discovery_llm import (
     DEFAULT_DISCOVERY_MODEL,
@@ -749,7 +749,7 @@ def run_discovery(
 
     pr_by_ref = {pr.ref: pr for pr in prs}
     _persist_proposals(tenant_id, proposals, pr_by_ref, window=(covered_from, today))
-    _save_scope(tenant_id, owner, scope_to_save)
+    save_scope(tenant_id, owner, scope_to_save)
     # Regenerating proposals deletes the old ones, and build_cost.feature_id is
     # ON DELETE SET NULL — so previously-attributed build spend would silently fall
     # into Unattributed and stay there. Re-run the PR-authorship allocation over the
@@ -912,7 +912,7 @@ def get_scope(tenant_id: str) -> Optional[dict]:
     return {"owner": row[0], "repos": list(row[1] or [])}
 
 
-def _save_scope(tenant_id: str, owner: str, repos: list[str]) -> None:
+def save_scope(tenant_id: str, owner: str, repos: list[str]) -> None:
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
         conn.execute(
             """
@@ -1042,8 +1042,10 @@ def run_scheduled_discovery(now: Optional[dt.datetime] = None) -> list[dict]:
     results = []
     for tenant_id, owner, repos, lookback in due:
         tid = str(tenant_id)
-        token = credentials.get_secret(tid, "github")
         try:
+            # Inside the try: minting an installation's token can fail (the
+            # App was uninstalled), and that is this tenant's failed run.
+            token = github_app.tenant_token(tid)
             summary = run_discovery(
                 tid,
                 owner,

@@ -21,6 +21,7 @@ import { TracesPage } from "./pages/TracesPage";
 import { TraceDetail } from "./pages/TraceDetail";
 import { ApplicationsPage, ApplicationDetail } from "./pages/ApplicationsPage";
 import { FeaturesPage } from "./pages/FeaturesPage";
+import { GitHubCallbackPage } from "./pages/GitHubCallbackPage";
 import { InstallSdkPage } from "./pages/InstallSdkPage";
 import { Login } from "./pages/Login";
 import { HelpPage } from "./pages/HelpPage";
@@ -103,6 +104,8 @@ export function App() {
         <Route path="/traces/:id" element={<TraceDetail />} />
         <Route path="/forecast" element={<ForecastPage />} />
         <Route path="/features" element={<FeaturesPage />} />
+        {/* Where GitHub returns an admin after "Connect with GitHub". */}
+        <Route path="/github/callback" element={<GitHubCallbackPage />} />
         <Route path="/features/:id" element={<FeatureDetail />} />
         <Route path="/features/:featureId/test/:lever" element={<TestRecommendationPage />} />
         <Route path="/experiments/:id" element={<ExperimentPage />} />

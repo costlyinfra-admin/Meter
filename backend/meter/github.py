@@ -1,8 +1,9 @@
 """Read-only GitHub connector.
 
 Fetches merged pull requests (with repo, branch, author) for an owner over a
-time window. READ-ONLY: only GET requests are ever issued. The token is the
-customer's own personal access token, supplied per tenant (stored encrypted).
+time window. READ-ONLY: only GET requests are ever issued. The token is either
+the customer's own personal access token (stored encrypted), or a short-lived
+token for Meter's GitHub App installed on their organization (github_app.py).
 """
 
 from __future__ import annotations
@@ -126,8 +127,26 @@ class GitHubClient:
         which meant a token that could see twenty repos personally hid the other
         eighty the org listing would have returned. A partial answer must never
         win over a complete one, so both are asked and the results merged.
+
+        A GitHub App installation token is the exception: it has exactly the
+        repositories the customer chose when installing, and its own listing
+        says which. The org listing would add every PUBLIC repo besides, which
+        is not what anyone selected.
         """
         target = owner.lower()
+        if self.is_installation_token:
+            chosen = [
+                full
+                for full in self._list_installation_repos()
+                if full.split("/", 1)[0].lower() == target
+            ]
+            if chosen:
+                return chosen
+            raise GitHubError(
+                f"Meter's GitHub App can't see any repositories under '{owner}'. "
+                "Check the organization name, or choose repositories for Meter on GitHub.",
+                404,
+            )
         found: dict[str, None] = {}  # dict, not set: first-seen order is stable
 
         for full in self._list_accessible_repos():
@@ -179,6 +198,24 @@ class GitHubClient:
         except GitHubError:
             # Some token types can't call /user/repos; the org listing still can.
             return []
+
+    @property
+    def is_installation_token(self) -> bool:
+        """Whether this is a GitHub App installation token. GitHub prefixes
+        every one with `ghs_` (and personal tokens with `ghp_`/`github_pat_`)."""
+        return bool(self._token) and self._token.startswith("ghs_")
+
+    def _list_installation_repos(self) -> list[str]:
+        """The repositories an installation token was granted."""
+        names: list[str] = []
+        page = 1
+        while True:
+            resp = self._get("/installation/repositories", {"per_page": _PER_PAGE, "page": page})
+            batch = resp.json().get("repositories", [])
+            names.extend(repo["full_name"] for repo in batch)
+            if len(batch) < _PER_PAGE:
+                return names
+            page += 1
 
     def _paginate_full_names(self, path: str, extra_params: Optional[dict] = None) -> list[str]:
         names: list[str] = []

@@ -585,6 +585,34 @@ export interface ConnectorStatus {
   supports_multiple?: boolean;
 }
 
+/** Connecting GitHub by signing in, through Meter's GitHub App. */
+export interface GitHubAppStatus {
+  /** Whether this deployment offers the sign-in option at all. */
+  configured: boolean;
+  /** GitHub's own screen for choosing an organization and its repositories. */
+  install_url: string | null;
+  /** The installation the tenant is connected through; null for a pasted token. */
+  connection: GitHubAppConnection | null;
+}
+
+export interface GitHubAppConnection {
+  installation_id: number;
+  account: string | null;
+  /** Where to change which repositories Meter may read, or remove it. */
+  manage_url: string | null;
+}
+
+/** An installation the signed-in person can connect, with the short-lived
+ *  claim that connecting it takes. */
+export interface GitHubAppInstallation {
+  installation_id: number;
+  account: string;
+  account_type: string;
+  /** "all" or "selected" repositories, as chosen on GitHub. */
+  repository_selection: string;
+  claim: string;
+}
+
 export interface FeatureSignal {
   id: string;
   signal_type: string;
@@ -2357,6 +2385,22 @@ export const api = {
   /** The accounts stored for a connector. Never includes a secret. */
   connectorCredentials: (connectorType: string) =>
     request<{ credentials: ConnectorCredential[] }>(`/connectors/${connectorType}/credentials`),
+
+  githubApp: () => request<GitHubAppStatus>("/github/app"),
+
+  /** Which installations the person who just signed in on GitHub can connect.
+   *  Stores nothing. */
+  githubAppVerify: (code: string, installationId?: number) =>
+    request<{ installations: GitHubAppInstallation[] }>("/github/app/verify", {
+      method: "POST",
+      body: JSON.stringify({ code, installation_id: installationId }),
+    }),
+
+  githubAppConnect: (claim: string) =>
+    request<{ account: string; connection: GitHubAppConnection | null }>("/github/app/connect", {
+      method: "POST",
+      body: JSON.stringify({ claim }),
+    }),
 
   deleteCredential: (connectorType: string, credentialId: string) =>
     request<void>(`/connectors/${connectorType}/credentials/${credentialId}`, {

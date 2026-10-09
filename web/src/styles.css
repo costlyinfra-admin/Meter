@@ -1424,6 +1424,87 @@ select {
   border-top: 1px solid var(--line);
 }
 
+/* "Connect with GitHub": the sign-in option above the token form. */
+.github-app-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.github-app-option h4 {
+  margin: 0;
+}
+
+.github-app-option p {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.github-app-option.connected {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+}
+
+.github-app-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+/* A rule with the words in it: the two ways to connect read as alternatives. */
+.github-app-option .github-app-or {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  margin-top: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.github-app-option .github-app-or::before,
+.github-app-option .github-app-or::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+/* The callback page's "which organization?" list. */
+.github-installations {
+  list-style: none;
+  margin: 1rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.github-installations li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.github-installation-name {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.github-installation-name .muted {
+  font-size: 0.8rem;
+}
+
 /* The replace-credential panel on a connected row. Sits above the provider's
    own detail: it is why someone opens Configure on a connector that already
    works, and a long list of workspaces or keys below it would push the form

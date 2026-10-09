@@ -51,6 +51,7 @@ from . import (
     features,
     focus,
     forecast,
+    github_app,
     hook,
     human_effort,
     inference,
@@ -422,6 +423,18 @@ class CredentialRequest(BaseModel):
     #: Which stored credential to replace. Omitted means "add another account
     #: under this connector" — a tenant may hold several.
     credential_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class GitHubVerifyRequest(BaseModel):
+    # The one-time code GitHub sends back after the person signs in.
+    code: str = Field(min_length=1, max_length=200)
+    # The installation GitHub says was just made. A hint only: it can be forged,
+    # so it narrows the answer and is never trusted on its own.
+    installation_id: Optional[int] = Field(default=None, ge=1)
+
+
+class GitHubConnectRequest(BaseModel):
+    claim: str = Field(min_length=1, max_length=2000)
 
 
 class DiscoveryRequest(BaseModel):
@@ -868,6 +881,8 @@ def _real_user(request: Request) -> auth.User:
 
 def _raise_github(exc: GitHubError):
     """Map a GitHubError to a user-facing HTTP error (shared by discovery routes)."""
+    if isinstance(exc, github_app.GitHubAppError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if exc.status == 401:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1122,6 +1137,66 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+    # ---- Connect with GitHub (sign in, choose repositories) -------------
+    # The second way to connect GitHub, beside pasting a token. See
+    # github_app.py for why an installation id is never taken on trust.
+    @app.get("/api/github/app")
+    def github_app_status(user: CurrentUser) -> dict:
+        ready = github_app.configured()
+        return {
+            "configured": ready,
+            "install_url": github_app.install_url() if ready else None,
+            "connection": github_app.connection(user["tenant_id"]),
+        }
+
+    @app.post("/api/github/app/verify")
+    def github_app_verify(body: GitHubVerifyRequest, user: CurrentUser) -> dict:
+        """Which installations the person who just signed in can connect.
+
+        Nothing is stored here. Each installation comes back with a short-lived
+        claim; connecting one is a separate, deliberate click.
+        """
+        try:
+            found = github_app.installations_for_code(body.code)
+        except GitHubError as exc:
+            _raise_github(exc)
+        if body.installation_id is not None:
+            found = [i for i in found if i["installation_id"] == body.installation_id]
+            if not found:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Your GitHub account can't see that installation of Meter. "
+                    "Sign in as someone who can, or connect with GitHub again.",
+                )
+        return {
+            "installations": [
+                {
+                    **inst,
+                    "claim": github_app.make_claim(
+                        user["tenant_id"], user["id"], inst["installation_id"], inst["account"]
+                    ),
+                }
+                for inst in found
+            ]
+        }
+
+    @app.post("/api/github/app/connect")
+    def github_app_connect(body: GitHubConnectRequest, user: CurrentUser) -> dict:
+        try:
+            installation_id, account = github_app.read_claim(
+                body.claim, user["tenant_id"], user["id"]
+            )
+        except GitHubError as exc:
+            _raise_github(exc)
+        github_app.connect(user["tenant_id"], installation_id, account)
+        # Point discovery at the organization just connected. The repositories
+        # were chosen on GitHub, so an empty selection here means "all of the
+        # ones Meter was given" rather than the whole organization.
+        scope = discovery.get_scope(user["tenant_id"])
+        if scope is None or (scope["owner"] or "").lower() != account.lower():
+            discovery.save_scope(user["tenant_id"], account, [])
+        return {"account": account, "connection": github_app.connection(user["tenant_id"])}
+
     # ---- Feature discovery + editing (wizard step 2) --------------------
     @app.get("/api/discovery/repos")
     def discovery_repos(
@@ -1129,8 +1204,8 @@ def create_app() -> FastAPI:
     ) -> dict:
         # List an org's repositories so the user can pick which to analyze (before
         # running discovery). Token optional (public orgs work unauthenticated).
-        token = credentials.get_secret(user["tenant_id"], "github")
         try:
+            token = github_app.tenant_token(user["tenant_id"])
             return {"owner": owner, "repos": discovery.list_repos(owner, token)}
         except GitHubError as exc:
             _raise_github(exc)
@@ -1144,8 +1219,8 @@ def create_app() -> FastAPI:
     def run_discovery(body: DiscoveryRequest, user: CurrentUser) -> dict:
         # Token is optional: without a connected GitHub credential, discovery
         # analyzes PUBLIC organizations/repos via GitHub's unauthenticated API.
-        token = credentials.get_secret(user["tenant_id"], "github")
         try:
+            token = github_app.tenant_token(user["tenant_id"])
             return discovery.run_discovery(
                 user["tenant_id"],
                 body.owner,
@@ -1820,7 +1895,10 @@ def create_app() -> FastAPI:
 
     @app.post("/api/build/copilot/sync")
     def sync_copilot_seats(body: CopilotSyncRequest, user: CurrentUser) -> dict:
-        token = credentials.get_secret(user["tenant_id"], "github")
+        try:
+            token = github_app.tenant_token(user["tenant_id"])
+        except GitHubError as exc:
+            _raise_github(exc)
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

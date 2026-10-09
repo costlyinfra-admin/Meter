@@ -15,7 +15,7 @@ import os
 from collections import defaultdict
 from typing import Optional
 
-from . import credentials, discovery, inference, infrastructure, optimize_measured
+from . import credentials, discovery, github_app, inference, infrastructure, optimize_measured
 from .db import admin_dsn, connect
 from .github import GitHubClient
 from .providers import make_cost_client, month_start
@@ -211,8 +211,13 @@ def test_connection(tenant_id: str, connector_type: str) -> dict:
         return _log_sync(tenant_id, connector_type, "test", "error", error="No credential stored.")
     try:
         if connector_type == "github":
-            with GitHubClient(secret) as gh:
-                repos = gh._list_accessible_repos()
+            # A stored installation is not a token; mint one for it first.
+            with GitHubClient(github_app.tenant_token(tenant_id)) as gh:
+                repos = (
+                    gh._list_installation_repos()
+                    if gh.is_installation_token
+                    else gh._list_accessible_repos()
+                )
             return _log_sync(tenant_id, connector_type, "test", "success", records=len(repos))
         if connector_type in infrastructure.LIVE_PROVIDERS:
             # A one-day window: enough for AWS to accept or reject the credential,
@@ -244,7 +249,7 @@ def sync_now(tenant_id: str, connector_type: str) -> dict:
                     "error",
                     error="Set the GitHub org/owner as the credential label to sync.",
                 )
-            result = discovery.run_discovery(tenant_id, owner, secret)
+            result = discovery.run_discovery(tenant_id, owner, github_app.tenant_token(tenant_id))
             records = int(result.get("proposals", 0))
         elif connector_type in infrastructure.LIVE_PROVIDERS:
             # Infrastructure connectors read a cloud bill, not a model provider's

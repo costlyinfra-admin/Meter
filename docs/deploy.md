@@ -137,6 +137,60 @@ Run either from the repo's **Actions** tab → pick the workflow → **Run workf
 
 ---
 
+## Connect with GitHub (optional, recommended)
+
+Customers can connect GitHub two ways on **Features**: paste a personal access
+token, or choose **Connect with GitHub**, sign in on github.com and pick the
+organization and repositories Meter may read. The second needs Meter to be
+registered with GitHub once, as a **GitHub App**. Until it is, the button is
+simply not shown and the token form works as before.
+
+Why an App and not "Sign in with GitHub": a GitHub sign-in token that can read
+private repositories also gets permission to *write* to them. An App's
+permissions are fixed by you, read-only, and GitHub enforces them.
+
+**Register it (once, about ten minutes):**
+
+1. On GitHub: your profile picture → **Settings → Developer settings → GitHub
+   Apps → New GitHub App** (or the same under your organization's settings, so
+   the App belongs to the company rather than a person).
+2. **Name:** e.g. `Meter by CostlyInfra` (this is what customers see).
+   **Homepage URL:** your app's URL.
+3. **Callback URL:** `https://<your app>/github/callback`
+   — and tick **Request user authorization (OAuth) during installation**.
+   Meter needs this: it is how it proves the person really owns the
+   organization they are connecting (the installation number GitHub sends
+   back can be faked; the sign-in cannot).
+4. Tick **Redirect on update**. Leave **Expire user authorization tokens** on.
+5. **Webhook:** untick **Active**. Meter does not use webhooks.
+6. **Permissions** — everything else stays "No access":
+   - Repository → **Pull requests: Read-only**
+   - Repository → **Metadata: Read-only** (GitHub requires it)
+   - Organization → **GitHub Copilot Business: Read-only** — only if customers
+     should be able to sync Copilot seats this way
+7. **Where can this GitHub App be installed?** → **Any account**.
+8. Create it. On the page that follows, note the **App ID** and **Client ID**,
+   click **Generate a new client secret**, and under **Private keys** click
+   **Generate a private key** (a `.pem` file downloads). The **slug** is the
+   last part of the App's public URL, `github.com/apps/<slug>`.
+
+**Then set five environment variables** on the web service (Render →
+Environment), and anywhere else Meter reads GitHub on a schedule:
+
+| Variable | Value |
+|---|---|
+| `GITHUB_APP_ID` | The App ID |
+| `GITHUB_APP_SLUG` | The slug from `github.com/apps/<slug>` |
+| `GITHUB_APP_CLIENT_ID` | The Client ID |
+| `GITHUB_APP_CLIENT_SECRET` | The client secret |
+| `GITHUB_APP_PRIVATE_KEY` | The whole `.pem` file. If the field is one line, replace line breaks with `\n` |
+
+All five are needed; with any missing, the option stays hidden. Meter stores
+only the installation's number for each customer, and asks GitHub for a fresh
+one-hour read-only token each time it reads. A customer can change which
+repositories Meter sees, or remove it, from GitHub at any time — the
+connection card links there.
+
 ## For customers installing the metering hook (optional)
 
 They point the SDK at:
@@ -159,6 +213,7 @@ using the ingest token from **POST `/api/hook/token`** (offered in onboarding).
 | `RESEND_API_KEY` | GitHub secrets (optional) | Resend API key — enables email alert delivery |
 | `ALERT_EMAIL_FROM` | GitHub secrets (optional) | Verified Resend sender address for alert emails |
 | `APP_BASE_URL` | GitHub secrets (optional) | App base URL for deep links in alert notifications |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY` | Render (optional) | "Connect with GitHub" — see the section above |
 
 ## The answering model (discovery + "Ask Meter")
 

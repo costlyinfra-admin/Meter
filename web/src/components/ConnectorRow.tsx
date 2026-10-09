@@ -26,6 +26,7 @@ export function ConnectorRow({
   expanded,
   onToggle,
   detail,
+  lead,
 }: {
   connector: ConnectorStatus;
   onConnected: () => void;
@@ -37,6 +38,9 @@ export function ConnectorRow({
   onToggle: () => void;
   /** Inline detail for a connected source (rendered under the row when expanded). */
   detail?: ReactNode;
+  /** Another way to connect, shown above the credential form whenever the
+   *  panel is open — GitHub's sign-in option. */
+  lead?: ReactNode;
 }) {
   const [secret, setSecret] = useState("");
   const [label, setLabel] = useState("");
@@ -160,6 +164,7 @@ export function ConnectorRow({
           list pushed the credential form off the bottom of the screen. */}
       {expanded && connector.connected && (
         <div className="connector-panel connector-rotate">
+          {lead}
           <div className="connector-rotate-head">
             <h4>{replacing || !multi ? `Replace ${noun}` : `Accounts`}</h4>
             <span className="muted">
@@ -247,6 +252,7 @@ export function ConnectorRow({
 
       {expanded && !connector.connected && (
         <div className="connector-panel">
+          {lead}
           {guide && (
             <div className="connector-guide">
               <p className="muted connector-guide-blurb">{guide.blurb}</p>

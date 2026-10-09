@@ -52,3 +52,15 @@ services:
         value: openai/gpt-oss-120b
       - key: METER_DISCOVERY_API_KEY
         sync: false
+      # "Connect with GitHub" (docs/deploy.md). Optional: leave all five unset
+      # and GitHub is connected by pasting a token, as before.
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_SLUG
+        sync: false
+      - key: GITHUB_APP_CLIENT_ID
+        sync: false
+      - key: GITHUB_APP_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false

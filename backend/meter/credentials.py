@@ -120,6 +120,8 @@ def save_credential(
     secret: str,
     label: Optional[str] = None,
     credential_id: Optional[str] = None,
+    *,
+    verified_installation: bool = False,
 ) -> str:
     """Store a connector secret. Returns the credential's id.
 
@@ -139,6 +141,14 @@ def save_credential(
         raise ValueError(f"Unknown connector type: {connector_type}")
     if not secret or not secret.strip():
         raise ValueError("A credential cannot be empty.")
+    if connector_type == "github" and secret.lstrip().startswith("{") and not verified_installation:
+        # A stored GitHub App installation is a JSON object naming an
+        # installation id, and Meter mints tokens for whatever id it names. One
+        # typed into the token box would skip the check that the person can see
+        # that installation — and read another organization's repositories.
+        # Only github_app's verified path may store that shape. No GitHub token
+        # starts with "{", so nothing real is refused.
+        raise ValueError("That is not a GitHub token. Use Connect with GitHub to sign in instead.")
     ciphertext = encrypt(secret)
     label = (label or "").strip()[:120] or None
     with connect(app_dsn()) as conn, tenant_tx(conn, tenant_id):
