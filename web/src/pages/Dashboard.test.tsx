@@ -535,6 +535,104 @@ describe("Dashboard (Overview)", () => {
     ).toBeInTheDocument();
   });
 
+  it("ranks features in a slim chart that follows the tab's filter and search", async () => {
+    const REPORT = {
+      ...TRIAGE,
+      feature_id: "f2",
+      name: "Report generator",
+      product_id: "p2",
+      product_name: "Customer Reporting",
+      build_cost: 400,
+      inference_cost: 900,
+      cost_per_user: 7.5,
+      requests: 1000,
+    };
+    vi.mocked(api.dashboard).mockResolvedValue({ ...DATA, features: [TRIAGE, REPORT] });
+    renderDashboard();
+    const chart = await screen.findByRole("region", { name: "Top features" });
+    const names = () =>
+      within(chart)
+        .queryAllByRole("button")
+        .filter((b) => b.classList.contains("provider-bar-toggle"))
+        .map((b) => b.querySelector(".provider-bar-name")!.textContent);
+
+    // Inference by default; Unattributed is ranked with them, being money too.
+    expect(names()).toEqual(["AI threat triage", "Report generator", "Unattributed"]);
+
+    // One measure at a time: build is its own ranking, never added to inference.
+    fireEvent.change(within(chart).getByRole("combobox", { name: "Rank features by" }), {
+      target: { value: "build_cost" },
+    });
+    expect(names()).toEqual(["Report generator", "AI threat triage", "Unattributed"]);
+    expect(within(chart).getByText("$400 · 65%")).toBeInTheDocument(); // of 400+181+30
+
+    // A per-user cost has no share and no Unattributed (it has no users).
+    fireEvent.change(within(chart).getByRole("combobox", { name: "Rank features by" }), {
+      target: { value: "cost_per_user" },
+    });
+    expect(names()).toEqual(["AI threat triage", "Report generator"]);
+    expect(within(chart).queryByText(/%/)).toBeNull();
+
+    // The tab's own search and product filter slice the chart with the table.
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search features" }), {
+      target: { value: "report" },
+    });
+    expect(names()).toEqual(["Report generator"]);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search features" }), {
+      target: { value: "" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by product" }), {
+      target: { value: "Threat Platform" },
+    });
+    fireEvent.change(within(chart).getByRole("combobox", { name: "Rank features by" }), {
+      target: { value: "inference_cost" },
+    });
+    // Spend with no feature has no product either, so a product view leaves it out.
+    expect(names()).toEqual(["AI threat triage"]);
+  });
+
+  it("leaves a tool out of the build trend when it is left out of the list", async () => {
+    const month = (period: string, cursor: number, copilot: number) => ({
+      period,
+      amount: cursor + copilot,
+      by_tool: [
+        { tool: "cursor", amount: cursor },
+        { tool: "copilot", amount: copilot },
+      ],
+    });
+    vi.mocked(api.providerSpend).mockResolvedValue({
+      ...EMPTY_SPEND,
+      total: 100,
+      by_provider: [{ provider: "anthropic", amount: 100, pct: 100, requests: 1, by_model: [] }],
+      build_total: 1500,
+      build_by_tool: [
+        { tool: "cursor", amount: 1200, pct: 80 },
+        { tool: "copilot", amount: 300, pct: 20 },
+      ],
+      build_trend: [month("2026-04-01", 500, 100), month("2026-05-01", 700, 200)],
+    });
+    renderDashboard();
+    fireEvent.click(await screen.findByRole("tab", { name: "By Provider" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Build cost" }));
+    const legend = await screen.findByRole("group", { name: "Build cost by tool" });
+    expect(within(legend).getByRole("button", { name: /^Cursor/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    fireEvent.click(screen.getByTitle("Leave Cursor out"));
+    expect(within(legend).getByRole("button", { name: /^Cursor/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(document.querySelectorAll('.stacked-seg[data-series="cursor"]')).toHaveLength(0);
+    expect(document.querySelectorAll('.stacked-seg[data-series="copilot"]')).toHaveLength(2);
+
+    // And the other way: the legend puts it back in the list.
+    fireEvent.click(within(legend).getByRole("button", { name: /^Cursor/ }));
+    expect(screen.getByTitle("Leave Cursor out")).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("sends build and run to the half of the breakdown that explains them", async () => {
     vi.mocked(api.providerSpend).mockResolvedValue({
       ...EMPTY_SPEND,

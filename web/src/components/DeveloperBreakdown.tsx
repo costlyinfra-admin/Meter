@@ -9,8 +9,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, type DiscoveryScope, type ProviderSpend, type ReviewRange } from "../api";
 import { compact, money, num, prettyTool, unitMoney } from "../format";
+import { BuildTrend } from "./BuildTrend";
 import { SpendBars } from "./SpendBars";
-import { TrendChart } from "./TrendChart";
 
 export function DeveloperBreakdown({
   range,
@@ -24,6 +24,8 @@ export function DeveloperBreakdown({
   // Bumped when a discovery run finishes here, so the tables reflect what it
   // just collected without the reader having to reload the page.
   const [reload, setReload] = useState(0);
+  // Developers left out, shared by the trend and the list beside it.
+  const [devsHidden, setDevsHidden] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     let active = true;
@@ -62,13 +64,19 @@ export function DeveloperBreakdown({
         <section className="detail-section">
           <div className="inference-body">
             <div className="inference-col">
-              <span className="chart-title">Trend</span>
-              <TrendChart trend={data.build_trend} />
+              <span className="chart-title">Trend · by developer</span>
+              <BuildTrend
+                trend={data.build_trend}
+                by="developer"
+                hidden={devsHidden}
+                onHiddenChange={setDevsHidden}
+              />
             </div>
             <div className="inference-col">
               <span className="chart-title">By developer · {money(data.build_total)} total</span>
               <SpendBars
                 rows={data.build_by_developer.map((d) => ({
+                  key: d.developer_id,
                   label: d.label,
                   amount: d.amount,
                   pct: d.pct,
@@ -78,6 +86,8 @@ export function DeveloperBreakdown({
                     pct: t.pct,
                   })),
                 }))}
+                hidden={devsHidden}
+                onHiddenChange={setDevsHidden}
               />
             </div>
           </div>

@@ -9,23 +9,37 @@
  *
  * Classification (what kind of spend) is a different dimension from the By-provider
  * section below (where spend comes from) — this chart only answers "what kind".
+ *
+ * Any classification can be switched off from the legend, in either view: the
+ * bars drop that segment and the line totals only what is still shown.
  */
 import { useId, useState } from "react";
 import { type ClassificationTrendPoint } from "../api";
 import { money, wholeMoney } from "../format";
 import { smoothArea, smoothLine } from "../chartCurve";
+import { toggled } from "../spendTrend";
 import { GRID_LEVELS, niceCeil } from "./chartAxis";
 import { ChartHoverCard, HoverRow } from "./ChartHoverCard";
+import { ChartLegend } from "./ChartLegend";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // Bottom-to-top stacking order + labels. Keys match the API buckets.
 const BUCKETS = [
-  { key: "production", label: "Production" },
-  { key: "development", label: "Dev / Test" },
-  { key: "internal", label: "Internal" },
-  { key: "unclassified", label: "Unclassified" },
+  { key: "production", label: "Production", color: "var(--chart-1)" },
+  { key: "development", label: "Dev / Test", color: "var(--chart-3)" },
+  { key: "internal", label: "Internal", color: "var(--chart-2)" },
+  { key: "unclassified", label: "Unclassified", color: "var(--chart-none)" },
 ] as const;
+
+type Hidden = ReadonlySet<string>;
+const NONE: Hidden = new Set();
+
+/** A period's spend across the classifications still shown. */
+function shown(point: ClassificationTrendPoint, hidden: Hidden): number {
+  if (hidden.size === 0) return point.total;
+  return BUCKETS.reduce((sum, b) => (hidden.has(b.key) ? sum : sum + point[b.key]), 0);
+}
 
 type Granularity = "month" | "day";
 
@@ -59,8 +73,9 @@ export function ClassificationTrendChart({
   granularity?: Granularity;
 }) {
   const [mode, setMode] = useState<"bar" | "line">("bar");
+  const [hidden, setHidden] = useState<Hidden>(NONE);
   if (trend.length === 0) return <p className="muted">No data yet.</p>;
-  const max = Math.max(...trend.map((t) => t.total), 1);
+  const max = Math.max(...trend.map((t) => shown(t, hidden)), 0);
 
   return (
     <div>
@@ -83,24 +98,30 @@ export function ClassificationTrendChart({
         </button>
       </div>
 
-      {mode === "bar" ? (
-        <BarTrend trend={trend} max={max} granularity={granularity} />
+      {max <= 0 && hidden.size > 0 ? (
+        <p className="muted trend-empty">
+          Every classification is hidden. Click one in the legend below to bring it back.
+        </p>
+      ) : mode === "bar" ? (
+        <BarTrend trend={trend} max={Math.max(max, 1)} granularity={granularity} hidden={hidden} />
       ) : (
-        <LineTrend trend={trend} max={max} granularity={granularity} />
+        <LineTrend trend={trend} max={Math.max(max, 1)} granularity={granularity} hidden={hidden} />
       )}
 
       {granularity === "day" && <p className="trend-span muted">{spanCaption(trend)}</p>}
 
-      {mode === "bar" && (
-        <ul className="trend-legend" aria-label="Classification legend">
-          {BUCKETS.map((b) => (
-            <li key={b.key} className="trend-legend-item">
-              <span className={`trend-legend-swatch trend-seg-${b.key}`} aria-hidden />
-              {b.label}
-            </li>
-          ))}
-        </ul>
-      )}
+      <ChartLegend
+        label="Classification legend"
+        items={BUCKETS.map((b) => ({
+          key: b.key,
+          label: b.label,
+          color: b.color,
+          value: wholeMoney(trend.reduce((sum, t) => sum + t[b.key], 0)),
+        }))}
+        hidden={hidden}
+        onToggle={(key) => setHidden(toggled(hidden, key))}
+        onShowAll={() => setHidden(NONE)}
+      />
     </div>
   );
 }
@@ -173,14 +194,17 @@ function BarTrend({
   trend,
   max,
   granularity,
+  hidden,
 }: {
   trend: ClassificationTrendPoint[];
   max: number;
   granularity: Granularity;
+  hidden: Hidden;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const clipId = useId();
-  const peakIdx = trend.reduce((a, t, i) => (t.total > trend[a].total ? i : a), 0);
+  const totals = trend.map((t) => shown(t, hidden));
+  const peakIdx = totals.reduce((a, total, i) => (total > totals[a] ? i : a), 0);
   const dense = trend.length > DENSE_BAR_COUNT;
 
   const ceil = niceCeil(max);
@@ -196,8 +220,9 @@ function BarTrend({
     const cx = AXIS_W + i * slotW + slotW / 2;
     // A day with real but tiny spend still has to be visible, so the bar has a
     // floor; segments then divide whatever height it ended up with.
-    const height = t.total > 0 ? Math.max(2, PLOT_BOTTOM - y(t.total)) : 0;
-    return { t, i, cx, x: cx - barW / 2, height, top: PLOT_BOTTOM - height };
+    const total = totals[i];
+    const height = total > 0 ? Math.max(2, PLOT_BOTTOM - y(total)) : 0;
+    return { t, i, cx, x: cx - barW / 2, total, height, top: PLOT_BOTTOM - height };
   });
 
   return (
@@ -233,8 +258,8 @@ function BarTrend({
               <g clipPath={`url(#${clipId}-${b.i})`}>
                 {BUCKETS.map((bucket) => {
                   const value = b.t[bucket.key];
-                  if (value <= 0 || b.t.total <= 0) return null;
-                  const h = (value / b.t.total) * b.height;
+                  if (hidden.has(bucket.key) || value <= 0 || b.total <= 0) return null;
+                  const h = (value / b.total) * b.height;
                   const rectY = PLOT_BOTTOM - stacked - h;
                   stacked += h;
                   return (
@@ -251,7 +276,7 @@ function BarTrend({
               </g>
               {(!dense || b.i === peakIdx || b.i === hover) && (
                 <text className="trend-bar-value" x={b.cx} y={b.top - 7} textAnchor="middle">
-                  {wholeMoney(b.t.total)}
+                  {wholeMoney(b.total)}
                 </text>
               )}
             </g>
@@ -290,6 +315,7 @@ function BarTrend({
           point={trend[hover]}
           pct={(bars[hover].cx / VB_W) * 100}
           granularity={granularity}
+          hidden={hidden}
         />
       )}
     </div>
@@ -309,10 +335,12 @@ function LineTrend({
   trend,
   max,
   granularity,
+  hidden,
 }: {
   trend: ClassificationTrendPoint[];
   max: number;
   granularity: Granularity;
+  hidden: Hidden;
 }) {
   const [hover, setHover] = useState<number | null>(null);
 
@@ -321,12 +349,17 @@ function LineTrend({
   const x = (i: number) => AXIS_W + (n === 1 ? PLOT_W / 2 : (i / (n - 1)) * PLOT_W);
   const y = scale(ceil);
 
-  const points = trend.map((t, i) => ({ px: x(i), py: y(t.total), t }));
+  const points = trend.map((t, i) => ({
+    px: x(i),
+    py: y(shown(t, hidden)),
+    t,
+    total: shown(t, hidden),
+  }));
   // Monotone cubic: smooth, but it can never bow above a peak or below a
   // trough, so the curve never draws spend that did not happen.
   const line = smoothLine(points);
   const area = smoothArea(points, PLOT_BOTTOM);
-  const peakIdx = points.reduce((a, p, i) => (p.t.total > points[a].t.total ? i : a), 0);
+  const peakIdx = points.reduce((a, p, i) => (p.total > points[a].total ? i : a), 0);
   const active = hover ?? peakIdx; // the peak stays labelled until the user hovers
   const ap = points[active];
 
@@ -377,7 +410,7 @@ function LineTrend({
             y={Math.max(ap.py - 10, 12)}
             textAnchor="middle"
           >
-            {wholeMoney(ap.t.total)}
+            {wholeMoney(ap.total)}
           </text>
         )}
 
@@ -396,7 +429,12 @@ function LineTrend({
       </svg>
 
       {hover !== null && (
-        <HoverCard point={ap.t} pct={(ap.px / VB_W) * 100} granularity={granularity} />
+        <HoverCard
+          point={ap.t}
+          pct={(ap.px / VB_W) * 100}
+          granularity={granularity}
+          hidden={hidden}
+        />
       )}
     </div>
   );
@@ -407,11 +445,13 @@ function HoverCard({
   point,
   pct,
   granularity,
+  hidden,
 }: {
   point: ClassificationTrendPoint;
   /** Horizontal position of the highlighted point, as a % of the chart width. */
   pct: number;
   granularity: Granularity;
+  hidden: Hidden;
 }) {
   const workspaces = (point.workspaces ?? []).slice(0, 4);
   const rest = (point.workspaces ?? []).slice(4);
@@ -421,10 +461,10 @@ function HoverCard({
     <ChartHoverCard
       pct={pct}
       title={pointLabel(point.period, granularity)}
-      total={money(point.total)}
+      total={money(shown(point, hidden))}
     >
       <ul className="trend-hover-list">
-        {BUCKETS.filter((b) => point[b.key] > 0).map((b) => (
+        {BUCKETS.filter((b) => !hidden.has(b.key) && point[b.key] > 0).map((b) => (
           <HoverRow
             key={b.key}
             swatch={`trend-seg-${b.key}`}
@@ -433,7 +473,9 @@ function HoverCard({
           />
         ))}
       </ul>
-      {workspaces.length > 0 && (
+      {/* The workspace split is of the whole period, so it is shown only when
+          nothing is hidden — beside a narrowed total it would not add up. */}
+      {workspaces.length > 0 && hidden.size === 0 && (
         <>
           <span className="trend-hover-sub">By workspace</span>
           <ul className="trend-hover-list">

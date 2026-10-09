@@ -1948,6 +1948,39 @@ def spend_by_provider(
             for d in sorted(developers.values(), key=lambda d: -d["amount"])
         ]
 
+        # Each build-trend month split by tool and by developer, so the trend
+        # beside those two lists can be sliced the same ways. Same rows, same
+        # keys as the lists: a month's tools add up to its bar, and a tool's
+        # months add up to its line in the list.
+        labels = {
+            dev: developer_label(d["name"], d["handle"], fallback=d["developer_id"])
+            for dev, d in developers.items()
+        }
+        month_split: dict[str, dict[str, dict[str, float]]] = {}
+        for period, tool, developer_id, amount in conn.execute(
+            """
+            SELECT period, tool, developer_id, SUM(amount)
+            FROM build_cost
+            WHERE period BETWEEN %s AND %s
+            GROUP BY period, tool, developer_id
+            """,
+            (start, end),
+        ).fetchall():
+            split = month_split.setdefault(period.isoformat(), {"tool": {}, "dev": {}})
+            split["tool"][tool] = split["tool"].get(tool, 0.0) + float(amount)
+            dev = developer_id or "Unattributed"
+            split["dev"][dev] = split["dev"].get(dev, 0.0) + float(amount)
+        for point in build_trend:
+            split = month_split.get(point["period"], {"tool": {}, "dev": {}})
+            point["by_tool"] = [
+                {"tool": tool, "amount": amount}
+                for tool, amount in sorted(split["tool"].items(), key=lambda t: -t[1])
+            ]
+            point["by_developer"] = [
+                {"developer_id": dev, "label": labels.get(dev, dev), "amount": amount}
+                for dev, amount in sorted(split["dev"].items(), key=lambda t: -t[1])
+            ]
+
         # ---- Engineering activity per developer (what they shipped) --------
         # Build cost says what a developer's AI tooling cost; this says what came
         # out the other side. It reads PR evidence — the same feature_signal rows

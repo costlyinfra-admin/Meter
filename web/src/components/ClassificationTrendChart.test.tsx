@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ClassificationTrendChart } from "./ClassificationTrendChart";
 
@@ -50,6 +50,35 @@ function geometry() {
 }
 
 describe("ClassificationTrendChart", () => {
+  it("hides a classification from the legend, in the bars and in the line", () => {
+    render(<ClassificationTrendChart trend={DAILY} granularity="day" />);
+    const legend = screen.getByRole("group", { name: "Classification legend" });
+    fireEvent.click(within(legend).getByRole("button", { name: /^Dev \/ Test/ }));
+
+    // Only the unclassified $119 is left: one segment, and the bar says $119.
+    expect(document.querySelectorAll(".trend-seg-development")).toHaveLength(0);
+    expect(document.querySelectorAll(".trend-seg-unclassified")).toHaveLength(1);
+    expect(barValues()).toContain("$119");
+    expect(barValues()).not.toContain("$209");
+
+    // The hover card totals what is shown, and leaves the workspace split out:
+    // it is of the whole day, and beside a narrowed total it would not add up.
+    fireEvent.mouseEnter(bands()[2]);
+    const card = document.querySelector(".trend-hover-card")!;
+    expect(card.querySelector(".trend-hover-total")!.textContent).toBe("$119");
+    expect(card.textContent).not.toContain("Dev / Test");
+    expect(card.textContent).not.toContain("By workspace");
+
+    // The line totals the same narrowed figure.
+    fireEvent.click(screen.getByRole("button", { name: "Line" }));
+    expect(document.querySelector(".trend-line-label")!.textContent).toBe("$119");
+
+    fireEvent.click(within(legend).getByRole("button", { name: /^Unclassified/ }));
+    expect(screen.getByText(/Every classification is hidden/)).toBeInTheDocument();
+    fireEvent.click(within(legend).getByRole("button", { name: "Show all" }));
+    expect(document.querySelector(".trend-line-label")!.textContent).toBe("$209");
+  });
+
   it("labels daily bars by day number and shows the month once", () => {
     render(<ClassificationTrendChart trend={DAILY} granularity="day" />);
     // Day-of-month ticks, not "Aug" repeated.
@@ -75,9 +104,10 @@ describe("ClassificationTrendChart", () => {
     expect(document.querySelector(".trend-seg-fill")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Line" }));
-    // Line mode: the SVG line chart renders; the bar legend is gone.
+    // Line mode: the SVG line chart renders. The legend stays: it decides
+    // which classifications the line totals.
     expect(screen.getByRole("img", { name: "Total inference cost trend" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Classification legend")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Classification legend")).toBeInTheDocument();
     expect(document.querySelector(".trend-line-path")).not.toBeNull();
   });
 

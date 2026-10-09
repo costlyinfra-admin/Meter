@@ -1670,7 +1670,16 @@ export interface ProviderSpend {
     pct: number;
     by_tool: { tool: string; amount: number; pct: number }[];
   }[];
-  build_trend: { period: string; amount: number }[];
+  /** Build cost per month. Each month also carries its split by tool and by
+   *  developer, keyed as build_by_tool and build_by_developer are, so the trend
+   *  can be sliced the ways those lists are. Optional: an older server sends
+   *  the total alone. */
+  build_trend: {
+    period: string;
+    amount: number;
+    by_tool?: { tool: string; amount: number }[];
+    by_developer?: { developer_id: string; label: string; amount: number }[];
+  }[];
   customer_total: number;
   by_customer: { customer_id: string; amount: number; pct: number; requests: number | null }[];
   // Billed dollars split across token types (input / cache write / cache read /

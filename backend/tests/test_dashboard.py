@@ -1387,3 +1387,50 @@ def test_a_feature_in_one_product_is_never_counted_as_spanning(seeded, app_env):
     # Seeded state: every mapped repo belongs to exactly one product.
     assert rolled["unassigned"]["spanning_count"] == 0
     assert rolled["unassigned"]["feature_count"] > 0
+
+
+def test_each_build_trend_month_splits_by_tool_and_by_developer(app_env, tenant_id):
+    may, apr = dt.date(2026, 5, 1), dt.date(2026, 4, 1)
+    for developer_id, name, tool, amount, period in [
+        ("dev-a", "Ana", "cursor", 30, may),
+        ("dev-a", "Ana", "claude_code", 20, may),
+        ("dev-b", "Ben", "cursor", 10, may),
+        (None, None, "copilot", 5, may),  # a seat with no developer
+        ("dev-b", "Ben", "cursor", 40, apr),
+    ]:
+        app_env.execute(
+            "INSERT INTO build_cost (tenant_id, developer_id, developer_name, tool, amount, "
+            "period, confidence) VALUES (%s, %s, %s, %s, %s, %s, 'high')",
+            (tenant_id, developer_id, name, tool, amount, period),
+        )
+    app_env.commit()
+
+    data = dashboard.spend_by_provider(tenant_id, range_token="last_3_months")
+    by_period = {t["period"]: t for t in data["build_trend"]}
+    may_point = by_period["2026-05-01"]
+    # Largest first, and the same names the lists beside the chart use.
+    assert may_point["by_tool"] == [
+        {"tool": "cursor", "amount": 40.0},
+        {"tool": "claude_code", "amount": 20.0},
+        {"tool": "copilot", "amount": 5.0},
+    ]
+    devs = {d["developer_id"]: d for d in may_point["by_developer"]}
+    assert devs["dev-a"]["amount"] == 50.0
+    assert devs["Unattributed"]["amount"] == 5.0  # never silently dropped
+    listed = {d["developer_id"]: d["label"] for d in data["build_by_developer"]}
+    assert {d["developer_id"]: d["label"] for d in may_point["by_developer"]} == {
+        k: listed[k] for k in devs
+    }
+    # Each month's parts add up to its bar…
+    for point in data["build_trend"]:
+        assert sum(t["amount"] for t in point["by_tool"]) == pytest.approx(point["amount"])
+        assert sum(d["amount"] for d in point["by_developer"]) == pytest.approx(point["amount"])
+    # …and a tool's months add up to its line in the list.
+    for tool in data["build_by_tool"]:
+        months = [
+            t["amount"]
+            for p in data["build_trend"]
+            for t in p["by_tool"]
+            if t["tool"] == tool["tool"]
+        ]
+        assert sum(months) == pytest.approx(tool["amount"])

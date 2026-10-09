@@ -18,6 +18,7 @@ import {
 import { CategoryBadge, ConfidenceBadge, ProductBadge, WorthBadge } from "../components/badges";
 import { CustomerBreakdown } from "../components/CustomerBreakdown";
 import { DeveloperBreakdown } from "../components/DeveloperBreakdown";
+import { FeatureBars } from "../components/FeatureBars";
 import { OnboardingChecklist } from "../components/OnboardingChecklist";
 import { PeriodSelector } from "../components/PeriodSelector";
 import { ProductBreakdown } from "../components/ProductBreakdown";
@@ -487,82 +488,90 @@ export function Dashboard() {
           </p>
         </div>
       ) : data && tab === "features" ? (
-        <div className="mini-table-wrap">
-          <table className="features-table">
-            <thead>
-              <tr>
-                <th>Feature</th>
-                <th title="Which product this feature is part of">Product</th>
-                <th title="What kind of feature this is">Type</th>
-                <th className="num">Build cost</th>
-                <th className="num">{data.months > 1 ? "Inference" : "Inference / mo"}</th>
-                <th className="num">Active users</th>
-                <th className="num">Cost / user</th>
-                <th className="num">Requests</th>
-                <th className="num" title="Monthly savings the Optimize engine can defend">
-                  Potential savings
-                </th>
-                <th title="Cost per active user, relative to your other features">Cost health</th>
-                <th>Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleFeatures.map((f) => (
-                <tr
-                  key={f.feature_id}
-                  className="feature-row"
-                  onClick={() => navigate(`/features/${f.feature_id}`)}
-                >
-                  <td>
-                    <Link to={`/features/${f.feature_id}`} onClick={(e) => e.stopPropagation()}>
-                      {f.name}
-                    </Link>
-                  </td>
-                  <td>
-                    <ProductBadge product={f.product_name} source={f.product_source} />
-                  </td>
-                  <td>
-                    <CategoryBadge category={f.category} source={f.category_source} />
-                  </td>
-                  <td className="num">{money(f.build_cost)}</td>
-                  <td className="num">{money(f.inference_cost)}</td>
-                  <td className="num">{num(f.active_users)}</td>
-                  <td className="num">{money(f.cost_per_user)}</td>
-                  <td className="num" title="AI model calls this feature made">
-                    {compact(f.requests)}
-                  </td>
-                  <td className="num savings-cell">
-                    {/* Loaded separately; a dash means not yet known, which is not
+        <>
+          {/* Ranks what the filter and search above leave in the table, so
+              slicing one slices the other. */}
+          <FeatureBars
+            features={visibleFeatures}
+            unattributed={product ? null : data.unattributed}
+          />
+          <div className="mini-table-wrap">
+            <table className="features-table">
+              <thead>
+                <tr>
+                  <th>Feature</th>
+                  <th title="Which product this feature is part of">Product</th>
+                  <th title="What kind of feature this is">Type</th>
+                  <th className="num">Build cost</th>
+                  <th className="num">{data.months > 1 ? "Inference" : "Inference / mo"}</th>
+                  <th className="num">Active users</th>
+                  <th className="num">Cost / user</th>
+                  <th className="num">Requests</th>
+                  <th className="num" title="Monthly savings the Optimize engine can defend">
+                    Potential savings
+                  </th>
+                  <th title="Cost per active user, relative to your other features">Cost health</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleFeatures.map((f) => (
+                  <tr
+                    key={f.feature_id}
+                    className="feature-row"
+                    onClick={() => navigate(`/features/${f.feature_id}`)}
+                  >
+                    <td>
+                      <Link to={`/features/${f.feature_id}`} onClick={(e) => e.stopPropagation()}>
+                        {f.name}
+                      </Link>
+                    </td>
+                    <td>
+                      <ProductBadge product={f.product_name} source={f.product_source} />
+                    </td>
+                    <td>
+                      <CategoryBadge category={f.category} source={f.category_source} />
+                    </td>
+                    <td className="num">{money(f.build_cost)}</td>
+                    <td className="num">{money(f.inference_cost)}</td>
+                    <td className="num">{num(f.active_users)}</td>
+                    <td className="num">{money(f.cost_per_user)}</td>
+                    <td className="num" title="AI model calls this feature made">
+                      {compact(f.requests)}
+                    </td>
+                    <td className="num savings-cell">
+                      {/* Loaded separately; a dash means not yet known, which is not
                       the same answer as nothing to save. */}
-                    {savings ? money(savings.byFeature[f.feature_id] ?? 0) : "—"}
-                  </td>
-                  <td>
-                    <WorthBadge value={f.worth_it} />
-                  </td>
-                  <td>
-                    <ConfidenceBadge level={f.confidence} />
-                  </td>
-                </tr>
-              ))}
-              {!product && (
-                <tr className="unattributed-row">
-                  <td>Unattributed</td>
-                  <td className="muted">—</td>
-                  <td className="muted">—</td>
-                  <td className="num">{money(data.unattributed.build_cost)}</td>
-                  <td className="num">{money(data.unattributed.inference_cost)}</td>
-                  <td className="num">—</td>
-                  <td className="num">—</td>
-                  <td className="num">—</td>
-                  <td className="num">—</td>
-                  <td colSpan={2} className="muted">
-                    spend not yet mapped to a feature
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                      {savings ? money(savings.byFeature[f.feature_id] ?? 0) : "—"}
+                    </td>
+                    <td>
+                      <WorthBadge value={f.worth_it} />
+                    </td>
+                    <td>
+                      <ConfidenceBadge level={f.confidence} />
+                    </td>
+                  </tr>
+                ))}
+                {!product && (
+                  <tr className="unattributed-row">
+                    <td>Unattributed</td>
+                    <td className="muted">—</td>
+                    <td className="muted">—</td>
+                    <td className="num">{money(data.unattributed.build_cost)}</td>
+                    <td className="num">{money(data.unattributed.inference_cost)}</td>
+                    <td className="num">—</td>
+                    <td className="num">—</td>
+                    <td className="num">—</td>
+                    <td className="num">—</td>
+                    <td colSpan={2} className="muted">
+                      spend not yet mapped to a feature
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : null}
 
       {data && tab === "features" && (

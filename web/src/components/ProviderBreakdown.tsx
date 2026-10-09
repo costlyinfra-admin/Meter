@@ -7,9 +7,9 @@
 import { useEffect, useState } from "react";
 import { api, type ProviderSpend, type ReviewRange } from "../api";
 import { compact, money, prettyTool } from "../format";
+import { BuildTrend } from "./BuildTrend";
 import { ClassificationTrendChart } from "./ClassificationTrendChart";
 import { SpendBars } from "./SpendBars";
-import { TrendChart } from "./TrendChart";
 
 const EMPTY: ProviderSpend = {
   start: "",
@@ -63,6 +63,8 @@ export function ProviderBreakdown({
   onSourceChange: (source: SpendSource) => void;
 }) {
   const [data, setData] = useState<ProviderSpend | null>(null);
+  // Tools left out, shared by the build trend and the list beside it.
+  const [toolsHidden, setToolsHidden] = useState<ReadonlySet<string>>(new Set());
   const sourceTab = source;
   const setSourceTab = onSourceChange;
 
@@ -242,17 +244,25 @@ export function ProviderBreakdown({
           ) : (
             <div className="inference-body">
               <div className="inference-col">
-                <span className="chart-title">Trend</span>
-                <TrendChart trend={data.build_trend} />
+                <span className="chart-title">Trend · by tool</span>
+                <BuildTrend
+                  trend={data.build_trend}
+                  by="tool"
+                  hidden={toolsHidden}
+                  onHiddenChange={setToolsHidden}
+                />
               </div>
               <div className="inference-col">
                 <span className="chart-title">By tool · {money(data.build_total)} total</span>
                 <SpendBars
                   rows={data.build_by_tool.map((t) => ({
+                    key: t.tool,
                     label: prettyTool(t.tool),
                     amount: t.amount,
                     pct: t.pct,
                   }))}
+                  hidden={toolsHidden}
+                  onHiddenChange={setToolsHidden}
                 />
               </div>
             </div>
