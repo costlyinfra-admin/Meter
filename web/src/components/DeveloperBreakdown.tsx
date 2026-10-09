@@ -114,40 +114,42 @@ export function DeveloperBreakdown({
             counts what was shipped, not how hard or how valuable it was, and a large PR is not a
             better one. Read it next to the spend above, never as a ranking of people.
           </p>
-          <table className="features-table">
-            <thead>
-              <tr>
-                <th>Developer</th>
-                <th className="num">PRs</th>
-                <th className="num">Features</th>
-                <th className="num">Commits</th>
-                <th className="num">Files</th>
-                <th className="num">Lines</th>
-                <th className="num">Build cost</th>
-                <th className="num">Cost / PR</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.developer_activity.map((d) => (
-                <tr key={d.handle}>
-                  <td>{d.label}</td>
-                  <td className="num">{num(d.prs)}</td>
-                  <td className="num" title="Distinct features their merged PRs touched">
-                    {num(d.features)}
-                  </td>
-                  <td className="num">{num(d.commits)}</td>
-                  <td className="num">{num(d.files_changed)}</td>
-                  <td className="num">
-                    <LineCounts added={d.additions} removed={d.deletions} />
-                  </td>
-                  <td className="num">{money(d.build_cost)}</td>
-                  <td className="num" title="AI coding-tool spend divided by PRs merged">
-                    {unitMoney(d.cost_per_pr)}
-                  </td>
+          <div className="mini-table-wrap">
+            <table className="features-table">
+              <thead>
+                <tr>
+                  <th>Developer</th>
+                  <th className="num">PRs</th>
+                  <th className="num">Features</th>
+                  <th className="num">Commits</th>
+                  <th className="num">Files</th>
+                  <th className="num">Lines</th>
+                  <th className="num">Build cost</th>
+                  <th className="num">Cost / PR</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.developer_activity.map((d) => (
+                  <tr key={d.handle}>
+                    <td>{d.label}</td>
+                    <td className="num">{num(d.prs)}</td>
+                    <td className="num" title="Distinct features their merged PRs touched">
+                      {num(d.features)}
+                    </td>
+                    <td className="num">{num(d.commits)}</td>
+                    <td className="num">{num(d.files_changed)}</td>
+                    <td className="num">
+                      <LineCounts added={d.additions} removed={d.deletions} />
+                    </td>
+                    <td className="num">{money(d.build_cost)}</td>
+                    <td className="num" title="AI coding-tool spend divided by PRs merged">
+                      {unitMoney(d.cost_per_pr)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
     </>

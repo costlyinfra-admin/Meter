@@ -95,6 +95,13 @@ describe("Cost by product", () => {
     expect(screen.queryByText("$10,854")).not.toBeInTheDocument();
   });
 
+  it("scrolls the table inside its own box, so a phone scrolls the table not the page", async () => {
+    // Measured pushing the Overview to 593px on a 375px phone before the wrapper.
+    renderTab();
+    const table = (await screen.findByRole("link", { name: "Threat Platform" })).closest("table")!;
+    expect(table.parentElement).toHaveClass("mini-table-wrap");
+  });
+
   it("says how many features a product holds, and which repositories it is built in", async () => {
     renderTab();
     const row = (await screen.findByRole("link", { name: "Threat Platform" })).closest("tr")!;

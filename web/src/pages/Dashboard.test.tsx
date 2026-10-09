@@ -1318,6 +1318,10 @@ describe("Dashboard (Overview)", () => {
 
     // Counting shipped work is not a performance rating, and the page says so.
     expect(screen.getByText(/activity, not performance/)).toBeInTheDocument();
+
+    // The table scrolls inside its own box. Without it the Overview was 658px
+    // wide on a 375px phone.
+    expect(bob.closest("table")!.parentElement).toHaveClass("mini-table-wrap");
   });
 
   it("shows spend per customer, with unit economics and coverage of the bill", async () => {

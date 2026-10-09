@@ -70,54 +70,56 @@ export function ProductBreakdown({
           </section>
 
           <section className="detail-section">
-            <table className="features-table">
-              <thead>
-                <tr>
-                  <th>Product</th>
-                  <th className="num">Build cost</th>
-                  <th className="num">{data.months > 1 ? "Inference" : "Inference / mo"}</th>
-                  <th className="num">Features</th>
-                  <th>Repositories</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.products.map((p) => (
-                  <tr key={p.product_id}>
-                    <td>
-                      <Link to="/products" className="link">
-                        {p.name}
-                      </Link>
-                    </td>
-                    <td className="num">{money(p.build_cost)}</td>
-                    <td className="num">{money(p.inference_cost)}</td>
-                    <td className="num">{num(p.feature_count)}</td>
+            <div className="mini-table-wrap">
+              <table className="features-table">
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th className="num">Build cost</th>
+                    <th className="num">{data.months > 1 ? "Inference" : "Inference / mo"}</th>
+                    <th className="num">Features</th>
+                    <th>Repositories</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.products.map((p) => (
+                    <tr key={p.product_id}>
+                      <td>
+                        <Link to="/products" className="link">
+                          {p.name}
+                        </Link>
+                      </td>
+                      <td className="num">{money(p.build_cost)}</td>
+                      <td className="num">{money(p.inference_cost)}</td>
+                      <td className="num">{num(p.feature_count)}</td>
+                      <td className="muted">
+                        {p.repos.length ? p.repos.join(", ") : "no repositories mapped"}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="unattributed-row">
+                    <td>Unassigned</td>
+                    <td className="num">{money(data.unassigned.build_cost)}</td>
+                    <td className="num">{money(data.unassigned.inference_cost)}</td>
+                    <td className="num">{num(data.unassigned.feature_count)}</td>
                     <td className="muted">
-                      {p.repos.length ? p.repos.join(", ") : "no repositories mapped"}
+                      <Link to="/products" className="link">
+                        features with no product
+                      </Link>
+                      {data.unassigned.spanning_count > 0 &&
+                        ` — ${data.unassigned.spanning_count} span more than one`}
                     </td>
                   </tr>
-                ))}
-                <tr className="unattributed-row">
-                  <td>Unassigned</td>
-                  <td className="num">{money(data.unassigned.build_cost)}</td>
-                  <td className="num">{money(data.unassigned.inference_cost)}</td>
-                  <td className="num">{num(data.unassigned.feature_count)}</td>
-                  <td className="muted">
-                    <Link to="/products" className="link">
-                      features with no product
-                    </Link>
-                    {data.unassigned.spanning_count > 0 &&
-                      ` — ${data.unassigned.spanning_count} span more than one`}
-                  </td>
-                </tr>
-                <tr className="unattributed-row">
-                  <td>Unattributed</td>
-                  <td className="num">{money(data.unattributed.build_cost)}</td>
-                  <td className="num">{money(data.unattributed.inference_cost)}</td>
-                  <td className="num">—</td>
-                  <td className="muted">spend not yet mapped to a feature</td>
-                </tr>
-              </tbody>
-            </table>
+                  <tr className="unattributed-row">
+                    <td>Unattributed</td>
+                    <td className="num">{money(data.unattributed.build_cost)}</td>
+                    <td className="num">{money(data.unattributed.inference_cost)}</td>
+                    <td className="num">—</td>
+                    <td className="muted">spend not yet mapped to a feature</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
             <p className="muted legend">
               Unassigned is spend on features that have no product yet — map a repository and it
               moves. Unattributed is spend Meter cannot tie to any feature, including the difference
