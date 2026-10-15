@@ -122,12 +122,37 @@ describe("rendering", () => {
     expect(html).not.toContain("*lowest*");
   });
 
-  it("carries a diagram's own description where the app draws it", () => {
+  it("draws a diagram as the app does: static SVG, named for screen readers", () => {
     const html = render([
       figure("confidence", "The caption <b>.", "Three levels, described in words."),
     ]);
-    expect(html).toContain("Three levels, described in words.");
+    expect(html).toMatch(/<svg[^>]*class="kf-svg"[^>]*role="img"/);
+    expect(html).toContain('aria-label="Three levels, described in words."');
+    // The diagram's words are real text in the page, not pixels.
+    expect(html).toContain(">A FEATURE TAKES ITS LOWEST PART</text>");
     expect(html).toContain("<figcaption>The caption &lt;b&gt;.</figcaption>");
+  });
+
+  it("gives two diagrams on one page arrows that do not borrow each other's", () => {
+    const html = render([
+      figure("reconciliation", "One.", "First."),
+      figure("sdk-data", "Two.", "Second."),
+    ]);
+    const ids = [...html.matchAll(/<marker id="([^"]+)"/g)].map((m) => m[1]);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) expect(html).toContain(`url(#${id})`);
+  });
+
+  it("draws every diagram the handbook uses, with nothing left out", () => {
+    const site = byPath(publish(SITE));
+    const used = CATEGORIES.flatMap((c) =>
+      c.topics
+        .filter((t) => t.blocks.some((b) => b.kind === "figure"))
+        .map((t) => `${c.slug}/${t.slug}`),
+    );
+    expect(used.length).toBeGreaterThan(10);
+    for (const id of used) expect(site.get(`${id}/index.html`)).toContain('class="kf-svg"');
   });
 
   it("keeps notes distinguishable from body text", () => {

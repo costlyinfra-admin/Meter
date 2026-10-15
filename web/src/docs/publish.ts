@@ -21,7 +21,11 @@
  * Rendering is pure: it takes content and returns files. Writing them to disk is
  * scripts/build-docs.mjs, so everything here is testable without a filesystem.
  */
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { Block } from "../help/blocks";
+import DIAGRAM_CSS from "../help/figures.css?raw";
+import { Figure } from "../help/figures";
 import { CATEGORIES, type Category, type Topic } from "../help/content";
 import { APP_ROUTES } from "../help/routes";
 
@@ -173,9 +177,15 @@ export function block(b: Block, site: Site, topics: Set<string>, where: string):
         `</div>`,
       ].join("\n");
     case "figure":
-      // The app draws these as SVG; the public site has no drawing yet, so it
-      // carries the diagram's own description rather than leaving a gap.
-      return `<figure class="diagram"><p>${escapeHtml(b.alt)}</p><figcaption>${md(b.caption)}</figcaption></figure>`;
+      // The very component the app draws, rendered to static SVG: one drawing,
+      // so the docs and the app cannot show two versions of a diagram. Its
+      // text is real text inside the SVG, readable without JavaScript, and its
+      // description is the SVG's accessible name. The prefix keeps the arrow
+      // markers' ids from colliding with another diagram's on the same page.
+      return renderToStaticMarkup(
+        createElement(Figure, { name: b.name, caption: b.caption, alt: b.alt }),
+        { identifierPrefix: `${where.replace(/[^a-z0-9]/gi, "")}${b.name.replace(/-/g, "")}` },
+      );
   }
 }
 
@@ -418,7 +428,8 @@ export function renderSite(categories: Category[], site: Site = DEFAULT_SITE): P
     ...all.map((e) => e.url),
   ];
   pages.push({ path: "sitemap.xml", body: sitemap(urls, site) });
-  pages.push({ path: "docs.css", body: STYLESHEET });
+  // The diagrams' own styles (help/figures.css), shared with the app.
+  pages.push({ path: "docs.css", body: `${STYLESHEET}\n${DIAGRAM_CSS}` });
   return pages;
 }
 
@@ -454,6 +465,21 @@ const STYLESHEET = `:root {
   --snippet-bg: #1a1c17;
   --snippet-ink: #e6ecd6;
   --code-tint: rgba(26, 28, 23, 0.07);
+  /* The diagrams' palette (help/figures.css), the app's values. */
+  --accent: #22241e;
+  --accent-ink: #fbfeec;
+  --surface-alt: #eae8e1;
+  --surface-raised: #fbfaf6;
+  --chart-1: #ddf859;
+  --chart-2: #2b7264;
+  --chart-3: #92661c;
+  --chart-4: #857ab8;
+  --chart-5: #e76740;
+  --good: #2b7264;
+  --warn: #92661c;
+  --on-fill: #ffffff;
+  --dots: radial-gradient(rgba(26, 28, 23, 0.14) 1.5px, transparent 1.5px);
+  --dots-size: 22px 22px;
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-display: "Space Grotesk", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
@@ -476,6 +502,19 @@ const STYLESHEET = `:root {
     --snippet-bg: #0d0e0a;
     --snippet-ink: #e6ecd6;
     --code-tint: rgba(243, 242, 234, 0.1);
+    --accent: #ddf859;
+    --accent-ink: #16180f;
+    --surface-alt: #2a2d23;
+    --surface-raised: #202219;
+    --chart-1: #ddf859;
+    --chart-2: #4fae98;
+    --chart-3: #cf9f45;
+    --chart-4: #a79ce0;
+    --chart-5: #ef7f5c;
+    --good: #6fc3ae;
+    --warn: #e0b45c;
+    --on-fill: #14150f;
+    --dots: radial-gradient(rgba(243, 242, 234, 0.09) 1.5px, transparent 1.5px);
     color-scheme: dark;
   }
 }

@@ -18,6 +18,7 @@
  */
 import { useId, type ReactNode } from "react";
 import type { FigureName } from "./blocks";
+import "./figures.css";
 
 // ---------------------------------------------------------------------------
 // Drawing helpers

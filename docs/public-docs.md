@@ -96,6 +96,17 @@ Chrome (set `CHROME` if it is not in the usual place) and needs nothing else.
 `web/src/help/images.test.mjs` fails if a topic names a missing file, a file
 is left unused, an image has no description, or one is over 300 KB.
 
+## Diagrams
+
+Topics can also show a diagram with a `figure(name, caption, alt)` block. The
+diagrams are React components in `web/src/help/figures.tsx`, drawn as inline
+SVG; the docs build renders the same components to static SVG, so a diagram
+is drawn once and the app and the docs cannot disagree. Their styles live in
+`web/src/help/figures.css`, which the app imports and the build appends to
+`docs.css`. Every colour in it is a token that both the app and the docs
+stylesheet define, in light and dark; `web/src/docs/diagramTokens.test.mjs`
+fails if one side is missing a token the diagrams use.
+
 ## Deploying
 
 The generated directory is static files; any static host serves it. `costlyinfra.com` is
