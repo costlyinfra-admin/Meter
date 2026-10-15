@@ -9,8 +9,29 @@
  * Rendering lives in render.tsx; this file is data and helpers only, so content
  * can be imported without pulling in React.
  */
+/** The diagrams figures.tsx can draw. Named here, so content stays React-free. */
+export const FIGURE_NAMES = [
+  "bill-split",
+  "build-vs-run",
+  "feature-spine",
+  "unattributed",
+  "reconciliation",
+  "confidence",
+  "sdk-data",
+  "savings-kinds",
+  "test-ways",
+  "prove-loop",
+  "forecast-cone",
+  "invoice-check",
+  "alert-flow",
+] as const;
+
+export type FigureName = (typeof FIGURE_NAMES)[number];
+
 export type Block =
   | { kind: "p"; text: string }
+  /** A diagram. `alt` is read to screen readers; `caption` sits under it. */
+  | { kind: "figure"; name: FigureName; caption: string; alt: string }
   | { kind: "list"; items: string[] }
   | { kind: "steps"; items: string[] }
   | { kind: "code"; text: string }
@@ -38,6 +59,12 @@ export const image = (file: string, alt: string, caption?: string): Block => ({
 
 /** Where a knowledge-base image is served in the app. */
 export const KB_IMAGE_DIR = "/kb";
+export const figure = (name: FigureName, caption: string, alt: string): Block => ({
+  kind: "figure",
+  name,
+  caption,
+  alt,
+});
 
 /** Drop the inline syntax, leaving the prose a reader would see.
  *
@@ -48,6 +75,7 @@ export function stripInline(text: string): string {
   return text
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*\s][^*]*)\*/g, "$1")
     .replace(/`([^`]+)`/g, "$1");
 }
 
@@ -67,5 +95,13 @@ export function blockText(block: Block): string {
       // What the picture shows is searchable, the same words a screen reader
       // hears; the file name is not.
       return [block.alt, block.caption ?? ""].map(stripInline).join(" ").trim();
+    case "figure":
+      return `${stripInline(block.caption)} ${block.alt}`;
   }
+}
+
+/** Minutes to read a topic, at a steady 200 words a minute. Never less than one. */
+export function readingMinutes(blocks: Block[]): number {
+  const words = blocks.map(blockText).join(" ").split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round(words / 200));
 }

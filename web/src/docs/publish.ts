@@ -59,7 +59,7 @@ export class UnresolvableLink extends Error {
 // ---------------------------------------------------------------------------
 // Inline syntax — the same tiny dialect render.tsx understands
 // ---------------------------------------------------------------------------
-const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\)|\*[^*\s][^*]*\*)/g;
 
 export function escapeHtml(text: string): string {
   return text
@@ -102,7 +102,7 @@ export function resolveLink(
   throw new UnresolvableLink(href, where);
 }
 
-/** Render **bold**, `code` and [label](/route) to HTML, escaping everything else. */
+/** Render **bold**, *emphasis*, `code` and [label](/route) to HTML, escaping everything else. */
 export function inline(text: string, site: Site, topics: Set<string>, where: string): string {
   return text
     .split(INLINE)
@@ -113,6 +113,9 @@ export function inline(text: string, site: Site, topics: Set<string>, where: str
       }
       if (part.startsWith("`") && part.endsWith("`")) {
         return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+      }
+      if (part.length > 2 && part.startsWith("*") && part.endsWith("*")) {
+        return `<em>${escapeHtml(part.slice(1, -1))}</em>`;
       }
       const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);
       if (!link) return escapeHtml(part);
@@ -169,6 +172,10 @@ export function block(b: Block, site: Site, topics: Set<string>, where: string):
         `</table>`,
         `</div>`,
       ].join("\n");
+    case "figure":
+      // The app draws these as SVG; the public site has no drawing yet, so it
+      // carries the diagram's own description rather than leaving a gap.
+      return `<figure class="diagram"><p>${escapeHtml(b.alt)}</p><figcaption>${md(b.caption)}</figcaption></figure>`;
   }
 }
 

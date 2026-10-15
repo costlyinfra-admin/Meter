@@ -7,7 +7,7 @@
  * claim about a number, it says where the number comes from, because that is the
  * product's whole premise.
  */
-import { code, image, list, note, p, steps, table, type Block } from "./blocks";
+import { code, figure, image, list, note, p, steps, table, type Block } from "./blocks";
 import { MIN_SDK } from "../pages/installPrompt";
 
 export interface Topic {
@@ -37,6 +37,11 @@ export const CATEGORIES: Category[] = [
         blocks: [
           p(
             "Your AI spend arrives as a handful of invoices: some model providers, some coding tools. It tells you **how much**, never **what for**. Meter disaggregates that bill into the thing you can actually make decisions about — cost **per feature**.",
+          ),
+          figure(
+            "bill-split",
+            "A month's bills go in; each feature comes out with its build cost and its run cost — and what fits no feature is shown as Unattributed.",
+            "Three bills — Anthropic, OpenAI and Cursor — flow into Meter, which splits them into three features, each with a build-cost bar and a run-cost bar, plus a dashed Unattributed row shown on its own.",
           ),
           p("Every feature gets two numbers, and they are never added together:"),
           list(
@@ -133,6 +138,11 @@ export const CATEGORIES: Category[] = [
           p(
             "**Inference cost** is what your features spend calling models in production. It recurs every month and scales with usage.",
           ),
+          figure(
+            "build-vs-run",
+            "Build cost arrives mostly up front; run cost recurs every month and grows with usage. Meter shows them side by side, never added together.",
+            "Twelve months of a feature's cost: lavender build-cost bars start tall and shrink to a small maintenance tail, while lime run-cost bars start small and grow every month. A label reads: two numbers, never added together.",
+          ),
           p(
             "Meter stores and displays them separately everywhere, including in the charts. A feature that cost $4,000 to build and $50/month to run is a very different proposition from one that cost $50 to build and $4,000/month to run, and one blended number cannot tell you which you have.",
           ),
@@ -146,12 +156,17 @@ export const CATEGORIES: Category[] = [
           p(
             "A feature is the unit everything hangs off. Build cost attributes to one, inference cost attributes to one, usage attributes to one.",
           ),
-          image(
-            "feature-detail.webp",
-            "A feature's page: its build cost by developer and tool, then its inference cost and trend for the selected period.",
+          figure(
+            "feature-spine",
+            "Build cost, inference cost and usage all attach to a feature — and anything that fits none goes to Unattributed.",
+            "A central Feature node connected to three cards: build cost from AI coding tools, inference cost from model calls, and usage. A fourth, dashed card reads Unattributed: anything that fits no feature.",
           ),
           p(
             "Features come from your merged pull requests. Meter clusters them into proposed features, and you confirm, rename, split or merge until the list matches how you actually think about your product. See [How discovery works](/help/features/discovery).",
+          ),
+          image(
+            "feature-detail.webp",
+            "A feature's page: its build cost by developer and tool, then its inference cost and trend for the selected period.",
           ),
           note(
             "Anything that cannot be attributed to a feature goes to **Unattributed** — visibly, as its own row. It is never spread across features to make the totals look tidy.",
@@ -165,6 +180,11 @@ export const CATEGORIES: Category[] = [
         blocks: [
           p(
             "Spend lands in Unattributed for a few distinct reasons, and they mean different things:",
+          ),
+          figure(
+            "unattributed",
+            "A $1,000 bill: $840 lands on three features, and the $160 that could not be attributed stays visible as its own slice.",
+            "A horizontal bar for a $1,000 provider bill split into Threat triage $380, Reports $240, SOC copilot $220, and a dashed Unattributed slice of $160, with a note listing why spend lands there: calls with no feature tag, a reconciliation gap, an unmatched PR author, a deleted feature.",
           ),
           table(
             ["Cause", "What it means", "What to do"],
@@ -206,6 +226,11 @@ export const CATEGORIES: Category[] = [
             "**The provider's cost API** is authoritative on **dollars**. It is what you will actually be invoiced.",
             "**Metered calls from the SDK** are authoritative on **resolution** — which feature, which customer, which model made each call.",
           ),
+          figure(
+            "reconciliation",
+            "The provider says how many dollars; metering says where they went. What metering cannot account for goes to Unattributed, so a lost event lowers attribution — never the bill.",
+            "Two sources feed a Reconcile step: the provider cost API, authoritative on dollars, reporting $1,000 billed; and the metering SDK, authoritative on resolution, reporting $940 metered by feature. The outputs are a per-feature split sized to the bill, and $60 Unattributed — the bill minus what was metered.",
+          ),
           p(
             "Every period, the metered total is compared against the provider total. If they tie out, the per-feature split is trustworthy. If the bill is higher, the difference goes to Unattributed. The provider API keeps metering honest; metering gives the provider API detail.",
           ),
@@ -233,6 +258,11 @@ export const CATEGORIES: Category[] = [
               ["**Med**", "Attributed by a strong but indirect signal, such as PR authorship"],
               ["**Low**", "Inferred from a weak signal — treat as directional"],
             ],
+          ),
+          figure(
+            "confidence",
+            "Three levels of confidence, and the rule that matters most: a feature takes the lowest confidence of its parts, not the average.",
+            "Three rows: High, with three filled dots, for costs metered per call or read from a provider cost API; Med, two dots, for a strong but indirect signal such as PR authorship; Low, one dot, for a weak signal. Below, inference at High plus build at Med equals a feature at Med — not an average.",
           ),
           p(
             "A feature's overall confidence is the *lowest* of its parts, not an average. A feature with precise inference cost and a rough build-cost estimate is only as trustworthy as the rough half, and says so.",
@@ -591,6 +621,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "how long the call took",
             "optionally, a customer identifier you supply in metadata",
           ),
+          figure(
+            "sdk-data",
+            "The SDK wraps your client: your calls go straight to the provider, and only numbers go to Meter. Prompts, responses, code and prices never leave your servers.",
+            "Inside a dashed boundary labelled your servers, your app feeds the Meter SDK, which wraps your client. Prompts, responses and source code stay inside. One arrow, the call itself, goes directly to the model provider; a dashed arrow labelled numbers only goes to Meter, carrying model, tokens in and out, latency and the feature id.",
+          ),
           p(
             "Metering never sends prompt text, response text, or source code. Cost is computed **server-side** from Meter's pricing tables, so the SDK never sees prices either. The one exception is optional: with capture switched on in the SDK (2.1 or later) **and** your organization's consent for the feature, it sends a small sample of prompt text for [Prompt optimization](/help/trust/prompt-optimization), on its own channel, and never tool calls, tool results, images or files.",
           ),
@@ -871,6 +906,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
           p(
             "**The next three months** follow a straight-line trend through up to six months of history, plus this month when it is far enough along to trust. The range widens the further out it looks. Fewer than three months of history is too little to draw a line through, and Meter says so rather than guessing. Seasonal patterns are not modelled.",
           ),
+          figure(
+            "forecast-cone",
+            "Actual spend, then the projection: a range that widens the further out it looks, drawn against your monthly budget.",
+            "A line chart: seven months of actual spend as a solid line with dots, then three projected months as a dashed line inside a shaded 80 percent range that widens with distance, approaching a dashed monthly budget line.",
+          ),
           p(
             "Inference and build are forecast separately. They are added together only where a figure is compared with your budget, which covers both — and that figure is labelled as a total.",
           ),
@@ -916,6 +956,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         title: "What the savings numbers mean",
         summary: "Observed spend is not saved money, and Meter will not call it that.",
         blocks: [
+          figure(
+            "savings-kinds",
+            "Four kinds of figure, from most to least certain. They are shown and totalled separately, never added into one number.",
+            "Four cards from more certain to less certain: Measured, seen in your own traffic and priced at list rate; Tested, held up on your own test cases; Modeled ceiling, an upper bound shown as a partly filled bar labelled up to; and Not quantified, spend worth a review with no claim of a saving.",
+          ),
           table(
             ["Label", "Meaning"],
             [
@@ -1033,6 +1078,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
             "**Realized** — the projection minus whatever this lever can still find. It says the opportunity shrank. On its own it cannot say why.",
             "**Verified** — the reduction held for more than one period **and** your provider's own billing shows a unit of this feature's work got cheaper.",
           ),
+          figure(
+            "prove-loop",
+            "An applied change moves from projected to realized to verified — and Meter's own prediction is held against your bill along the way.",
+            "Three stages on a track: Projected, frozen when you mark the change applied; Realized, the drop your telemetry measures since; Verified, held two months and the bill agrees. Below, a predicted-versus-bill card reads: minus 18 percent predicted per call, minus 15 percent on the bill, 85 percent arrived.",
+          ),
           p(
             "That last condition is the one doing the work. Realized savings are computed from the same telemetry that produced the projection, so a feature whose traffic simply fell has a smaller opportunity and looks like a success. Fewer calls at the same price each is not money saved.",
           ),
@@ -1057,6 +1107,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "Some recommendations rest on an assumption only you can check. **Test this**, on a recommendation's card, lets you say what is true for your product, and Meter works out what the recommendation is worth then.",
+          ),
+          figure(
+            "test-ways",
+            "Four ways to test, depending on the recommendation and where your data can go. All four end at the same published rule.",
+            "Four cards: Simulation, for caching and repeats, from counts the SDK sends, costing nothing; Your own cases, run on your machine with your keys and judge; Run by Meter, on calls it captured with your consent, with the cost shown first; and Live traffic, where your feature flag splits real requests and guardrails can stop it. All four lead to one rule — nothing broken, not worse beyond the allowance, enough cases, actually cheaper — with three outcomes: passed becomes a tested figure, failed keeps the card out of the totals, inconclusive changes nothing.",
           ),
           table(
             ["Recommendation", "What you choose", "What the test answers"],
@@ -1173,6 +1228,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
         blocks: [
           p(
             "Import the CSV your provider bills you with, and Meter lines it up against the spend it already tracked for the same period — then tells you what accounts for the difference, line by line, with the evidence for each explanation.",
+          ),
+          figure(
+            "invoice-check",
+            "Your invoice and Meter's tracked spend, lined up for the same period and provider — every run ends in one status, judged against tolerances stored with the run.",
+            "A provider invoice and what Meter tracked, both feeding a Line up step that explains each gap, which ends in one of four statuses: Matched, Within tolerance, Discrepancy, or Incomplete data. Default tolerances are one dollar or half a percent, stored with every run.",
           ),
           p(
             "It answers the question a finance team asks first: *does this tool agree with my actual invoice, and if not, why not?*",
@@ -1379,6 +1439,11 @@ await client.chat.completions.create({ ... });   // metered automatically`),
               ],
               ["**Window**", "Hourly, daily, weekly or monthly"],
             ],
+          ),
+          figure(
+            "alert-flow",
+            "An alert rule is checked on a schedule; a breach becomes an incident, delivered to every channel you chose.",
+            "A rule — metric, scope, condition and window — is checked on a schedule against its window. A breach raises an incident, with a cooldown and a recovery notice, delivered to any of four channels: in-app, email, Slack and webhook.",
           ),
           p(
             "A cooldown stops one ongoing problem from paging you repeatedly, and recovery notifications tell you when it clears.",

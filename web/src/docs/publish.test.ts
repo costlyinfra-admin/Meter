@@ -5,7 +5,7 @@
  * handbook, not a fixture, wherever the real handbook is what is at risk.
  */
 import { describe, expect, it } from "vitest";
-import { code, image, note, p, type Block } from "../help/blocks";
+import { code, figure, image, note, p, type Block } from "../help/blocks";
 import { CATEGORIES, type Category } from "../help/content";
 import {
   DEFAULT_SITE,
@@ -114,6 +114,20 @@ describe("rendering", () => {
     expect(html).toContain("<figcaption>See <strong>this</strong>.</figcaption>");
     // No caption, no empty element.
     expect(render([image("overview.webp", "The Overview")])).not.toContain("figcaption");
+  });
+
+  it("renders emphasis as emphasis, never as asterisks", () => {
+    const html = render([p("the *lowest* of its parts")]);
+    expect(html).toContain("<em>lowest</em>");
+    expect(html).not.toContain("*lowest*");
+  });
+
+  it("carries a diagram's own description where the app draws it", () => {
+    const html = render([
+      figure("confidence", "The caption <b>.", "Three levels, described in words."),
+    ]);
+    expect(html).toContain("Three levels, described in words.");
+    expect(html).toContain("<figcaption>The caption &lt;b&gt;.</figcaption>");
   });
 
   it("keeps notes distinguishable from body text", () => {

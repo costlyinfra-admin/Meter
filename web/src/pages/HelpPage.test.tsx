@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
+import { CATEGORIES } from "../help/content";
 import { HelpPage } from "./HelpPage";
 
 function renderHelp(path = "/help") {
@@ -45,10 +46,10 @@ describe("HelpPage", () => {
     const mark = heading.querySelector(".kb-mark")!;
     expect(mark).toHaveAttribute("aria-hidden");
     expect(mark.querySelector("svg")).not.toBeNull();
-    // The contents carry the same marks before each category.
+    // Every chapter card on the front page carries its chapter's mark too.
     renderHelp();
-    const toc = document.querySelectorAll(".kb-toc-cat h3 .kb-mark");
-    expect(toc.length).toBeGreaterThan(10);
+    const marks = document.querySelectorAll(".kb-chapter .kb-mark");
+    expect(marks.length).toBe(CATEGORIES.length);
   });
 
   it("renders inline formatting as elements, not raw markup", () => {
@@ -75,14 +76,57 @@ describe("HelpPage", () => {
     expect(screen.getByText(/Setting up →/)).toBeInTheDocument();
   });
 
-  it("searches, and replaces the contents with the results", () => {
+  it("searches from the front page, and shows the results in place of the chapters", () => {
     renderHelp();
+    fireEvent.change(screen.getByLabelText(/Search the knowledge base/i), {
+      target: { value: "unattributed" },
+    });
+    const results = screen.getByRole("region", { name: "Search results" });
+    expect(within(results).getByText(/topics?$/)).toBeInTheDocument();
+    expect(within(results).getByText("The Unattributed bucket")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Chapters" })).not.toBeInTheDocument();
+  });
+
+  it("searches from a topic, and replaces the contents with the results", () => {
+    renderHelp("/help/concepts/confidence");
     fireEvent.change(screen.getByLabelText(/Search the knowledge base/i), {
       target: { value: "unattributed" },
     });
     const nav = screen.getByRole("navigation", { name: /contents/i });
     expect(within(nav).getByText(/topics?$/)).toBeInTheDocument();
     expect(within(nav).getByText("The Unattributed bucket")).toBeInTheDocument();
+  });
+
+  it("opens with a short path for a first read", () => {
+    renderHelp();
+    const start = screen.getByRole("heading", { name: "Start here" }).closest("section")!;
+    const links = within(start).getAllByRole("link");
+    expect(links.map((l) => l.getAttribute("href"))).toEqual([
+      "/help/getting-started/what-meter-does",
+      "/help/getting-started/setup",
+      "/help/getting-started/first-dashboard",
+    ]);
+  });
+
+  it("says how long a topic takes to read and where it sits in its chapter", () => {
+    renderHelp("/help/concepts/unattributed");
+    expect(screen.getByText(/\d+ min read/)).toBeInTheDocument();
+    expect(screen.getByText("Topic 3 of 5")).toBeInTheDocument();
+  });
+
+  it("draws a diagram with a caption and a description a screen reader can reach", () => {
+    renderHelp("/help/concepts/reconciliation");
+    const art = screen.getByRole("img", { name: /authoritative on dollars/i });
+    expect(art.closest("figure")!.querySelector("figcaption")).toHaveTextContent(
+      "a lost event lowers attribution",
+    );
+  });
+
+  it("renders *emphasis* as emphasis, never as asterisks", () => {
+    renderHelp("/help/concepts/confidence");
+    const article = document.querySelector(".kb-article")!;
+    expect(article.querySelector("em")).toHaveTextContent("lowest");
+    expect(article.textContent).not.toContain("*lowest*");
   });
 
   it("says so when nothing matches", () => {
